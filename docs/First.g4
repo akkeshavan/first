@@ -49,6 +49,7 @@ INTERFACE: 'interface';
 IMPLEMENTATION: 'implementation';
 IMPORT: 'import';
 EXPORT: 'export';
+EXTENDS: 'extends';
 MODULE: 'module';
 DO: 'do';
 ASYNC: 'async';
@@ -162,7 +163,8 @@ RANGE_INCLUSIVE: '..=';
 
 // Type operators
 INTERSECTION: '&';
-SIGMA: '*';  // Dependent pair operator
+// Note: SIGMA (*) for dependent pairs is handled in parser, not lexer
+// to avoid conflict with MUL operator
 
 // Delimiters
 LPAREN: '(';
@@ -246,6 +248,15 @@ typeExpr
     | algebraicType
     ;
 
+// Interface declaration
+interfaceDecl: INTERFACE IDENTIFIER genericParams? (EXTENDS IDENTIFIER (COMMA IDENTIFIER)*)? LBRACE interfaceMember* RBRACE SEMICOLON;
+interfaceMember: IDENTIFIER COLON type_ SEMICOLON;
+
+// Implementation declaration
+implementationDecl: IMPLEMENTATION IDENTIFIER LT typeList GT (WHERE typeConstraintList)? LBRACE implementationMember* RBRACE SEMICOLON;
+implementationMember: IDENTIFIER ASSIGN (functionBody | interactionBody | expression) SEMICOLON;
+interactionBody: INTERACTION LPAREN parameterList? RPAREN returnType? functionBody;
+
 // Union type
 unionType: type_ (PIPE_DELIM type_)+;
 
@@ -304,7 +315,8 @@ memberPredicate: IDENTIFIER IN LBRACE expressionList RBRACE;
 dependentFunctionType: LPAREN IDENTIFIER COLON type_ RPAREN ARROW type_;
 
 // Dependent pair type (Sigma type): (varName: VarType) * BodyType
-dependentPairType: LPAREN IDENTIFIER COLON type_ RPAREN SIGMA type_;
+// Note: Using MUL token for * in dependent pair context
+dependentPairType: LPAREN IDENTIFIER COLON type_ RPAREN MUL type_;
 
 // Forall type: forall typeVars. Type
 forallType: FORALL IDENTIFIER+ DOT type_;
@@ -313,10 +325,12 @@ forallType: FORALL IDENTIFIER+ DOT type_;
 existentialType: EXISTS IDENTIFIER COLON type_ DOT type_;
 
 // Intersection type: T1 & T2 & ...
-intersectionType: type_ (INTERSECTION type_)+;
+// Right-associative to avoid left-recursion
+intersectionType: primaryType (INTERSECTION primaryType)+;
 
 // Union type expression: T1 | T2 | ...
-unionTypeExpr: type_ (PIPE_DELIM type_)+;
+// Right-associative to avoid left-recursion  
+unionTypeExpr: primaryType (PIPE_DELIM primaryType)+;
 
 // Indexed type: BaseType[index1, index2, ...]
 indexedType: primaryType LBRACKET indexList RBRACKET;
@@ -474,7 +488,7 @@ constructorPattern: IDENTIFIER (LPAREN patternList RPAREN)?;
 
 wildcardPattern: '_';
 
-asPattern: pattern '@' IDENTIFIER;
+asPattern: (IDENTIFIER | literal | recordPattern | arrayPattern | constructorPattern | wildcardPattern) '@' IDENTIFIER;
 
 // Expressions (operator precedence from lowest to highest)
 // Precedence: Or(1) < And(2) < Eq/Ne(3) < Lt/Le/Gt/Ge(4) < Add/Sub(5) < Mul/Div/Mod(6) < Monadic(7) < Postfix

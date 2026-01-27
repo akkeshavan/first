@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(FirstCompiler VERSION 0.1.0 LANGUAGES CXX)
+project(FirstCompiler VERSION 0.1.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -34,7 +34,6 @@ llvm_map_components_to_libnames(llvm_libs
     orcjit
     native
     target
-    all-targets
 )
 
 # ANTLR4 grammar generation
@@ -68,15 +67,52 @@ add_custom_command(
     COMMENT "Generating ANTLR4 parser from First.g4"
 )
 
+# Find ANTLR4 runtime include directory
+find_path(ANTLR4_INCLUDE_DIR
+    NAMES antlr4-runtime.h
+    PATHS
+        /opt/homebrew/include/antlr4-runtime
+        /usr/local/include/antlr4-runtime
+        /usr/include/antlr4-runtime
+)
+
+if(NOT ANTLR4_INCLUDE_DIR)
+    # Try to find via pkg-config
+    find_package(PkgConfig)
+    if(PkgConfig_FOUND)
+        pkg_check_modules(ANTLR4 antlr4-runtime)
+        if(ANTLR4_FOUND)
+            set(ANTLR4_INCLUDE_DIR ${ANTLR4_INCLUDE_DIRS})
+        endif()
+    endif()
+endif()
+
+# Find ANTLR4 library
+find_library(ANTLR4_LIBRARY
+    NAMES antlr4-runtime
+    PATHS
+        /opt/homebrew/lib
+        /usr/local/lib
+        /usr/lib
+)
+
+if(ANTLR4_INCLUDE_DIR AND ANTLR4_LIBRARY)
+    message(STATUS "Found ANTLR4 include dir: ${ANTLR4_INCLUDE_DIR}")
+    message(STATUS "Found ANTLR4 library: ${ANTLR4_LIBRARY}")
+else()
+    message(FATAL_ERROR "ANTLR4 runtime not found. Please install antlr4-cpp-runtime")
+endif()
+
 # Generated parser library
 add_library(first_parser STATIC
     ${GENERATED_FILES}
 )
 target_link_libraries(first_parser
-    antlr4-runtime
+    ${ANTLR4_LIBRARY}
 )
 target_include_directories(first_parser PUBLIC
     ${ANTLR4_GENERATED_DIR}
+    ${ANTLR4_INCLUDE_DIR}
 )
 
 # Compiler source files

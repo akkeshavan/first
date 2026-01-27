@@ -1,6 +1,7 @@
 #include <iostream>
 #include <string>
 #include "first/compiler.h"
+#include "first/error_reporter.h"
 
 void printUsage(const char* programName) {
     std::cout << "First Programming Language Compiler\n";

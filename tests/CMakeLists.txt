@@ -12,6 +12,14 @@ add_executable(test_compiler
 
 target_link_libraries(test_compiler
     first_parser
+    ${ANTLR4_LIBRARY}
+)
+
+# Add compiler source files to test executable
+target_sources(test_compiler PRIVATE
+    ${CMAKE_SOURCE_DIR}/src/compiler.cpp
+    ${CMAKE_SOURCE_DIR}/src/error_reporter.cpp
+    ${CMAKE_SOURCE_DIR}/src/source_location.cpp
 )
 
 target_include_directories(test_compiler PRIVATE
