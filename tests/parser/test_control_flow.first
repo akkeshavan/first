@@ -1,0 +1,22 @@
+// Test control flow
+
+function factorial(n: Int) -> Int {
+    if (n <= 1) {
+        return 1;
+    } else {
+        return n * factorial(n - 1);
+    }
+}
+
+interaction loop() -> Unit {
+    var i = 0;
+    while (i < 10) {
+        print(i.toString());
+        i = i + 1;
+    }
+}
+
+function conditionalExpr() -> String {
+    let x = 5;
+    return if (x > 0) "positive" else "non-positive";
+}

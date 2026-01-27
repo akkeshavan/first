@@ -1,0 +1,12 @@
+// Test variable declarations
+
+function test() -> Int {
+    let x: Int = 10;
+    let y = 20;
+    return x + y;
+}
+
+interaction testInteraction() -> Unit {
+    var counter: Int = 0;
+    counter = counter + 1;
+}

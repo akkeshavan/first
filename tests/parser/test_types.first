@@ -1,0 +1,16 @@
+// Test type declarations
+
+type Person = {
+    name: String,
+    age: Int,
+    email: String
+};
+
+type Option<T> = Some(T) | None;
+
+type Result<T, E> = Ok(T) | Err(E);
+
+type Shape = 
+    | Circle(radius: Float)
+    | Rectangle(width: Float, height: Float)
+    | Square(side: Float);

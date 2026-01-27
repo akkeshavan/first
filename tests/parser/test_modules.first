@@ -1,0 +1,16 @@
+// Test module system
+
+module Math;
+
+export function square(x: Int) -> Int {
+    return x * x;
+}
+
+export function cube(x: Int) -> Int {
+    return x * x * x;
+}
+
+export type Point = {
+    x: Float,
+    y: Float
+};

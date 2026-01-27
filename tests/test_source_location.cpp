@@ -1,5 +1,5 @@
 #include "first/source_location.h"
-#include "test_main.cpp"
+#include "test_framework.h"
 
 TEST(source_location_basic) {
     first::SourceLocation loc(10, 20, "test.first");

@@ -1,5 +1,5 @@
 #include "first/compiler.h"
-#include "test_main.cpp"
+#include "test_framework.h"
 
 TEST(lexer_simple_program) {
     first::Compiler compiler;

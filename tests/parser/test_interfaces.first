@@ -1,0 +1,32 @@
+// Test interfaces and implementations
+
+interface Show<T> {
+    show: function(T) -> String;
+}
+
+interface Eq<T> {
+    equals: function(T, T) -> Bool;
+    notEquals: function(T, T) -> Bool;
+}
+
+interface Ord<T> extends Eq<T> {
+    compare: function(T, T) -> Int;
+    lessThan: function(T, T) -> Bool;
+    greaterThan: function(T, T) -> Bool;
+}
+
+implementation Show<Int> {
+    show = function(x: Int) -> String {
+        return x.toString();
+    };
+}
+
+implementation Eq<String> {
+    equals = function(a: String, b: String) -> Bool {
+        return a == b;
+    };
+    
+    notEquals = function(a: String, b: String) -> Bool {
+        return !(a == b);
+    };
+}

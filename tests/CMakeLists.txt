@@ -8,6 +8,7 @@ add_executable(test_compiler
     test_error_reporter.cpp
     test_source_location.cpp
     test_lexer.cpp
+    test_parser.cpp
 )
 
 target_link_libraries(test_compiler

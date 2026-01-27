@@ -1,0 +1,19 @@
+// Test function declarations
+
+function add(x: Int, y: Int) -> Int {
+    return x + y;
+}
+
+function identity<T>(x: T) -> T {
+    return x;
+}
+
+interaction processData() -> Unit {
+    print("Processing...");
+}
+
+function higherOrder() -> Int {
+    let numbers = [1, 2, 3, 4, 5];
+    let doubled = numbers.map(function(x) { return x * 2; });
+    return doubled.reduce(function(acc, x) { return acc + x; }, 0);
+}

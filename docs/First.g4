@@ -216,12 +216,7 @@ importSpec
 importList: IDENTIFIER (COMMA IDENTIFIER)*;
 
 // Export declaration
-exportDecl: EXPORT exportSpec SEMICOLON;
-exportSpec
-    : '*'
-    | '{' exportList? '}'
-    ;
-exportList: IDENTIFIER (COMMA IDENTIFIER)*;
+exportDecl: EXPORT (FUNCTION | INTERACTION | TYPE) IDENTIFIER SEMICOLON;
 
 // Function declaration
 functionDecl: FUNCTION IDENTIFIER genericParams? LPAREN parameterList? RPAREN returnType? (functionBody | SEMICOLON);
@@ -238,7 +233,7 @@ parameterList: parameter (COMMA parameter)*;
 parameter: IDENTIFIER (COLON type_)?;
 
 // Return type
-returnType: COLON type_;
+returnType: ARROW type_;
 
 // Type declarations
 typeDecl: TYPE IDENTIFIER genericParams? ASSIGN typeExpr SEMICOLON;
@@ -433,7 +428,7 @@ statement
     | selectStmt
     ;
 
-varDecl: (LET | MUT) IDENTIFIER (COLON type_)? (ASSIGN expression)? SEMICOLON;
+varDecl: (LET | VAR) IDENTIFIER (COLON type_)? (ASSIGN expression)? SEMICOLON;
 
 assignment: expression ASSIGN expression SEMICOLON;
 

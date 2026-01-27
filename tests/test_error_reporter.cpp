@@ -1,6 +1,6 @@
 #include "first/error_reporter.h"
 #include "first/source_location.h"
-#include "test_main.cpp"
+#include "test_framework.h"
 
 TEST(error_reporter_basic) {
     first::ErrorReporter reporter;
