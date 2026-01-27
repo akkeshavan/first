@@ -1,0 +1,5 @@
+// Hello World example for First programming language
+
+interaction main() -> Unit {
+    print("Hello, World!");
+}
