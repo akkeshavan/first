@@ -2,22 +2,22 @@
 
 function matchOption(opt: Option<Int>) -> Int {
     match opt {
-        Some(value) => value,
+        Some(value) => value
         None => 0
     }
 }
 
 function matchResult(result: Result<String, String>) -> String {
     match result {
-        Ok(value) => value,
+        Ok(value) => value
         Err(error) => "Error: " + error
     }
 }
 
 function matchShape(shape: Shape) -> Float {
     match shape {
-        Circle(radius) => 3.14159 * radius * radius,
-        Rectangle(width, height) => width * height,
+        Circle(radius) => 3.14159 * radius * radius
+        Rectangle(width, height) => width * height
         Square(side) => side * side
     }
 }

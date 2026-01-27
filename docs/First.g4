@@ -95,12 +95,7 @@ TRY: 'try';
 CATCH: 'catch';
 FINALLY: 'finally';
 THROW: 'throw';
-RESULT: 'Result';
-OK: 'Ok';
-ERR: 'Err';
-OPTION: 'Option';
-SOME: 'Some';
-NONE: 'None';
+// Note: Result, Ok, Err, Option, Some, None are regular identifiers, not keywords
 
 // Concurrency keywords
 PROMISE: 'Promise';
@@ -192,13 +187,15 @@ RREFINEMENT: '}}';
 program: (topLevel)* EOF;
 
 topLevel
-    : functionDecl
+    : exportFunctionDecl
+    | exportInteractionDecl
+    | exportTypeDecl
+    | functionDecl
     | interactionDecl
     | typeDecl
     | interfaceDecl
     | implementationDecl
     | importDecl
-    | exportDecl
     | moduleDecl
     | varDecl
     ;
@@ -215,8 +212,10 @@ importSpec
     ;
 importList: IDENTIFIER (COMMA IDENTIFIER)*;
 
-// Export declaration
-exportDecl: EXPORT (FUNCTION | INTERACTION | TYPE) IDENTIFIER SEMICOLON;
+// Export declarations (modifiers on regular declarations)
+exportFunctionDecl: EXPORT functionDecl;
+exportInteractionDecl: EXPORT interactionDecl;
+exportTypeDecl: EXPORT typeDecl;
 
 // Function declaration
 functionDecl: FUNCTION IDENTIFIER genericParams? LPAREN parameterList? RPAREN returnType? (functionBody | SEMICOLON);
@@ -238,27 +237,28 @@ returnType: ARROW type_;
 // Type declarations
 typeDecl: TYPE IDENTIFIER genericParams? ASSIGN typeExpr SEMICOLON;
 typeExpr
-    : type_
+    : algebraicType
     | unionType
-    | algebraicType
+    | type_
+    | genericType
     ;
 
 // Interface declaration
-interfaceDecl: INTERFACE IDENTIFIER genericParams? (EXTENDS IDENTIFIER (COMMA IDENTIFIER)*)? LBRACE interfaceMember* RBRACE SEMICOLON;
+interfaceDecl: INTERFACE IDENTIFIER genericParams? (EXTENDS type_ (COMMA type_)*)? LBRACE interfaceMember* RBRACE SEMICOLON;
 interfaceMember: IDENTIFIER COLON type_ SEMICOLON;
 
 // Implementation declaration
 implementationDecl: IMPLEMENTATION IDENTIFIER LT typeList GT (WHERE typeConstraintList)? LBRACE implementationMember* RBRACE SEMICOLON;
-implementationMember: IDENTIFIER ASSIGN (functionBody | interactionBody | expression) SEMICOLON;
-interactionBody: INTERACTION LPAREN parameterList? RPAREN returnType? functionBody;
+implementationMember: IDENTIFIER ASSIGN (functionBody | expression) SEMICOLON;
 
 // Union type
 unionType: type_ (PIPE_DELIM type_)+;
 
-// Algebraic data type
-algebraicType: constructor (PIPE_DELIM constructor)*;
-constructor: IDENTIFIER (LPAREN constructorField (COMMA constructorField)* RPAREN)?;
-constructorField: IDENTIFIER COLON type_;
+// Algebraic data type (allows optional leading |)
+algebraicType: (PIPE_DELIM)? constructor (PIPE_DELIM constructor)*;
+constructor: IDENTIFIER (LPAREN constructorArgList RPAREN)?;
+constructorArgList: constructorArg (COMMA constructorArg)*;
+constructorArg: (IDENTIFIER COLON)? type_;
 
 // Types
 type_
@@ -275,6 +275,7 @@ type_
     | functionType
     | interactionType
     | primaryType
+    | genericType
     ;
 
 // Refinement type: {{variable: BaseType where predicate}}
@@ -479,7 +480,7 @@ patternField: IDENTIFIER COLON pattern;
 arrayPattern: LBRACKET patternList? RBRACKET;
 patternList: pattern (COMMA pattern)*;
 
-constructorPattern: IDENTIFIER (LPAREN patternList RPAREN)?;
+constructorPattern: IDENTIFIER (LPAREN patternList? RPAREN)?;
 
 wildcardPattern: '_';
 
@@ -512,7 +513,7 @@ unaryExpr
 
 postfixExpr
     : primaryExpr
-    | postfixExpr DOT IDENTIFIER
+    | postfixExpr DOT IDENTIFIER (genericParams? LPAREN expressionList? RPAREN)?
     | postfixExpr LBRACKET expression RBRACKET
     | postfixExpr LPAREN expressionList? RPAREN
     ;
@@ -533,7 +534,8 @@ primaryExpr
     | selectExpr
     ;
 
-lambdaExpr: LPAREN parameterList? RPAREN FAT_ARROW expression;
+lambdaExpr: LPAREN parameterList? RPAREN FAT_ARROW (expression | functionBody)
+    | FUNCTION LPAREN parameterList? RPAREN returnType? functionBody;
 
 conditionalExpr: IF LPAREN expression RPAREN expression ELSE expression;
 

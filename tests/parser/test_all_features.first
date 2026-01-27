@@ -1,0 +1,23 @@
+// Comprehensive test showing all error reporting features
+// This file has various syntax errors to demonstrate:
+// 1. Error codes
+// 2. Notes and help text
+// 3. Tab handling
+// 4. Multi-line spans
+
+function test1() -> Int {
+	let x = 10;  // Tab before 'let' - tests tab expansion
+	return x;
+}
+
+function test2() -> Int {
+    let x = 10
+    // Missing semicolon - will show error code E003
+    return x;
+}
+
+function test3() {
+    if (x > 0 {  // Missing closing paren - will show multi-line span
+        return x;
+    }
+}

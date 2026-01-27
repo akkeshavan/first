@@ -1,0 +1,5 @@
+// Test file with tabs to demonstrate tab expansion
+function test() -> Int {
+	let x = 10;  // Tab before 'let'
+	return x;
+}

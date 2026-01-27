@@ -1,0 +1,20 @@
+// Test file with syntax errors to demonstrate enhanced error reporting
+
+function test1() -> Int {
+    let x = 10
+    // Missing semicolon - syntax error
+    return x;
+}
+
+function test2() -> Int {
+    let x = 10;
+    var y = 20;  // var keyword will trigger helpful note
+    return x + y;
+}
+
+function test3() {
+    if (x > 0 {
+        // Missing closing parenthesis
+        return x;
+    }
+}

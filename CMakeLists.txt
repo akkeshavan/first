@@ -5,6 +5,9 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
+# Add runtime subdirectory
+add_subdirectory(runtime)
+
 # Build options
 option(BUILD_TESTS "Build test suite" ON)
 option(BUILD_EXAMPLES "Build example programs" ON)
@@ -121,12 +124,29 @@ set(COMPILER_SOURCES
     src/compiler.cpp
     src/error_reporter.cpp
     src/source_location.cpp
+    src/ast/builder.cpp
+    src/ast/types.cpp
+    src/ast/validator.cpp
+    src/ast/match_case.cpp
+    src/ast/match_expr.cpp
+    src/semantic/symbol_table.cpp
+    src/semantic/type_checker.cpp
+    src/semantic/semantic_checker.cpp
+    src/semantic/module_resolver.cpp
+    src/ir/ir_generator.cpp
 )
 
 # Compiler executable
 add_executable(firstc ${COMPILER_SOURCES})
+target_include_directories(firstc PRIVATE
+    ${LLVM_INCLUDE_DIRS}
+)
+target_compile_definitions(firstc PRIVATE
+    ${LLVM_DEFINITIONS}
+)
 target_link_libraries(firstc
     first_parser
+    ${ANTLR4_LIBRARY}
     ${llvm_libs}
 )
 

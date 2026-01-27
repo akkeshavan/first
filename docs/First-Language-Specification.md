@@ -756,167 +756,366 @@ let result = square(5);
 let point: Point = { x: 1.0, y: 2.0 };
 ```
 
-### 9.3 Haskell Library Integration
+### 9.3 Native Library Integration
 
-First provides seamless integration with Haskell libraries through automatic wrapper generation and a foreign function interface (FFI).
+First provides seamless integration with native libraries (C, C++, Rust) through a foreign function interface (FFI) and automatic wrapper generation. This allows First programs to leverage existing native libraries while maintaining type safety and First's functional programming model.
 
-#### 9.3.1 Haskell Standard Library Access
+#### 9.3.1 Foreign Function Interface (FFI)
+
+The `foreign` keyword allows you to declare bindings to native library functions:
+
 ```
-// Import Haskell standard library modules
-import * as List from "haskell:Data.List";
-import * as Maybe from "haskell:Data.Maybe";
-import * as Map from "haskell:Data.Map";
-import { foldr, foldl, map } from "haskell:Prelude";
+// C library binding example
+foreign c "libm" {
+    // Link against libm (math library)
+    function sqrt(x: Float) -> Float;
+    function sin(x: Float) -> Float;
+    function cos(x: Float) -> Float;
+    function pow(base: Float, exponent: Float) -> Float;
+}
 
-// Use Haskell functions directly
-let numbers = [1, 2, 3, 4, 5];
-let sum = foldr(function(x, acc) { return x + acc; }, 0, numbers);
-let doubled = List.map(function(x) { return x * 2; }, numbers);
+// Usage
+import { sqrt, sin, cos, pow } from "./math-bindings";
+
+function distance(x1: Float, y1: Float, x2: Float, y2: Float) -> Float {
+    let dx = x2 - x1;
+    let dy = y2 - y1;
+    return sqrt(dx * dx + dy * dy);
+}
 ```
 
-#### 9.3.2 Third-party Haskell Libraries
-```
-// Import third-party Haskell libraries
-import * as Aeson from "haskell:Data.Aeson";
-import * as Http from "haskell:Network.HTTP.Simple";
-import * as Text from "haskell:Data.Text";
+#### 9.3.2 C Library Bindings
 
-// Declare library dependencies in package.first
+C libraries can be wrapped using the `foreign c` syntax:
+
+```
+// c-bindings.first - Wrapping libcurl for HTTP
+foreign c "curl" {
+    // C function: CURLcode curl_easy_setopt(CURL *curl, CURLoption option, ...);
+    // Wrapped as:
+    interaction curlEasySetopt(curl: CURLPtr, option: Int, value: String) -> Int;
+    
+    // C function: CURLcode curl_easy_perform(CURL *curl);
+    interaction curlEasyPerform(curl: CURLPtr) -> Int;
+    
+    // C function: CURL *curl_easy_init(void);
+    interaction curlEasyInit() -> CURLPtr;
+    
+    // Opaque pointer type
+    type CURLPtr;
+}
+
+// Usage
+import { curlEasyInit, curlEasySetopt, curlEasyPerform, CURLPtr } from "./c-bindings";
+
+interaction fetchUrl(url: String) -> Result<String, String> {
+    do {
+        curl <- curlEasyInit();
+        if (curl == null) {
+            return Err("Failed to initialize curl");
+        }
+        
+        _ <- curlEasySetopt(curl, 10002, url); // CURLOPT_URL
+        result <- curlEasyPerform(curl);
+        
+        if (result == 0) {
+            return Ok("Success");
+        } else {
+            return Err("HTTP request failed");
+        }
+    }
+}
+```
+
+#### 9.3.3 C++ Library Bindings
+
+C++ libraries can be wrapped using `foreign cpp`:
+
+```
+// cpp-bindings.first - Wrapping a C++ library
+foreign cpp "mylib" {
+    // C++ class wrapped as a type
+    type MyClass;
+    
+    // Constructor
+    interaction MyClass.new(value: Int) -> MyClass;
+    
+    // Method calls
+    function MyClass.getValue() -> Int;
+    interaction MyClass.setValue(value: Int) -> Unit;
+    
+    // Destructor (automatic via reference counting)
+    interaction MyClass.delete() -> Unit;
+}
+
+// Usage
+import { MyClass } from "./cpp-bindings";
+
+interaction useMyClass() -> Int {
+    do {
+        obj <- MyClass.new(42);
+        value <- obj.getValue();
+        _ <- obj.setValue(value * 2);
+        return obj.getValue();
+    }
+}
+```
+
+#### 9.3.4 Rust Library Bindings
+
+Rust libraries can be wrapped using `foreign rust`:
+
+```
+// rust-bindings.first - Wrapping a Rust crate
+foreign rust "serde_json" {
+    // Rust function: pub fn from_str(s: &str) -> Result<Value, Error>
+    // Wrapped as:
+    function fromStr(json: String) -> Result<JSONValue, String>;
+    
+    // Rust function: pub fn to_string(v: &Value) -> String
+    function toString(value: JSONValue) -> String;
+    
+    type JSONValue;
+}
+
+// Usage
+import { fromStr, toString, JSONValue } from "./rust-bindings";
+
+interaction parseJSON(jsonString: String) -> Result<JSONValue, String> {
+    return fromStr(jsonString);
+}
+```
+
+#### 9.3.5 Type Mapping
+
+The compiler automatically maps native types to First types:
+
+```
+// C/C++ -> First type mappings
+int32_t     -> Int
+int64_t     -> Int
+float       -> Float
+double      -> Float
+bool        -> Bool
+char*       -> String
+void*       -> OpaquePtr (or specific pointer type)
+const char* -> String
+
+// Rust -> First type mappings
+i32         -> Int
+i64         -> Int
+f32         -> Float
+f64         -> Float
+bool        -> Bool
+String      -> String
+&str        -> String
+Result<T,E> -> Result<T, E>
+Option<T>   -> Option<T>
+Vec<T>      -> Array<T>
+
+// Pointer types
+C: void*           -> OpaquePtr
+C: int*            -> IntPtr
+C++: std::string*  -> StringPtr
+Rust: *mut T       -> MutPtr<T>
+Rust: *const T     -> ConstPtr<T>
+```
+
+#### 9.3.6 Memory Management
+
+Native library bindings handle memory management automatically:
+
+```
+// Automatic memory management for C strings
+foreign c "stringlib" {
+    // C function that allocates: char* strdup(const char* s);
+    // Automatically freed when no longer referenced
+    function strdup(s: String) -> String;
+    
+    // C function that takes ownership: void free_string(char* s);
+    // Called automatically when String is dropped
+    interaction freeString(s: String) -> Unit;
+}
+
+// For manual memory management (advanced)
+foreign c "mylib" {
+    // Raw pointer - requires manual management
+    type RawPtr;
+    
+    interaction malloc(size: Int) -> RawPtr;
+    interaction free(ptr: RawPtr) -> Unit;
+    
+    // Safe wrapper with automatic cleanup
+    function withPtr<T>(size: Int, f: function(RawPtr) -> T) -> T;
+}
+```
+
+#### 9.3.7 Error Handling
+
+Native library errors are converted to First's `Result` type:
+
+```
+// C function that returns error codes
+foreign c "mylib" {
+    // C: int process_data(int* result, const char* input);
+    // Returns 0 on success, non-zero on error
+    interaction processData(input: String) -> Result<Int, String>;
+}
+
+// Rust function with Result
+foreign rust "mylib" {
+    // Rust: pub fn parse(input: &str) -> Result<Value, ParseError>
+    function parse(input: String) -> Result<Value, String>;
+}
+```
+
+#### 9.3.8 Callback Functions
+
+Native libraries can call back into First code:
+
+```
+// C library with callback
+foreign c "mylib" {
+    // C: void iterate(int* array, int length, void (*callback)(int));
+    interaction iterate(array: Array<Int>, callback: function(Int) -> Unit) -> Unit;
+}
+
+// Usage
+interaction processArray(arr: Array<Int>) -> Unit {
+    iterate(arr, function(value: Int) {
+        print(value.toString());
+    });
+}
+```
+
+#### 9.3.9 Package Configuration
+
+Declare native library dependencies in `package.first`:
+
+```json
 {
-    "name": "my-first-project",
+    "name": "my-first-app",
     "version": "1.0.0",
     "dependencies": {
         "first-stdlib": "^1.0.0"
     },
-    "haskell-dependencies": {
-        "aeson": "^2.1.0",
-        "http-conduit": "^2.3.0",
-        "text": "^2.0.0",
-        "containers": "^0.6.0"
+    "native-dependencies": {
+        "c": {
+            "curl": {
+                "library": "curl",
+                "include": "/usr/local/include",
+                "libdir": "/usr/local/lib"
+            },
+            "sqlite3": {
+                "library": "sqlite3",
+                "pkg-config": "sqlite3"
+            }
+        },
+        "cpp": {
+            "boost": {
+                "library": "boost_system",
+                "version": "1.82.0"
+            }
+        },
+        "rust": {
+            "serde_json": "1.0",
+            "reqwest": "0.11"
+        }
     }
 }
 ```
 
-#### 9.3.3 Automatic Type Mapping
-The compiler automatically maps Haskell types to First types:
-
-```
-// Haskell -> First type mappings
-Int        -> Int
-Double     -> Float  
-Bool       -> Bool
-String     -> String
-[a]        -> Array<a>
-Maybe a    -> Option<a>
-Either a b -> Result<b, a>
-IO a       -> IO<a>
-(a, b)     -> { first: a, second: b }
-(a, b, c)  -> { first: a, second: b, third: c }
-
-// Custom Haskell data types are mapped to algebraic types
-data Tree a = Leaf a | Branch (Tree a) (Tree a)
-// Becomes:
-type Tree<T> = Leaf(T) | Branch(Tree<T>, Tree<T>);
-```
-
-#### 9.3.4 Wrapper Generation
-The compiler automatically generates wrappers for Haskell functions:
-
-```
-// Haskell function:
--- Data.List.sortBy :: (a -> a -> Ordering) -> [a] -> [a]
-
-// Generated First wrapper:
-function List.sortBy<T>(compareFn: function(T, T) -> Int, list: Array<T>) -> Array<T>;
-
-// Usage in First:
-let sorted = List.sortBy(function(a, b) { 
-    if (a < b) return -1;
-    else if (a > b) return 1;
-    else return 0;
-}, [3, 1, 4, 1, 5]);
-```
-
-#### 9.3.5 Interaction Wrapping
-Haskell IO actions are automatically wrapped as interactions:
-
-```
-// Haskell: readFile :: FilePath -> IO String
-// Wrapped as:
-interaction readFile(path: String) -> String;
-
-// Haskell: writeFile :: FilePath -> String -> IO ()  
-// Wrapped as:
-interaction writeFile(path: String, content: String) -> Unit;
-
-// Usage:
-interaction processFiles() -> Result<Unit, String> {
-    do {
-        content <- readFile("input.txt");
-        processed <- processContent(content);
-        _ <- writeFile("output.txt", processed);
-        return Ok(());
-    }
-}
-```
-
-### 9.4 Custom Haskell Bindings
+### 9.4 Custom Native Bindings
 
 #### 9.4.1 Manual Wrapper Definition
+
 For complex cases, you can define custom wrappers:
 
 ```
-// haskell-bindings.first
-foreign haskell "Data.ByteString" {
-    type ByteString;
+// native-bindings.first
+foreign c "sqlite3" {
+    type SQLiteDB;
+    type SQLiteStmt;
     
-    function readFile(path: String) -> ByteString;
-    function writeFile(path: String, content: ByteString) -> Unit;
-    function length(bs: ByteString) -> Int;
+    // Open database
+    interaction sqlite3Open(filename: String) -> Result<SQLiteDB, String>;
     
-    // Map Haskell functions with different signatures
-    function "Data.ByteString.take" as take(n: Int, bs: ByteString) -> ByteString;
-    function "Data.ByteString.drop" as drop(n: Int, bs: ByteString) -> ByteString;
+    // Prepare statement
+    interaction sqlite3Prepare(db: SQLiteDB, sql: String) -> Result<SQLiteStmt, String>;
+    
+    // Execute statement
+    interaction sqlite3Step(stmt: SQLiteStmt) -> Result<Int, String>;
+    
+    // Get column value
+    function sqlite3ColumnText(stmt: SQLiteStmt, col: Int) -> String;
+    
+    // Close resources
+    interaction sqlite3Close(db: SQLiteDB) -> Unit;
+    interaction sqlite3Finalize(stmt: SQLiteStmt) -> Unit;
 }
 
 // Usage
-import { ByteString, readFile, writeFile, length } from "./haskell-bindings";
+import { sqlite3Open, sqlite3Prepare, sqlite3Step, sqlite3ColumnText, sqlite3Close, SQLiteDB } from "./native-bindings";
 
-interaction copyFile(src: String, dest: String) -> Result<Unit, String> {
+interaction queryDatabase(dbPath: String, query: String) -> Result<Array<String>, String> {
     do {
-        content <- readFile(src);
-        _ <- writeFile(dest, content);
-        return Ok(());
+        db <- sqlite3Open(dbPath);
+        stmt <- sqlite3Prepare(db, query);
+        
+        var results: Array<String> = [];
+        while (true) {
+            stepResult <- sqlite3Step(stmt);
+            match stepResult {
+                Ok(100) => { // SQLITE_ROW
+                    let value = sqlite3ColumnText(stmt, 0);
+                    results = results.append(value);
+                },
+                Ok(101) => break, // SQLITE_DONE
+                Err(e) => return Err(e)
+            }
+        }
+        
+        return Ok(results);
     }
 }
 ```
 
-#### 9.4.2 Type Class Mapping
-Haskell type classes are mapped to First interfaces:
+#### 9.4.2 Automatic Wrapper Generation
 
-```
-// Haskell: class Show a where show :: a -> String
-// Maps to:
-interface Show<T> {
-    show: function(T) -> String;
-}
+The compiler can automatically generate wrappers from header files or library metadata:
 
-// Haskell instances are automatically available
-// show :: Int -> String becomes available when importing Show<Int>
+```bash
+# Generate wrappers from C header
+firstc --generate-bindings --from-header=curl/curl.h --output=curl-bindings.first
+
+# Generate wrappers from Rust crate
+firstc --generate-bindings --from-crate=serde_json --output=serde-bindings.first
+
+# Generate wrappers using pkg-config
+firstc --generate-bindings --pkg-config=sqlite3 --output=sqlite-bindings.first
 ```
 
 #### 9.4.3 Advanced FFI Features
+
 ```
-// Direct Haskell code embedding (for complex cases)
-foreign haskell inline {
-    parseJSON :: String -> Either String Value
-    parseJSON str = case eitherDecode (encodeUtf8 (pack str)) of
-        Left err -> Left err
-        Right val -> Right val
+// Inline native code (for performance-critical sections)
+foreign c inline {
+    // C code embedded directly
+    int fast_hash(const char* str) {
+        int hash = 5381;
+        int c;
+        while ((c = *str++)) {
+            hash = ((hash << 5) + hash) + c;
+        }
+        return hash;
+    }
 }
 
 // This generates a First function:
-function parseJSON(json: String) -> Result<Value, String>;
+function fastHash(str: String) -> Int;
+
+// Usage
+let hash = fastHash("hello");
 ```
 
 ## 10. Memory Management
@@ -986,235 +1185,256 @@ function String.contains(substring: String) -> Bool;
 ## 13. Compiler Architecture
 
 ### 13.1 Compilation Pipeline
-1. **Dependency Resolution**: Parse package.first and resolve Haskell dependencies
-2. **Wrapper Generation**: Generate First bindings for Haskell libraries
-3. **Lexical Analysis**: Tokenization using Parsec
-4. **Syntax Analysis**: Parse tree generation
-5. **Semantic Analysis**: Type checking, inference, and Haskell type mapping
-6. **Code Generation**: Haskell code generation with FFI bindings
-7. **Haskell Compilation**: Use GHC to compile generated Haskell code
-8. **Optimization**: Optional optimization passes
+1. **Dependency Resolution**: Parse `package.first` and resolve native library dependencies
+2. **Wrapper Generation**: Generate First bindings for native libraries (C/C++/Rust)
+3. **Lexical Analysis**: Tokenization using ANTLR4 lexer
+4. **Syntax Analysis**: Parse tree generation using ANTLR4 parser
+5. **Semantic Analysis**: Type checking, inference, and type system validation
+6. **IR Generation**: Generate LLVM IR from validated AST
+7. **Optimization**: LLVM optimization passes
+8. **Code Generation**: Generate native machine code via LLVM
+9. **Linking**: Link with native libraries and runtime
 
 ### 13.2 Wrapper Generation System
 
 #### 13.2.1 Automatic Wrapper Generation
-The compiler analyzes Haskell library interfaces and generates appropriate First wrappers:
+The compiler analyzes native library interfaces and generates appropriate First wrappers:
 
-```haskell
--- Haskell library analysis
--- Input: Data.List module
-sort :: Ord a => [a] -> [a]
-sortBy :: (a -> a -> Ordering) -> [a] -> [a]
-group :: Eq a => [a] -> [[a]]
+```c
+// C library header: mylib.h
+int process_data(int* result, const char* input);
+void* create_context();
+void destroy_context(void* ctx);
+```
 
--- Generated First wrapper: Data/List.first
-interface Ord<T> {
-    compare: function(T, T) -> Int;
+```first
+// Generated First wrapper: mylib-bindings.first
+foreign c "mylib" {
+    type Context;
+    
+    interaction processData(input: String) -> Result<Int, String>;
+    interaction createContext() -> Context;
+    interaction destroyContext(ctx: Context) -> Unit;
 }
-
-function sort<T>(list: Array<T>) -> Array<T> where Ord<T>;
-function sortBy<T>(compareFn: function(T, T) -> Int, list: Array<T>) -> Array<T>;
-function group<T>(list: Array<T>) -> Array<Array<T>> where Eq<T>;
 ```
 
 #### 13.2.2 Type Translation Engine
 The compiler includes a sophisticated type translation engine:
 
 ```
-Haskell Type System → First Type System Translation Rules:
+Native Type System → First Type System Translation Rules:
 
-1. Basic Types:
-   Int        → Int
-   Double     → Float
-   Bool       → Bool
-   Char       → String (single char)
-   String     → String
-   ()         → Unit
+1. C Basic Types:
+   int32_t     → Int
+   int64_t     → Int
+   float       → Float
+   double      → Float
+   bool        → Bool
+   char*       → String
+   const char* → String
+   void        → Unit
+   void*       → OpaquePtr
 
-2. Parametric Types:
-   [a]        → Array<a>
-   Maybe a    → Option<a>
-   Either a b → Result<b, a>  // Note: flipped for First conventions
-   (a, b)     → {first: a, second: b}
-   IO a       → IO<a> (interaction context)
+2. C++ Types:
+   std::string     → String
+   std::vector<T>  → Array<T>
+   std::optional<T> → Option<T>
+   std::unique_ptr<T> → T (with automatic memory management)
 
-3. Function Types:
-   a -> b           → function(a) -> b
-   a -> b -> c      → function(a, b) -> c  // Curried to uncurried
-   a -> IO b        → interaction(a) -> b  // IO becomes interaction
+3. Rust Types:
+   i32         → Int
+   i64         → Int
+   f32         → Float
+   f64         → Float
+   bool        → Bool
+   String      → String
+   &str        → String
+   Vec<T>      → Array<T>
+   Result<T,E> → Result<T, E>
+   Option<T>   → Option<T>
 
-4. Type Classes:
-   Show a    → interface Show<a> { show: function(a) -> String; }
-   Eq a      → interface Eq<a> { equals: function(a, a) -> Bool; }
-   Ord a     → interface Ord<a> extends Eq<a> { compare: function(a, a) -> Int; }
+4. Function Types:
+   C: int (*)(int, int)     → function(Int, Int) -> Int
+   C++: std::function<int(int, int)> → function(Int, Int) -> Int
+   Rust: fn(i32, i32) -> i32 → function(Int, Int) -> Int
 
-5. Custom Data Types:
-   data Tree a = Leaf a | Branch (Tree a) (Tree a)
-   → type Tree<a> = Leaf(a) | Branch(Tree<a>, Tree<a>);
+5. Pointer Types:
+   C: T*                    → Ptr<T> or MutPtr<T>
+   C: const T*              → ConstPtr<T>
+   C++: std::shared_ptr<T>  → T (reference counted)
+   Rust: *mut T             → MutPtr<T>
+   Rust: *const T           → ConstPtr<T>
 ```
 
 #### 13.2.3 FFI Bridge Generation
-For each wrapped Haskell function, the compiler generates FFI bridge code:
+For each wrapped native function, the compiler generates FFI bridge code:
 
-```haskell
--- Generated Haskell FFI bridge
-{-# LANGUAGE ForeignFunctionInterface #-}
-module First.Bindings.Data.List where
+```cpp
+// Generated C++ FFI bridge
+#include "mylib.h"
+#include "first_runtime.h"
 
-import Foreign.C.Types
-import Foreign.C.String
-import Foreign.Ptr
-
--- Bridge for Data.List.sort
-foreign export ccall "first_data_list_sort"
-  firstDataListSort :: Ptr (StablePtr [Int]) -> IO (Ptr (StablePtr [Int]))
-
-firstDataListSort listPtr = do
-  listStable <- deRefStablePtr =<< peek listPtr
-  let sorted = Data.List.sort listStable
-  newStable <- newStablePtr sorted
-  return =<< newPtr newStable
-
--- Similar bridges for other functions...
+extern "C" {
+    // Bridge for processData
+    FirstResult* first_mylib_processData(const char* input) {
+        int result;
+        int status = process_data(&result, input);
+        
+        if (status == 0) {
+            return first_result_ok(first_int_new(result));
+        } else {
+            return first_result_err(first_string_new("Processing failed"));
+        }
+    }
+    
+    // Bridge for createContext
+    void* first_mylib_createContext() {
+        return create_context();
+    }
+    
+    // Bridge for destroyContext
+    void first_mylib_destroyContext(void* ctx) {
+        destroy_context(ctx);
+    }
+}
 ```
 
 ### 13.3 Target Output
-The compiler generates Haskell code that:
+The compiler generates LLVM IR that:
 - Maintains the semantics of the First program
-- Uses appropriate Haskell types and constructs
+- Uses appropriate LLVM types and constructs
 - Handles the function/interaction distinction
-- Preserves type safety
-- Includes FFI bindings for library integration
-- Manages memory safely across FFI boundaries
+- Preserves type safety through LLVM's type system
+- Includes FFI calls to native libraries
+- Manages memory safely through reference counting
+- Optimizes code through LLVM optimization passes
 
 ### 13.4 Build System
 ```bash
 # Complete build pipeline
-first install    # Install and generate wrappers
-first build      # Compile First → Haskell → executable
+first install    # Install native dependencies and generate wrappers
+first build      # Compile First → LLVM IR → native executable
 first run        # Execute the program
 
 # Detailed build steps:
 firstc src/main.first \
-  --haskell-libs=aeson,http-conduit,text \
-  --generate-wrappers \
+  --native-libs=curl,sqlite3 \
+  --generate-bindings \
   --output=dist/
 
 # This creates:
-# dist/Main.hs              - Generated Haskell code
-# dist/First/Bindings/      - FFI bridge modules  
-# dist/First/Wrappers/      - Type-safe wrappers
-# dist/package.yaml         - Stack/Cabal configuration
+# dist/main.ll              - Generated LLVM IR
+# dist/bindings/            - Generated FFI bindings
+# dist/main.o                - Object file
+# dist/main                  - Final executable
 
-ghc dist/Main.hs -package-db dist/.packages -o dist/main
-./dist/main
+# Compilation flow:
+# First → AST → LLVM IR → Object Code → Executable
+firstc src/main.first -emit-llvm -o dist/main.ll
+llc dist/main.ll -o dist/main.s
+clang dist/main.s -o dist/main -lcurl -lsqlite3
 ```
 
-### 13.5 Integration with Haskell Ecosystem
+### 13.5 Integration with Native Ecosystems
 
-#### 13.5.1 Stack Integration
-```yaml
-# Generated stack.yaml
-resolver: lts-20.0
+#### 13.5.1 CMake Integration
+```cmake
+# Generated CMakeLists.txt for native dependencies
+cmake_minimum_required(VERSION 3.15)
+project(first-app)
 
-packages:
-- .
+find_package(PkgConfig REQUIRED)
+pkg_check_modules(CURL REQUIRED libcurl)
+pkg_check_modules(SQLITE3 REQUIRED sqlite3)
 
-extra-deps:
-- first-runtime-1.0.0
-
-ghc-options:
-  "*": -Wall -O2
-  
-allow-newer: true
+add_executable(first-app main.cpp)
+target_link_libraries(first-app ${CURL_LIBRARIES} ${SQLITE3_LIBRARIES})
+target_include_directories(first-app PRIVATE ${CURL_INCLUDE_DIRS} ${SQLITE3_INCLUDE_DIRS})
 ```
 
-#### 13.5.2 Cabal Integration  
-```cabal
--- Generated package.cabal
-name:                first-generated-app
-version:             1.0.0
-build-type:          Simple
-cabal-version:       >=1.10
+#### 13.5.2 Cargo Integration (for Rust dependencies)
+```toml
+# Generated Cargo.toml for Rust dependencies
+[package]
+name = "first-app-bindings"
+version = "0.1.0"
 
-executable main
-  main-is:             Main.hs
-  other-modules:       First.Runtime
-                     , First.Bindings.Data.List
-                     , First.Bindings.Data.Aeson
-  build-depends:       base >=4.7 && <5
-                     , first-runtime
-                     , aeson
-                     , http-conduit
-                     , text
-                     , containers
-  default-language:    Haskell2010
-  ghc-options:         -threaded -rtsopts -with-rtsopts=-N
+[dependencies]
+serde_json = "1.0"
+reqwest = { version = "0.11", features = ["json"] }
+
+[lib]
+crate-type = ["cdylib"]
 ```
 
 #### 13.5.3 Error Handling Across Language Boundaries
-```haskell
--- Generated error handling bridge
-data FirstResult a = FirstOk a | FirstErr String
+```cpp
+// Generated error handling bridge
+namespace First {
+    template<typename T>
+    struct Result {
+        bool is_ok;
+        union {
+            T ok_value;
+            const char* err_message;
+        };
+        
+        static Result<T> Ok(T value) {
+            Result<T> r;
+            r.is_ok = true;
+            r.ok_value = value;
+            return r;
+        }
+        
+        static Result<T> Err(const char* msg) {
+            Result<T> r;
+            r.is_ok = false;
+            r.err_message = msg;
+            return r;
+        }
+    };
+}
 
--- Convert Haskell Either to First Result
-toFirstResult :: Either String a -> FirstResult a
-toFirstResult (Left err) = FirstErr err
-toFirstResult (Right val) = FirstOk val
-
--- Convert Haskell Maybe to First Option
-data FirstOption a = FirstSome a | FirstNone
-
-toFirstOption :: Maybe a -> FirstOption a
-toFirstOption Nothing = FirstNone  
-toFirstOption (Just x) = FirstSome x
-
--- Exception handling bridge
-catchToResult :: IO a -> IO (FirstResult a)
-catchToResult action = do
-  result <- try action
-  case result of
-    Left (ex :: SomeException) -> return $ FirstErr (show ex)
-    Right val -> return $ FirstOk val
+// Convert C error codes to First Result
+First::Result<int> c_to_first_result(int c_status, int value) {
+    if (c_status == 0) {
+        return First::Result<int>::Ok(value);
+    } else {
+        return First::Result<int>::Err("C function returned error");
+    }
+}
 ```
 
 ## 14. Standard Library
 
 ### 14.1 Core Modules
-The First standard library provides both native implementations and wrappers around Haskell's standard library:
+The First standard library provides native implementations built on top of native libraries:
 
 #### 14.1.1 Native First Modules
 - `Prelude`: Basic functions and types native to First
 - `Array`: Array manipulation functions optimized for First
 - `String`: String processing functions with First semantics
 - `IO`: Input/output interactions with First error handling
-- `Math`: Mathematical functions and constants
+- `Math`: Mathematical functions and constants (wraps libm)
 - `Result`: Error handling utilities
-
-#### 14.1.2 Haskell Standard Library Wrappers
-- `haskell:Prelude`: Complete Haskell Prelude with type mapping
-- `haskell:Data.List`: List processing functions
-- `haskell:Data.Map`: Efficient key-value maps
-- `haskell:Data.Set`: Set operations and data structures
-- `haskell:Data.Text`: Efficient text processing
-- `haskell:Data.ByteString`: Binary data handling
-- `haskell:Control.Monad`: Additional monadic operations
-- `haskell:Data.Maybe`: Optional value utilities
-- `haskell:Data.Either`: Either type utilities
-- `haskell:System.IO`: Advanced I/O operations
-- `haskell:Network.HTTP`: HTTP client functionality
-- `haskell:Data.Aeson`: JSON parsing and generation
+- `Option`: Optional value utilities
+- `Map`: Efficient key-value maps (native implementation)
+- `Set`: Set operations and data structures (native implementation)
+- `JSON`: JSON parsing and generation (wraps native JSON libraries)
+- `HTTP`: HTTP client functionality (wraps libcurl or similar)
+- `Regex`: Regular expression matching (wraps native regex libraries)
+- `Time`: Date and time operations (wraps native time libraries)
+- `FileSystem`: File system operations (native implementation)
 
 ### 14.2 Example Standard Library Usage
 
-#### 14.2.1 Mixed Native and Haskell Usage
+#### 14.2.1 Native First Usage
 ```
 import { map, filter, reduce } from "Array";           // Native First
 import { print, readFile } from "IO";                  // Native First  
-import { sin, cos, pi } from "Math";                   // Native First
-import * as HList from "haskell:Data.List";           // Haskell wrapper
-import * as Map from "haskell:Data.Map";              // Haskell wrapper
-import { foldr } from "haskell:Prelude";              // Haskell wrapper
+import { sin, cos, pi } from "Math";                   // Native First (wraps libm)
+import * as Map from "Map";                            // Native First
+import * as JSON from "JSON";                          // Native First (wraps native JSON lib)
 
 interaction main() -> Unit {
     let numbers = [1, 2, 3, 4, 5];
@@ -1222,12 +1442,9 @@ interaction main() -> Unit {
     // Using native First functions
     let doubled = map(numbers, function(x) { return x * 2; });
     let evens = filter(doubled, function(x) { return x % 2 == 0; });
+    let sum = reduce(numbers, function(acc, x) { return acc + x; }, 0);
     
-    // Using Haskell functions
-    let sum = foldr(function(x, acc) { return x + acc; }, 0, numbers);
-    let sorted = HList.sort(numbers);
-    
-    // Using Haskell Map
+    // Using native Map
     var phoneBook = Map.empty();
     phoneBook = Map.insert("Alice", "555-1234", phoneBook);
     phoneBook = Map.insert("Bob", "555-5678", phoneBook);
@@ -1236,13 +1453,12 @@ interaction main() -> Unit {
     
     print("Even doubled numbers: " + show(evens));
     print("Sum: " + sum.toString());
-    print("Sorted: " + show(sorted));
 }
 ```
 
-#### 14.2.2 JSON Processing with Aeson
+#### 14.2.2 JSON Processing
 ```
-import * as JSON from "haskell:Data.Aeson";
+import * as JSON from "JSON";
 import { Result, Ok, Err } from "Result";
 
 type User = {
@@ -1252,18 +1468,18 @@ type User = {
     active: Bool
 };
 
-// JSON parsing using Haskell's Aeson
+// JSON parsing using native JSON library
 interaction parseUser(jsonString: String) -> Result<User, String> {
-    match JSON.decode(jsonString) {
+    match JSON.parse(jsonString) {
         Ok(value) => {
             // Pattern match on JSON structure
             match value {
-                Object(obj) => {
+                JSON.Object(obj) => {
                     do {
-                        id <- JSON.lookupInt("id", obj);
-                        name <- JSON.lookupString("name", obj);
-                        email <- JSON.lookupString("email", obj);
-                        active <- JSON.lookupBool("active", obj);
+                        id <- JSON.getInt("id", obj);
+                        name <- JSON.getString("name", obj);
+                        email <- JSON.getString("email", obj);
+                        active <- JSON.getBool("active", obj);
                         return Ok({ id, name, email, active });
                     }
                 },
@@ -1282,7 +1498,7 @@ interaction saveUserAsJSON(user: User, filename: String) -> Result<Unit, String>
             ("email", JSON.string(user.email)),
             ("active", JSON.bool(user.active))
         ]);
-        jsonString <- JSON.encode(jsonValue);
+        jsonString <- JSON.stringify(jsonValue);
         _ <- writeFile(filename, jsonString);
         return Ok(());
     }
@@ -1291,46 +1507,51 @@ interaction saveUserAsJSON(user: User, filename: String) -> Result<Unit, String>
 
 #### 14.2.3 HTTP Client Operations
 ```
-import * as HTTP from "haskell:Network.HTTP.Simple";
-import * as JSON from "haskell:Data.Aeson";
+import * as HTTP from "HTTP";
+import * as JSON from "JSON";
 
 interaction fetchUserData(userId: Int) -> Result<User, String> {
     do {
         let url = "https://api.example.com/users/" + userId.toString();
-        response <- HTTP.httpGet(url);
+        response <- HTTP.get(url);
         
-        if (HTTP.getResponseStatusCode(response) == 200) {
-            let body = HTTP.getResponseBody(response);
-            user <- parseUser(body);
-            return Ok(user);
-        } else {
-            return Err("HTTP error: " + HTTP.getResponseStatusCode(response).toString());
+        match response {
+            HTTP.Response(status, body) => {
+                if (status == 200) {
+                    user <- parseUser(body);
+                    return Ok(user);
+                } else {
+                    return Err("HTTP error: " + status.toString());
+                }
+            },
+            HTTP.Error(msg) => Err("HTTP request failed: " + msg)
         }
     }
 }
 
 interaction postUserData(user: User) -> Result<User, String> {
     do {
-        userJson <- JSON.encode(user);
-        let request = HTTP.setRequestMethod("POST") $
-                     HTTP.setRequestHeader("Content-Type", "application/json") $
-                     HTTP.setRequestBody(userJson) $
-                     HTTP.parseRequest("https://api.example.com/users");
+        userJson <- JSON.stringify(user);
+        response <- HTTP.post("https://api.example.com/users", userJson, [
+            ("Content-Type", "application/json")
+        ]);
         
-        response <- HTTP.httpRequest(request);
-        
-        if (HTTP.getResponseStatusCode(response) == 201) {
-            let responseBody = HTTP.getResponseBody(response);
-            createdUser <- parseUser(responseBody);
-            return Ok(createdUser);
-        } else {
-            return Err("Failed to create user");
+        match response {
+            HTTP.Response(status, body) => {
+                if (status == 201) {
+                    createdUser <- parseUser(body);
+                    return Ok(createdUser);
+                } else {
+                    return Err("Failed to create user");
+                }
+            },
+            HTTP.Error(msg) => Err("HTTP request failed: " + msg)
         }
     }
 }
 ```
 
-### 14.3 Package Management for Haskell Dependencies
+### 14.3 Package Management for Native Dependencies
 
 #### 14.3.1 Package Configuration
 ```json
@@ -1343,29 +1564,35 @@ interaction postUserData(user: User) -> Result<User, String> {
     "dependencies": {
         "first-stdlib": "^1.0.0"
     },
-    "haskell-dependencies": {
-        // Core libraries
-        "base": "^4.17.0",
-        "containers": "^0.6.0",
-        "text": "^2.0.0",
-        "bytestring": "^0.11.0",
-        
-        // Web and JSON
-        "aeson": "^2.1.0",
-        "http-conduit": "^2.3.0",
-        "warp": "^3.3.0",
-        
-        // Database
-        "persistent": "^2.14.0",
-        "persistent-sqlite": "^2.13.0",
-        
-        // Parsing
-        "parsec": "^3.1.0",
-        "megaparsec": "^9.2.0"
+    "native-dependencies": {
+        "c": {
+            "curl": {
+                "library": "curl",
+                "pkg-config": "libcurl"
+            },
+            "sqlite3": {
+                "library": "sqlite3",
+                "pkg-config": "sqlite3"
+            },
+            "json-c": {
+                "library": "json-c",
+                "pkg-config": "json-c"
+            }
+        },
+        "cpp": {
+            "boost": {
+                "library": "boost_system",
+                "version": "1.82.0"
+            }
+        },
+        "rust": {
+            "serde_json": "1.0",
+            "reqwest": "0.11"
+        }
     },
     "compiler": {
-        "ghc-options": ["-O2", "-Wall"],
-        "extensions": ["OverloadedStrings", "DeriveGeneric"]
+        "llvm-options": ["-O2", "-Wall"],
+        "link-flags": ["-lcurl", "-lsqlite3"]
     }
 }
 ```
@@ -1375,18 +1602,19 @@ interaction postUserData(user: User) -> Result<User, String> {
 # Install dependencies
 first install
 
-# This generates Haskell wrapper modules and installs Haskell dependencies
-# Creates: .first/haskell-wrappers/Data/List.first
-#          .first/haskell-wrappers/Data/Aeson.first
+# This generates native wrapper modules and installs native dependencies
+# Creates: .first/bindings/curl.first
+#          .first/bindings/sqlite3.first
 #          etc.
 
 # Build project
 first build
 
-# This compiles First code to Haskell, then uses GHC to compile to executable
+# This compiles First code to LLVM IR, then to native executable
 # Equivalent to:
-# firstc src/main.first -o dist/main.hs
-# ghc dist/main.hs -o dist/main
+# firstc src/main.first -emit-llvm -o dist/main.ll
+# llc dist/main.ll -o dist/main.s
+# clang dist/main.s -o dist/main -lcurl -lsqlite3
 
 # Run project
 first run

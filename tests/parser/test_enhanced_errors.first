@@ -1,0 +1,27 @@
+// Test enhanced error reporting features
+
+// Test 1: Missing semicolon with error code
+function test1() -> Int {
+    let x = 10
+    return x;
+}
+
+// Test 2: Unexpected token with helpful note
+function test2() -> Int {
+    var x = 10;  // This will trigger helpful note about 'var'
+    return x;
+}
+
+// Test 3: Missing closing parenthesis (multi-line span)
+function test3() -> Int {
+    if (x > 0 {
+        return x;
+    }
+    return 0;
+}
+
+// Test 4: Tab handling
+function test4() -> Int {
+	let y = 20;  // Tab before 'let'
+	return y;
+}

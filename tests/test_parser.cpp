@@ -105,7 +105,7 @@ TEST(parser_pattern_matching) {
     std::string source = R"(
         function matchOption(opt: Option<Int>) -> Int {
             match opt {
-                Some(value) => value,
+                Some(value) => value
                 None => 0
             }
         }
@@ -122,13 +122,13 @@ TEST(parser_interfaces) {
     std::string source = R"(
         interface Show<T> {
             show: function(T) -> String;
-        }
+        };
         
         implementation Show<Int> {
             show = function(x: Int) -> String {
                 return x.toString();
             };
-        }
+        };
     )";
     
     bool result = compiler.compileFromString(source);
@@ -140,23 +140,51 @@ TEST(parser_test_files) {
     first::Compiler compiler;
     
     // Test parsing actual test files
+    // Use paths relative to source root (works when running from build directory)
+    // Try to find source directory by looking for tests/parser directory
+    std::string basePath = "";
+    std::vector<std::string> possiblePaths = {
+        "../tests/parser/",  // From build/bin/
+        "../../tests/parser/",  // From build/
+        "tests/parser/"  // From source root
+    };
+    
+    for (const auto& path : possiblePaths) {
+        std::ifstream testFile(path + "test_simple.first");
+        if (testFile.is_open()) {
+            basePath = path;
+            testFile.close();
+            break;
+        }
+    }
+    
+    if (basePath.empty()) {
+        // Fallback: try to use absolute path based on current working directory
+        std::ifstream testFile("tests/parser/test_simple.first");
+        if (testFile.is_open()) {
+            basePath = "tests/parser/";
+            testFile.close();
+        }
+    }
+    
     std::vector<std::string> testFiles = {
-        "tests/parser/test_simple.first",
-        "tests/parser/test_variables.first",
-        "tests/parser/test_types.first",
-        "tests/parser/test_expressions.first",
-        "tests/parser/test_control_flow.first",
-        "tests/parser/test_functions.first"
+        "test_simple.first",
+        "test_variables.first",
+        "test_types.first",
+        "test_expressions.first",
+        "test_control_flow.first",
+        "test_functions.first"
     };
     
     int successCount = 0;
     for (const auto& file : testFiles) {
+        std::string fullPath = basePath + file;
         compiler.getErrorReporter().clear();
-        bool result = compiler.compile(file);
+        bool result = compiler.compile(fullPath);
         if (!compiler.getErrorReporter().hasErrors()) {
             successCount++;
         } else {
-            std::cerr << "Failed to parse: " << file << "\n";
+            std::cerr << "Failed to parse: " << fullPath << "\n";
             compiler.getErrorReporter().printErrors();
         }
     }
