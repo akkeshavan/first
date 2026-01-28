@@ -60,6 +60,7 @@ SELECT: 'select';
 FORALL: 'forall';
 KIND: 'kind';
 WHERE: 'where';
+WHEN: 'when';
 CONSTRAINT: 'Constraint';
 EXISTS: 'exists';
 SINGLETON: 'Singleton';
@@ -442,7 +443,7 @@ whileStmt: WHILE LPAREN expression RPAREN statement;
 returnStmt: RETURN expression? SEMICOLON;
 
 matchStmt: MATCH expression LBRACE matchCase* RBRACE;
-matchCase: pattern FAT_ARROW (statement | expression);
+matchCase: pattern (WHEN expression)? FAT_ARROW (statement | expression);
 
 blockStmt: LBRACE statement* RBRACE;
 
