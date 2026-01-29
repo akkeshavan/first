@@ -50,6 +50,15 @@ public:
     
     // Write IR to file
     bool writeIRToFile(const std::string& filename) const;
+
+    // Write object file from current IR module (Phase 7.1). Returns true on success.
+    bool writeObjectToFile(const std::string& filename);
+
+    // Link object file(s) with runtime to produce executable (Phase 7.2).
+    // objectPath: path to .o file; outputPath: path to executable; runtimeLibPath: optional path to lib dir.
+    bool linkToExecutable(const std::string& objectPath,
+                          const std::string& outputPath,
+                          const std::string& runtimeLibPath = "") const;
     
     // Link multiple IR modules together
     // Returns true on success, false on failure

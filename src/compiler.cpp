@@ -22,6 +22,14 @@
 #include <llvm/Analysis/LoopAnalysisManager.h>
 #include <llvm/Analysis/CGSCCPassManager.h>
 #include <llvm/IR/PassManager.h>
+#include <llvm/Support/TargetSelect.h>
+#include <llvm/Support/CodeGen.h>
+#include <llvm/TargetParser/Host.h>
+#include <llvm/TargetParser/Triple.h>
+#include <llvm/MC/TargetRegistry.h>
+#include <llvm/Target/TargetMachine.h>
+#include <llvm/Target/TargetOptions.h>
+#include <llvm/IR/LegacyPassManager.h>
 #include <system_error>
 
 // ANTLR4 includes (used only for lexing)
@@ -391,6 +399,122 @@ bool Compiler::writeIRToFile(const std::string& filename) const {
     irModule_->print(outFile, nullptr);
     outFile.close();
     
+    return true;
+}
+
+bool Compiler::writeObjectToFile(const std::string& filename) {
+    if (!irModule_) {
+        errorReporter_->error(
+            SourceLocation(1, 1, filename),
+            "No IR module available to emit object file"
+        );
+        return false;
+    }
+
+    // Initialize native target once (Phase 7.1) - host only to avoid linking all backends
+    // LLVM returns false when native target was initialized, true when none (e.g. cross-build).
+    static bool targetsInitialized = false;
+    if (!targetsInitialized) {
+        llvm::InitializeNativeTarget();
+        llvm::InitializeNativeTargetAsmPrinter();
+        llvm::InitializeNativeTargetAsmParser();
+        targetsInitialized = true;
+    }
+
+    std::string targetTripleStr = llvm::sys::getDefaultTargetTriple();
+    llvm::Triple targetTriple(targetTripleStr);
+    irModule_->setTargetTriple(targetTriple);
+
+    std::string err;
+    const llvm::Target* target = llvm::TargetRegistry::lookupTarget(targetTripleStr, err);
+    if (!target) {
+        errorReporter_->error(
+            SourceLocation(1, 1, filename),
+            "Could not find target for triple '" + targetTripleStr + "': " + err
+        );
+        return false;
+    }
+
+    std::string cpu = "generic";
+    std::string features;
+    llvm::TargetOptions opt;
+    llvm::TargetMachine* targetMachine = target->createTargetMachine(
+        targetTriple, cpu, features, opt, llvm::Reloc::PIC_
+    );
+    if (!targetMachine) {
+        errorReporter_->error(
+            SourceLocation(1, 1, filename),
+            "Could not create target machine"
+        );
+        return false;
+    }
+    irModule_->setDataLayout(targetMachine->createDataLayout());
+
+    std::error_code ec;
+    llvm::raw_fd_ostream dest(filename, ec, llvm::sys::fs::OF_None);
+    if (ec) {
+        errorReporter_->error(
+            SourceLocation(1, 1, filename),
+            "Could not open file for writing: " + ec.message()
+        );
+        delete targetMachine;
+        return false;
+    }
+
+    llvm::legacy::PassManager pass;
+    if (targetMachine->addPassesToEmitFile(
+            pass, dest, nullptr, llvm::CodeGenFileType::ObjectFile)) {
+        errorReporter_->error(
+            SourceLocation(1, 1, filename),
+            "TargetMachine cannot emit object file"
+        );
+        delete targetMachine;
+        return false;
+    }
+    pass.run(*irModule_);
+    dest.flush();
+    delete targetMachine;
+    return true;
+}
+
+bool Compiler::linkToExecutable(const std::string& objectPath,
+                                const std::string& outputPath,
+                                const std::string& runtimeLibPath) const {
+    std::string libDir = runtimeLibPath;
+    if (libDir.empty()) {
+        // Try common locations: runtime/ (cwd=build), ../runtime/ (cwd=build/bin), lib/, ../lib/
+        std::ifstream test("runtime/libfirst_runtime.a");
+        if (test.good()) libDir = "runtime";
+        else {
+            test.close();
+            test.open("../runtime/libfirst_runtime.a");
+            if (test.good()) libDir = "../runtime";
+            else {
+                test.close();
+                test.open("lib/libfirst_runtime.a");
+                if (test.good()) libDir = "lib";
+                else {
+                    test.close();
+                    test.open("../lib/libfirst_runtime.a");
+                    if (test.good()) libDir = "../lib";
+                }
+            }
+        }
+        test.close();
+    }
+    std::string libFlag = "-lfirst_runtime";
+    if (!libDir.empty()) {
+        libFlag = "-L" + libDir + " " + libFlag;
+    }
+    std::string cmd = "clang++ " + objectPath + " " + libFlag + " -o " + outputPath + " 2>&1";
+    int ret = std::system(cmd.c_str());
+    if (ret != 0) {
+        errorReporter_->error(
+            SourceLocation(1, 1, outputPath),
+            "Linking failed (exit code " + std::to_string(ret) + "). Try: clang++ " + objectPath + " -L" + libDir + " -lfirst_runtime -o " + outputPath
+        );
+        return false;
+    }
     return true;
 }
 

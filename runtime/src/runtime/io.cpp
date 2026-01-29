@@ -227,6 +227,14 @@ FileResult writeFile(const String& filename, const String& content) {
 
 } // namespace io
 
+// Standard library C linkage (First compiler calls these)
+extern "C" void print(const char* s) {
+    io::print(s);
+}
+extern "C" void println(const char* s) {
+    io::println(s);
+}
+
 extern "C" void __first_refinement_fail(const char* message) {
     std::cerr << "Refinement predicate failed: " << (message ? message : "(no message)") << std::endl;
     std::abort();

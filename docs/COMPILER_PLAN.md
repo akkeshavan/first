@@ -455,30 +455,34 @@ First Source (.first)
 
 ### Step 7.1: Native Code Generation
 **Verification**: Can generate native binaries
-- [ ] LLVM to native code compilation
-- [ ] Target platform support (x86_64, ARM64)
-- [ ] Object file generation
-- [ ] Executable linking
+- [x] LLVM to native code compilation (writeObjectToFile via TargetMachine + LegacyPassManager)
+- [x] Target platform support (x86_64, ARM64 via native target; X86/AArch64 components linked)
+- [x] Object file generation
+- [x] Executable linking (linkToExecutable invokes clang++ to link .o + libfirst_runtime)
 
 **Deliverable**: Native code generator
 
 ### Step 7.2: Runtime Library Integration
 **Verification**: Runtime libraries link correctly
-- [ ] Compile runtime libraries to object files
-- [ ] Link runtime with generated code
-- [ ] Test complete program execution
+- [x] Compile runtime libraries to object files (first_runtime built as static lib)
+- [x] Link runtime with generated code (-L runtime/ or -L ../runtime, -lfirst_runtime)
+- [x] Test complete program execution (firstc -o exe file.first produces runnable exe)
 
 **Deliverable**: Integrated runtime system
 
 ### Step 7.3: Standard Library
+Standard libraries required for linux and MACOS (apple silicon) distribution.
 **Verification**: Standard library functions work
-- [ ] Implement core standard library functions
-- [ ] Array operations (map, filter, reduce, etc.)
-- [ ] String operations
-- [ ] Math functions
-- [ ] I/O operations
+- [x] Core I/O: `print(s)`, `println(s)`, `readLine()`, `readFile(path)`, `writeFile(path, content)` — C linkage in runtime (io.cpp + stdlib.cpp), type checker + IR built-ins
+- [x] Array operations: `arrayLength(arr)` — compiler intrinsic (metadata) or `first_array_length`; map/filter/reduce require closure ABI (runtime C++ has FirstArray::map/filter/reduce)
+- [x] String operations: `stringLength`, `stringConcat`, `stringSlice`, `stringToInt`, `stringToFloat`, `intToString`, `floatToString` — C linkage in stdlib.cpp
+- [x] Math functions: `sin`, `cos`, `sqrt`, `abs`, `floor`, `ceil`, `min`, `max`, `minInt`, `maxInt` — C linkage (first_*), libm
+- [x] I/O operations: print, println, readLine, readFile, writeFile
+- [x] Socket library: `socketConnect(host, port)`, `socketSend(fd, str)`, `socketRecv(fd)`, `socketClose(fd)` — C linkage (POSIX)
+- [x] HTTP lib: `httpGet(url)`, `httpPost(url, body)` — C linkage (stub; full impl via socket)
+- [x] JSON: `jsonPrettify(str)`, `jsonStringifyInt`, `jsonStringifyFloat`, `jsonStringifyString` — C linkage (prettify + stringify)
 
-**Deliverable**: Standard library implementation
+**Deliverable**: Standard library implementation (runtime stdlib.h/stdlib.cpp; type checker inferStdlibCall; IR getStdlibSig + arrayLength intrinsic)
 
 ---
 

@@ -66,6 +66,7 @@ private:
     ast::Type* inferUnary(ast::UnaryExpr* expr);
     ast::Type* inferVariable(ast::VariableExpr* expr);
     ast::Type* inferFunctionCall(ast::FunctionCallExpr* expr);
+    ast::Type* inferStdlibCall(ast::FunctionCallExpr* expr);  // Phase 7.3: built-in stdlib
     ast::Type* inferConstructor(ast::ConstructorExpr* expr);
     ast::Type* inferMatch(ast::MatchExpr* expr);
     

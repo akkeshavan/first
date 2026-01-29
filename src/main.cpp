@@ -7,6 +7,7 @@ void printUsage(const char* programName) {
     std::cout << "First Programming Language Compiler\n";
     std::cout << "Usage: " << programName << " [options] <source_file>\n";
     std::cout << "\nOptions:\n";
+    std::cout << "  -o <file>        Output file: .o = object only; else executable (object + link)\n";
     std::cout << "  --version, -v    Print version information\n";
     std::cout << "  --help, -h       Print this help message\n";
     std::cout << "  --verbose        Enable verbose output\n";
@@ -25,6 +26,7 @@ int main(int argc, char* argv[]) {
     }
 
     std::string sourceFile;
+    std::string outputFile;
     bool verbose = false;
 
     // Parse command line arguments
@@ -39,6 +41,10 @@ int main(int argc, char* argv[]) {
             return 0;
         } else if (arg == "--verbose") {
             verbose = true;
+        } else if (arg == "-o" && i + 1 < argc) {
+            outputFile = argv[++i];
+        } else if (arg.size() > 2 && arg.compare(0, 2, "-o") == 0) {
+            outputFile = arg.substr(2);
         } else if (arg[0] != '-') {
             sourceFile = arg;
         } else {
@@ -61,9 +67,32 @@ int main(int argc, char* argv[]) {
         std::cout << "Compiling: " << sourceFile << "\n";
     }
 
-    bool success = compiler.compile(sourceFile);
+    bool success;
+    if (!outputFile.empty()) {
+        // Phase 7: generate IR, then object (and optionally link to executable)
+        success = compiler.compileToIR(sourceFile);
+        if (success && !compiler.getErrorReporter().hasErrors()) {
+            bool isObjectOnly = (outputFile.size() >= 2 &&
+                outputFile.compare(outputFile.size() - 2, 2, ".o") == 0);
+            std::string objectPath;
+            if (isObjectOnly) {
+                objectPath = outputFile;
+            } else {
+                objectPath = outputFile + ".o";
+            }
+            success = compiler.writeObjectToFile(objectPath);
+            if (success && !isObjectOnly) {
+                success = compiler.linkToExecutable(objectPath, outputFile);
+                if (success && verbose) {
+                    std::cout << "Linked: " << outputFile << "\n";
+                }
+            }
+        }
+    } else {
+        success = compiler.compile(sourceFile);
+    }
 
-    if (success) {
+    if (success && !compiler.getErrorReporter().hasErrors()) {
         if (verbose) {
             std::cout << "Compilation successful!\n";
         }

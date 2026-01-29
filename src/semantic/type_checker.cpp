@@ -441,6 +441,129 @@ ast::Type* TypeChecker::inferVariable(ast::VariableExpr* expr) {
     return nullptr;
 }
 
+ast::Type* TypeChecker::inferStdlibCall(ast::FunctionCallExpr* expr) {
+    const std::string& name = expr->getName();
+    const size_t n = expr->getArgs().size();
+    auto arg = [this, expr](size_t i) { return inferType(expr->getArgs()[i].get()); };
+    auto err = [this, expr](const std::string& msg) {
+        errorReporter_.error(expr->getLocation(), msg);
+        return nullptr;
+    };
+
+    // I/O
+    if (name == "print" || name == "println") {
+        if (n != 1) return err("print/println expect 1 argument (String)");
+        if (!arg(0)) return nullptr;
+        return createUnitType().release();
+    }
+    if (name == "readLine") {
+        if (n != 0) return err("readLine() takes no arguments");
+        return createStringType().release();
+    }
+    if (name == "readFile") {
+        if (n != 1) return err("readFile(filename) expects 1 argument");
+        if (!arg(0)) return nullptr;
+        return createStringType().release();
+    }
+    if (name == "writeFile") {
+        if (n != 2) return err("writeFile(filename, content) expects 2 arguments");
+        if (!arg(0) || !arg(1)) return nullptr;
+        return createUnitType().release();
+    }
+    // Math (Float -> Float or (Float,Float) -> Float)
+    if (name == "sin" || name == "cos" || name == "sqrt" || name == "abs" || name == "floor" || name == "ceil") {
+        if (n != 1) return err(name + " expects 1 argument (Float)");
+        if (!arg(0)) return nullptr;
+        return createFloatType().release();
+    }
+    if (name == "min" || name == "max") {
+        if (n != 2) return err(name + " expects 2 arguments (Float, Float)");
+        if (!arg(0) || !arg(1)) return nullptr;
+        return createFloatType().release();
+    }
+    if (name == "minInt" || name == "maxInt") {
+        if (n != 2) return err(name + " expects 2 arguments (Int, Int)");
+        if (!arg(0) || !arg(1)) return nullptr;
+        return createIntType().release();
+    }
+    // String
+    if (name == "stringLength") {
+        if (n != 1) return err("stringLength(s) expects 1 argument");
+        if (!arg(0)) return nullptr;
+        return createIntType().release();
+    }
+    if (name == "stringConcat") {
+        if (n != 2) return err("stringConcat(s1, s2) expects 2 arguments");
+        if (!arg(0) || !arg(1)) return nullptr;
+        return createStringType().release();
+    }
+    if (name == "stringSlice") {
+        if (n != 3) return err("stringSlice(s, start, end) expects 3 arguments");
+        if (!arg(0) || !arg(1) || !arg(2)) return nullptr;
+        return createStringType().release();
+    }
+    if (name == "stringToInt" || name == "stringToFloat") {
+        if (n != 1) return err(name + "(s) expects 1 argument");
+        if (!arg(0)) return nullptr;
+        return (name == "stringToInt") ? createIntType().release() : createFloatType().release();
+    }
+    if (name == "intToString" || name == "floatToString") {
+        if (n != 1) return err(name + " expects 1 argument");
+        if (!arg(0)) return nullptr;
+        return createStringType().release();
+    }
+    // Array
+    if (name == "arrayLength") {
+        if (n != 1) return err("arrayLength(arr) expects 1 argument");
+        if (!arg(0)) return nullptr;
+        return createIntType().release();
+    }
+    // Socket
+    if (name == "socketConnect") {
+        if (n != 2) return err("socketConnect(host, port) expects 2 arguments");
+        if (!arg(0) || !arg(1)) return nullptr;
+        return createIntType().release();
+    }
+    if (name == "socketSend") {
+        if (n != 2) return err("socketSend(fd, str) expects 2 arguments");
+        if (!arg(0) || !arg(1)) return nullptr;
+        return createIntType().release();
+    }
+    if (name == "socketRecv") {
+        if (n != 1) return err("socketRecv(fd) expects 1 argument");
+        if (!arg(0)) return nullptr;
+        return createStringType().release();
+    }
+    if (name == "socketClose") {
+        if (n != 1) return err("socketClose(fd) expects 1 argument");
+        if (!arg(0)) return nullptr;
+        return createUnitType().release();
+    }
+    // HTTP
+    if (name == "httpGet") {
+        if (n != 1) return err("httpGet(url) expects 1 argument");
+        if (!arg(0)) return nullptr;
+        return createStringType().release();
+    }
+    if (name == "httpPost") {
+        if (n != 2) return err("httpPost(url, body) expects 2 arguments");
+        if (!arg(0) || !arg(1)) return nullptr;
+        return createStringType().release();
+    }
+    // JSON
+    if (name == "jsonPrettify" || name == "jsonStringifyString") {
+        if (n != 1) return err(name + " expects 1 argument (String)");
+        if (!arg(0)) return nullptr;
+        return createStringType().release();
+    }
+    if (name == "jsonStringifyInt" || name == "jsonStringifyFloat") {
+        if (n != 1) return err(name + " expects 1 argument");
+        if (!arg(0)) return nullptr;
+        return createStringType().release();
+    }
+    return nullptr;  // not a stdlib function
+}
+
 ast::Type* TypeChecker::inferFunctionCall(ast::FunctionCallExpr* expr) {
     // Look up function
     std::vector<Symbol*> functions = symbolTable_.lookupAll(expr->getName());
@@ -502,6 +625,9 @@ ast::Type* TypeChecker::inferFunctionCall(ast::FunctionCallExpr* expr) {
                 }
             }
         }
+
+        // Phase 7.3: Standard library built-ins (I/O, Math, String, Array, Socket, HTTP, JSON)
+        if (ast::Type* t = inferStdlibCall(expr)) return t;
 
         errorReporter_.error(
             expr->getLocation(),

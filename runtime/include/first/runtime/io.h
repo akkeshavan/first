@@ -49,6 +49,10 @@ FileResult writeFile(const String& filename, const String& content);
 
 } // namespace io
 
+// Standard library C linkage exports (for First compiler-generated calls)
+extern "C" void print(const char* s);
+extern "C" void println(const char* s);
+
 // Refinement failure: report message to stderr and abort (C linkage for compiler-generated calls)
 extern "C" void __first_refinement_fail(const char* message);
 

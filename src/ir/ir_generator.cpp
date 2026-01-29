@@ -1174,20 +1174,79 @@ llvm::Value* IRGenerator::evaluateFunctionCall(ast::FunctionCallExpr* expr, bool
         args.push_back(argValue);
     }
 
+    // Phase 7.3: arrayLength is compiler intrinsic (metadata lookup)
+    llvm::Type* i8ptr = llvm::PointerType::get(context_, 0);
+    llvm::Type* i64 = llvm::Type::getInt64Ty(context_);
+    llvm::Type* f64 = llvm::Type::getDoubleTy(context_);
+    llvm::Type* voidTy = llvm::Type::getVoidTy(context_);
+    if (funcName == "arrayLength" && args.size() == 1) {
+        auto it = arrayMetadata_.find(args[0]);
+        if (it != arrayMetadata_.end()) {
+            return builder_->getInt64(static_cast<int64_t>(it->second.size));
+        }
+        // No metadata: call runtime first_array_length(ptr, 0)
+        llvm::Function* flen = module_->getFunction("first_array_length");
+        if (!flen) {
+            flen = llvm::Function::Create(
+                llvm::FunctionType::get(i64, {i8ptr, i64}, false),
+                llvm::Function::ExternalLinkage, "first_array_length", module_.get());
+        }
+        llvm::Value* zero = builder_->getInt64(0);
+        return builder_->CreateCall(flen, {args[0], zero}, "arraylen");
+    }
+
     // Look up function in module
     llvm::Function* func = module_->getFunction(funcName);
 
-    // Allow implicit external declarations when a function isn't found.
-    // This supports imported symbols (multi-module linking) and forward references.
+    // Stdlib (Phase 7.3): map First name -> C symbol and signature when not in module
+    auto getStdlibSig = [&](const std::string& name) -> std::pair<std::string, llvm::FunctionType*> {
+        if (name == "print" || name == "println")
+            return {name, llvm::FunctionType::get(voidTy, {i8ptr}, false)};
+        if (name == "readLine")
+            return {"readLine", llvm::FunctionType::get(i8ptr, false)};
+        if (name == "readFile")
+            return {"readFile", llvm::FunctionType::get(i8ptr, {i8ptr}, false)};
+        if (name == "writeFile")
+            return {"writeFile", llvm::FunctionType::get(voidTy, {i8ptr, i8ptr}, false)};
+        if (name == "sin" || name == "cos" || name == "sqrt" || name == "abs" || name == "floor" || name == "ceil")
+            return {"first_" + name, llvm::FunctionType::get(f64, {f64}, false)};
+        if (name == "min" || name == "max")
+            return {"first_" + name, llvm::FunctionType::get(f64, {f64, f64}, false)};
+        if (name == "minInt" || name == "maxInt")
+            return {"first_" + name, llvm::FunctionType::get(i64, {i64, i64}, false)};
+        if (name == "stringLength") return {"first_string_length", llvm::FunctionType::get(i64, {i8ptr}, false)};
+        if (name == "stringConcat") return {"first_string_concat", llvm::FunctionType::get(i8ptr, {i8ptr, i8ptr}, false)};
+        if (name == "stringSlice") return {"first_string_slice", llvm::FunctionType::get(i8ptr, {i8ptr, i64, i64}, false)};
+        if (name == "stringToInt") return {"first_string_to_int", llvm::FunctionType::get(i64, {i8ptr}, false)};
+        if (name == "stringToFloat") return {"first_string_to_float", llvm::FunctionType::get(f64, {i8ptr}, false)};
+        if (name == "intToString") return {"first_int_to_string", llvm::FunctionType::get(i8ptr, {i64}, false)};
+        if (name == "floatToString") return {"first_float_to_string", llvm::FunctionType::get(i8ptr, {f64}, false)};
+        if (name == "socketConnect") return {"first_socket_connect", llvm::FunctionType::get(i64, {i8ptr, i64}, false)};
+        if (name == "socketSend") return {"first_socket_send", llvm::FunctionType::get(i64, {i64, i8ptr}, false)};
+        if (name == "socketRecv") return {"first_socket_recv_str", llvm::FunctionType::get(i8ptr, {i64}, false)};
+        if (name == "socketClose") return {"first_socket_close", llvm::FunctionType::get(voidTy, {i64}, false)};
+        if (name == "httpGet") return {"first_http_get", llvm::FunctionType::get(i8ptr, {i8ptr}, false)};
+        if (name == "httpPost") return {"first_http_post", llvm::FunctionType::get(i8ptr, {i8ptr, i8ptr}, false)};
+        if (name == "jsonPrettify") return {"first_json_prettify", llvm::FunctionType::get(i8ptr, {i8ptr}, false)};
+        if (name == "jsonStringifyString") return {"first_json_stringify_string", llvm::FunctionType::get(i8ptr, {i8ptr}, false)};
+        if (name == "jsonStringifyInt") return {"first_json_stringify_int", llvm::FunctionType::get(i8ptr, {i64}, false)};
+        if (name == "jsonStringifyFloat") return {"first_json_stringify_float", llvm::FunctionType::get(i8ptr, {f64}, false)};
+        return {"", nullptr};
+    };
+
     if (!func) {
-        std::vector<llvm::Type*> paramTypes;
-        paramTypes.reserve(args.size());
-        for (auto* v : args) {
-            paramTypes.push_back(v ? v->getType() : llvm::Type::getInt64Ty(context_));
+        auto [cSymbol, funcType] = getStdlibSig(funcName);
+        if (funcType) {
+            func = module_->getFunction(cSymbol);
+            if (!func)
+                func = llvm::Function::Create(funcType, llvm::Function::ExternalLinkage, cSymbol, module_.get());
+        } else {
+            // Unknown: default external declaration from args
+            std::vector<llvm::Type*> paramTypes;
+            for (auto* v : args) paramTypes.push_back(v ? v->getType() : i64);
+            llvm::FunctionType* defaultType = llvm::FunctionType::get(i64, paramTypes, false);
+            func = llvm::Function::Create(defaultType, llvm::Function::ExternalLinkage, funcName, module_.get());
         }
-        llvm::Type* returnType = llvm::Type::getInt64Ty(context_);
-        llvm::FunctionType* funcType = llvm::FunctionType::get(returnType, paramTypes, false);
-        func = llvm::Function::Create(funcType, llvm::Function::ExternalLinkage, funcName, module_.get());
     }
 
     if (!func) {

@@ -13,10 +13,14 @@ set(RUNTIME_SOURCES
     src/runtime/refcount.cpp
     src/runtime/string.cpp
     src/runtime/io.cpp
+    src/runtime/stdlib.cpp
 )
 
 # Create runtime library
 add_library(first_runtime STATIC ${RUNTIME_SOURCES})
+if(UNIX)
+    target_link_libraries(first_runtime PUBLIC m)  # libm for math
+endif()
 
 target_include_directories(first_runtime PUBLIC
     ${CMAKE_SOURCE_DIR}/runtime/include

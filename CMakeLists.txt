@@ -39,6 +39,8 @@ llvm_map_components_to_libnames(llvm_libs
     target
     Passes
     ipo
+    X86
+    AArch64
 )
 
 # ANTLR4 grammar generation
