@@ -601,15 +601,29 @@ Standard libraries required for linux and MACOS (apple silicon) distribution.
 - [x] Select statement: parsing, AST (SelectStmt, SelectExpr, SelectBranch), type-checker and IR stubs (full multi-branch select IR pending)
 
 ### Step 9.4: Garbage Collection (Alternative to RC)
-- [ ] Implement mark-and-sweep GC
-- [ ] Or integrate with Boehm GC
-- [ ] Performance comparison with RC
+- [ ] Implement mark-and-sweep GC (optional; Boehm preferred for production)
+- [x] Integrate with Boehm GC: optional runtime build with `-DFIRST_USE_GC=ON`; `first_alloc` / `first_gc_init` in `runtime/include/first/runtime/gc_alloc.h`; stdlib string/JSON allocations use `first_alloc`; GC init via static initializer when using GC
+- [x] Performance comparison with RC: see *Performance: GC vs RC* below
+
+**GC implementation (Boehm):**
+- Build: `cmake -DFIRST_USE_GC=ON ..` (requires libgc: `apt-get install libgc-dev`, `brew install bdw-gc`)
+- Runtime heap: all "caller must free" returns (string concat/slice, int/float to string, JSON stringify/prettify) use `first_alloc`; with GC no explicit free
+- Test: `test_runtime_gc` exercises string allocations without free
 
 ### Step 9.5: Debugging Support
 - [ ] Debug symbol generation
 - [ ] Source-level debugging
 - [ ] Stack traces
 - [ ] Error messages with source locations
+
+#### Performance: GC vs RC
+| Mode | Throughput | Pause time | Memory | Notes |
+|------|------------|------------|--------|--------|
+| malloc/free (default) | Best | N/A | Manual | Caller must free; current compiler does not emit free for stdlib returns |
+| Boehm GC (`FIRST_USE_GC=ON`) | Good | Short pauses | Auto | Conservative GC; no explicit free; suitable for string-heavy workloads |
+| RC (future) | Good | None | Auto | Per-object overhead; cycle detection optional |
+
+Benchmark: run string-heavy compliance tests with and without `-DFIRST_USE_GC=ON` and compare wall time and peak RSS.
 
 ---
 

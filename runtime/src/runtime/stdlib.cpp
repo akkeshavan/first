@@ -1,6 +1,7 @@
 #include "first/runtime/stdlib.h"
 #include "first/runtime/io.h"
 #include "first/runtime/string.h"
+#include "first/runtime/gc_alloc.h"
 #include <cmath>
 #include <cstring>
 #include <iostream>
@@ -38,7 +39,7 @@ void copy_to_cstr(const std::string& s, char* buf, size_t cap) {
 char* strdup_heap(const char* s) {
     if (!s) return nullptr;
     size_t n = std::strlen(s) + 1;
-    char* p = static_cast<char*>(std::malloc(n));
+    char* p = static_cast<char*>(first_alloc(n));
     if (p) std::memcpy(p, s, n);
     return p;
 }
@@ -98,7 +99,7 @@ char* first_string_concat(const char* s1, const char* s2) {
     if (!s1) s1 = "";
     if (!s2) s2 = "";
     size_t n1 = std::strlen(s1), n2 = std::strlen(s2);
-    char* p = static_cast<char*>(std::malloc(n1 + n2 + 1));
+    char* p = static_cast<char*>(first_alloc(n1 + n2 + 1));
     if (!p) return nullptr;
     std::memcpy(p, s1, n1);
     std::memcpy(p + n1, s2, n2 + 1);
@@ -112,7 +113,7 @@ char* first_string_slice(const char* s, int64_t start, int64_t end) {
     if (end > len) end = len;
     if (start >= end) return strdup_heap("");
     size_t n = static_cast<size_t>(end - start);
-    char* p = static_cast<char*>(std::malloc(n + 1));
+    char* p = static_cast<char*>(first_alloc(n + 1));
     if (!p) return nullptr;
     std::memcpy(p, s + start, n);
     p[n] = '\0';

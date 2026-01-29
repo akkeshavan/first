@@ -11,8 +11,8 @@ void test_basic_print() {
     print(makeString("Hello"));
     println(makeString(" World"));
     
-    print("Test");
-    println(" output");
+    first::runtime::io::print("Test");
+    first::runtime::io::println(" output");
     
     std::cout << "✓ Basic print functions work\n";
 }
@@ -39,8 +39,8 @@ void test_error_printing() {
     printErr(makeString("Error: "));
     printlnErr(makeString("Something went wrong"));
     
-    printErr("Warning: ");
-    printlnErr("This is a warning");
+    first::runtime::io::printErr("Warning: ");
+    first::runtime::io::printlnErr("This is a warning");
     
     std::cout << "✓ Error printing functions work\n";
 }

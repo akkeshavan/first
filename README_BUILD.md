@@ -42,6 +42,16 @@
 - **Catch2** or **Google Test** (for testing framework)
 - **Doxygen** (for documentation)
 
+- **Boehm GC** (for optional garbage-collected runtime; recommended on Apple Silicon so the runtime uses the correct libgc)
+   ```bash
+   # macOS (required for GC build on Apple Silicon; use Homebrew to get arm64 lib)
+   brew install bdw-gc
+   
+   # Ubuntu/Debian
+   sudo apt-get install libgc-dev
+   ```
+   Then build with `-DFIRST_USE_GC=ON` so stdlib string/JSON allocations are GC-managed (no explicit free).
+
 ## Building
 
 ### Standard Build
