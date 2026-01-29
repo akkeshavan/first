@@ -24,6 +24,9 @@ public:
     ModuleResolver(ErrorReporter& errorReporter);
     ~ModuleResolver();
     
+    // Clear the import stack (call once before resolveImports for a fresh pass)
+    void clearImportStack() { importStack_.clear(); }
+    
     // Resolve imports in a program
     bool resolveImports(ast::Program* program);
     

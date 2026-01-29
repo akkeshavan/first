@@ -26,8 +26,10 @@ bool ModuleResolver::resolveImports(ast::Program* program) {
         return false;
     }
     
-    // Clear import stack for this resolution pass
-    importStack_.clear();
+    // Do not clear importStack_ here: we may have been called recursively from
+    // resolveImport (when resolving a loaded module's imports). Clearing would
+    // break the caller's pop_back(). The top-level caller (Compiler) must call
+    // clearImportStack() once before resolveImports if a fresh stack is needed.
     
     // Resolve all imports
     bool allResolved = true;

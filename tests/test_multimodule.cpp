@@ -1,16 +1,10 @@
 #include "first/compiler.h"
 #include "first/error_reporter.h"
-#include "first/ast/program.h"
-#include "first/ast/builder.h"
 #include "test_framework.h"
 
 #include <filesystem>
 #include <fstream>
 #include <sstream>
-
-#include <antlr4-runtime.h>
-#include "FirstLexer.h"
-#include "FirstParser.h"
 
 #include <llvm/IR/Function.h>
 #include <llvm/IR/Module.h>
@@ -52,29 +46,6 @@ TEST(multimodule_end_to_end_linking) {
     std::filesystem::path oldCwd = std::filesystem::current_path();
     std::filesystem::current_path(modulesDir);
 
-    // Sanity: parse + build AST directly (isolates compiler pipeline issues)
-    {
-        std::ifstream in("Main.first");
-        std::stringstream buf;
-        buf << in.rdbuf();
-        std::string src = buf.str();
-
-        antlr4::ANTLRInputStream input(src);
-        first::FirstLexer lexer(&input);
-        antlr4::CommonTokenStream tokens(&lexer);
-        tokens.fill();
-        first::FirstParser parser(&tokens);
-        auto* programCtx = parser.program();
-
-        first::ErrorReporter er;
-        first::ast::ASTBuilder builder(er, "Main.first");
-        std::unique_ptr<first::ast::Program> prog = builder.buildProgram(programCtx);
-        ASSERT(prog != nullptr, "Direct ASTBuilder should build a program");
-        if (prog) {
-            ASSERT(!prog->getFunctions().empty(), "Direct ASTBuilder should see compute()");
-        }
-    }
-
     first::Compiler compiler;
     bool ok = compiler.compileToIR("Main.first");
     if (!ok || compiler.getErrorReporter().hasErrors()) {
@@ -82,13 +53,6 @@ TEST(multimodule_end_to_end_linking) {
     }
     ASSERT(ok, "Compiler should compile Main.first successfully");
     ASSERT(!compiler.getErrorReporter().hasErrors(), "No errors expected compiling Main.first");
-
-    first::ast::Program* ast = compiler.getAST();
-    ASSERT(ast != nullptr, "AST should be produced");
-    if (ast) {
-        ASSERT(!ast->getFunctions().empty(), "AST should contain at least one function (compute)");
-        std::cerr << "[multimodule] import count: " << ast->getImports().size() << "\n";
-    }
 
     llvm::Module* m = compiler.getIRModule();
     ASSERT(m != nullptr, "IR module should be produced");

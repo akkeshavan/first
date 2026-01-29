@@ -205,7 +205,6 @@ bool Compiler::compileFromStringNoModules(const std::string& source, const std::
     semantic::ModuleResolver* moduleResolverPtr = nullptr;
     std::unique_ptr<semantic::ModuleResolver> moduleResolver;
     if (generateIR_) {
-        const bool hasImports = !ast_->getImports().empty();
         // 3.3: Module system (import resolution) — do this BEFORE type checking
         // so imported symbols are available to the type checker.
         // Skip module resolution if this is a module being loaded (to avoid recursion)
@@ -214,7 +213,7 @@ bool Compiler::compileFromStringNoModules(const std::string& source, const std::
             moduleResolverPtr = moduleResolver.get();
             // Register current module first
             moduleResolver->registerModule(ast_->getModuleName().empty() ? "main" : ast_->getModuleName(), ast_.get());
-            
+            moduleResolver->clearImportStack();
             if (!moduleResolver->resolveImports(ast_.get())) {
                 // Import errors already reported
                 return false;
@@ -225,33 +224,28 @@ bool Compiler::compileFromStringNoModules(const std::string& source, const std::
             }
         }
 
-        // 3.1/3.2: Type checking and semantic restrictions.
-        // For now, skip these passes for programs that use imports, so that
-        // multi-module resolution is handled primarily by ModuleResolver and
-        // IR generation. Single-module programs still get full semantic
-        // checking.
-        if (!hasImports) {
-            semantic::TypeChecker typeChecker(*errorReporter_);
-            if (moduleResolverPtr) {
-                typeChecker.setModuleResolver(moduleResolverPtr);
-            }
-            typeChecker.check(ast_.get());
-            
-            if (errorReporter_->hasErrors()) {
-                return false;
-            }
-            
-            semantic::SemanticChecker semanticChecker(*errorReporter_);
-            for (const auto& func : ast_->getFunctions()) {
-                semanticChecker.checkFunction(func.get());
-            }
-            for (const auto& interaction : ast_->getInteractions()) {
-                semanticChecker.checkInteraction(interaction.get());
-            }
-            
-            if (errorReporter_->hasErrors()) {
-                return false;
-            }
+        // 3.1/3.2: Type checking and semantic restrictions (including multi-module:
+        // TypeChecker resolves imported symbols via moduleResolver when set).
+        semantic::TypeChecker typeChecker(*errorReporter_);
+        if (moduleResolverPtr) {
+            typeChecker.setModuleResolver(moduleResolverPtr);
+        }
+        typeChecker.check(ast_.get());
+        
+        if (errorReporter_->hasErrors()) {
+            return false;
+        }
+        
+        semantic::SemanticChecker semanticChecker(*errorReporter_);
+        for (const auto& func : ast_->getFunctions()) {
+            semanticChecker.checkFunction(func.get());
+        }
+        for (const auto& interaction : ast_->getInteractions()) {
+            semanticChecker.checkInteraction(interaction.get());
+        }
+        
+        if (errorReporter_->hasErrors()) {
+            return false;
         }
     }
     

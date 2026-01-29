@@ -404,9 +404,7 @@ First Source (.first)
 
 **Deliverable**: Module linker
 
-**Known Issues**:
-- Segmentation fault during test execution (needs debugging)
-- Full module IR generation and linking deferred to avoid recursion during compilation
+**Status**: Complete. Multi-module compile path works: main module and imported modules are type-checked, IR is generated for each, and LLVM linker merges them. `test_multimodule_end_to_end_linking` passes (Main.first imports Math.first, `square` is linked as a definition). Previously: segfault from `ModuleResolver::resolveImports()` clearing `importStack_` during recursive resolution—fixed by clearing the stack only at top-level (`clearImportStack()` before `resolveImports()`).
 
 ### Step 5.14: Monadic Operators (Simplified)
 **Verification**: Monadic operators compile (desugared)

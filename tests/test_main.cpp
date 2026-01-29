@@ -1,4 +1,5 @@
 #include "test_framework.h"
+#include <cstring>
 
 // Test framework variables
 int tests_run = 0;
@@ -6,9 +7,22 @@ int tests_passed = 0;
 int tests_failed = 0;
 
 void run_all_tests();
+static bool run_single_test(const char* name);
 
-int main() {
+int main(int argc, char** argv) {
     std::cout << "Running First Compiler Tests...\n\n";
+    
+    if (argc >= 2 && argv[1] && std::strlen(argv[1]) > 0) {
+        if (run_single_test(argv[1])) {
+            std::cout << "\n";
+            std::cout << "Tests run: " << tests_run << "\n";
+            std::cout << "Tests passed: " << tests_passed << "\n";
+            std::cout << "Tests failed: " << tests_failed << "\n";
+            return tests_failed == 0 ? 0 : 1;
+        }
+        std::cerr << "Unknown test: " << argv[1] << "\n";
+        return 2;
+    }
     
     run_all_tests();
     
@@ -169,6 +183,18 @@ extern void test_type_substitution_parameterized();
 extern void test_type_substitution_array();
 extern void test_monomorphize_function_name();
 extern void test_multimodule_end_to_end_linking();
+
+// Run a single test by name (e.g. "multimodule_end_to_end_linking").
+// Returns true if the test was found and run, false if unknown name.
+static bool run_single_test(const char* name) {
+    if (!name || !*name) return false;
+    if (std::strcmp(name, "multimodule_end_to_end_linking") == 0) {
+        std::cout << "Running single test: multimodule_end_to_end_linking\n";
+        test_multimodule_end_to_end_linking();
+        return true;
+    }
+    return false;
+}
 
 void run_all_tests() {
     std::cout << "Testing ErrorReporter...\n";
