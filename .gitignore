@@ -1,5 +1,12 @@
 # Build directories
 build/
+build-asan/
+build-gc/
+dist/
+build-package/
+build-arm64/
+build-x86_64/
+build-aarch64/
 cmake-build-*/
 bin/
 lib/
