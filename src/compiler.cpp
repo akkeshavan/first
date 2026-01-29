@@ -18,8 +18,11 @@
 #include <llvm/Support/SourceMgr.h>
 #include <llvm/Support/FileSystem.h>
 #include <llvm/Support/Path.h>
+#include <llvm/Passes/PassBuilder.h>
+#include <llvm/Analysis/LoopAnalysisManager.h>
+#include <llvm/Analysis/CGSCCPassManager.h>
+#include <llvm/IR/PassManager.h>
 #include <system_error>
-#include <llvm/IR/Module.h>
 
 // ANTLR4 includes (used only for lexing)
 #include "FirstLexer.h"
@@ -27,6 +30,28 @@
 
 // Custom parser
 #include "first/parser/parser.h"
+
+namespace {
+
+void runOptimizationPasses(llvm::Module& module) {
+    llvm::LoopAnalysisManager LAM;
+    llvm::FunctionAnalysisManager FAM;
+    llvm::CGSCCAnalysisManager CGAM;
+    llvm::ModuleAnalysisManager MAM;
+
+    llvm::PassBuilder PB;
+    PB.registerModuleAnalyses(MAM);
+    PB.registerCGSCCAnalyses(CGAM);
+    PB.registerFunctionAnalyses(FAM);
+    PB.registerLoopAnalyses(LAM);
+    PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
+
+    llvm::ModulePassManager MPM =
+        PB.buildPerModuleDefaultPipeline(llvm::OptimizationLevel::O2);
+    MPM.run(module, MAM);
+}
+
+}  // namespace
 
 namespace first {
 
@@ -335,9 +360,11 @@ bool Compiler::compileFromStringNoModules(const std::string& source, const std::
         // This is optional - runtime can also be linked separately
         linkRuntimeLibrary();
     }
-    
-    // Print IR for debugging (can be removed later or made optional)
-    // irGenerator.printIR();
+
+    // Run LLVM optimization passes on the module (Phase 6.1)
+    if (irModule_) {
+        runOptimizationPasses(*irModule_);
+    }
     
     return true;
 }

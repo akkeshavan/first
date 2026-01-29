@@ -33,9 +33,18 @@
      KwImport,
      KwExport,
      KwExtends,
-     KwModule,
+    KwModule,
+    KwDo,
+    KwWhere,
+    KwForall,
+    KwExists,
+    KwAsync,
+    KwAwait,
+    KwSpawn,
+    KwJoin,
+    KwSelect,
 
-     // Primitive types / builtins
+    // Primitive types / builtins
      KwInt,
      KwFloat,
      KwBool,
@@ -45,7 +54,7 @@
      KwFalse,
      KwNull,
 
-     // Operators
+    // Operators
      OpLe,
      OpGe,
      OpEq,
@@ -70,11 +79,19 @@
      OpRange,
      OpRangeInclusive,
 
-     // Delimiters / punctuation
-     LParen,
-     RParen,
-     LBrace,
-     RBrace,
+    // Monadic / functional operators (for interactions)
+    OpBind,   // >>=
+    OpThen,   // >>
+    OpFmap,   // <$>
+    OpApply,  // <*>
+
+    // Delimiters / punctuation
+    LParen,
+    RParen,
+    LBrace,
+    RBrace,
+    LRefinement,  // {{
+    RRefinement,  // }}
      LBracket,
      RBracket,
      Semicolon,

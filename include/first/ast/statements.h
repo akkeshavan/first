@@ -160,5 +160,19 @@ private:
     std::unique_ptr<Expr> value_;
 };
 
+// Select statement: select { receive/send/else branches }
+class SelectStmt : public Stmt {
+public:
+    SelectStmt(const SourceLocation& location,
+               std::vector<std::unique_ptr<SelectBranch>> branches)
+        : Stmt(location), branches_(std::move(branches)) {}
+
+    const std::vector<std::unique_ptr<SelectBranch>>& getBranches() const { return branches_; }
+    void accept(ASTVisitor& visitor) override { visitor.visitSelectStmt(this); }
+    std::string getNodeType() const override { return "SelectStmt"; }
+private:
+    std::vector<std::unique_ptr<SelectBranch>> branches_;
+};
+
 } // namespace ast
 } // namespace first

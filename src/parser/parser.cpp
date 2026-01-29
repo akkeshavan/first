@@ -46,14 +46,23 @@
      case FirstLexer::LET: kind = TokenKind::KwLet; break;
      case FirstLexer::VAR: kind = TokenKind::KwVar; break;
      case FirstLexer::MUT: kind = TokenKind::KwMut; break;
-     case FirstLexer::MATCH: kind = TokenKind::KwMatch; break;
+    case FirstLexer::MATCH: kind = TokenKind::KwMatch; break;
      case FirstLexer::TYPE: kind = TokenKind::KwType; break;
      case FirstLexer::INTERFACE: kind = TokenKind::KwInterface; break;
      case FirstLexer::IMPLEMENTATION: kind = TokenKind::KwImplementation; break;
      case FirstLexer::IMPORT: kind = TokenKind::KwImport; break;
      case FirstLexer::EXPORT: kind = TokenKind::KwExport; break;
      case FirstLexer::EXTENDS: kind = TokenKind::KwExtends; break;
-     case FirstLexer::MODULE: kind = TokenKind::KwModule; break;
+    case FirstLexer::MODULE: kind = TokenKind::KwModule; break;
+    case FirstLexer::DO: kind = TokenKind::KwDo; break;
+    case FirstLexer::WHERE: kind = TokenKind::KwWhere; break;
+    case FirstLexer::FORALL: kind = TokenKind::KwForall; break;
+    case FirstLexer::EXISTS: kind = TokenKind::KwExists; break;
+    case FirstLexer::ASYNC: kind = TokenKind::KwAsync; break;
+    case FirstLexer::AWAIT: kind = TokenKind::KwAwait; break;
+    case FirstLexer::SPAWN: kind = TokenKind::KwSpawn; break;
+    case FirstLexer::JOIN: kind = TokenKind::KwJoin; break;
+    case FirstLexer::SELECT: kind = TokenKind::KwSelect; break;
 
     case FirstLexer::INT: kind = TokenKind::KwInt; break;
     case FirstLexer::FLOAT: kind = TokenKind::KwFloat; break;
@@ -77,34 +86,43 @@
     case FirstLexer::CHANNEL: kind = TokenKind::Identifier; break;
     case FirstLexer::TASK: kind = TokenKind::Identifier; break;
 
-     case FirstLexer::LE: kind = TokenKind::OpLe; break;
-     case FirstLexer::GE: kind = TokenKind::OpGe; break;
-     case FirstLexer::EQ: kind = TokenKind::OpEq; break;
-     case FirstLexer::NE: kind = TokenKind::OpNe; break;
-     case FirstLexer::LT: kind = TokenKind::OpLt; break;
-     case FirstLexer::GT: kind = TokenKind::OpGt; break;
-     case FirstLexer::AND: kind = TokenKind::OpAnd; break;
-     case FirstLexer::OR: kind = TokenKind::OpOr; break;
-     case FirstLexer::NOT: kind = TokenKind::OpNot; break;
-     case FirstLexer::PLUS: kind = TokenKind::OpPlus; break;
-     case FirstLexer::MINUS: kind = TokenKind::OpMinus; break;
-     case FirstLexer::MUL: kind = TokenKind::OpMul; break;
-     case FirstLexer::DIV: kind = TokenKind::OpDiv; break;
-     case FirstLexer::MOD: kind = TokenKind::OpMod; break;
-     case FirstLexer::ASSIGN: kind = TokenKind::OpAssign; break;
-     case FirstLexer::PLUS_ASSIGN: kind = TokenKind::OpPlusAssign; break;
-     case FirstLexer::MINUS_ASSIGN: kind = TokenKind::OpMinusAssign; break;
-     case FirstLexer::MUL_ASSIGN: kind = TokenKind::OpMulAssign; break;
-     case FirstLexer::DIV_ASSIGN: kind = TokenKind::OpDivAssign; break;
-     case FirstLexer::ARROW: kind = TokenKind::OpArrow; break;
-     case FirstLexer::FAT_ARROW: kind = TokenKind::OpFatArrow; break;
-     case FirstLexer::RANGE_OP: kind = TokenKind::OpRange; break;
-     case FirstLexer::RANGE_INCLUSIVE: kind = TokenKind::OpRangeInclusive; break;
+    case FirstLexer::LE: kind = TokenKind::OpLe; break;
+    case FirstLexer::GE: kind = TokenKind::OpGe; break;
+    case FirstLexer::EQ: kind = TokenKind::OpEq; break;
+    case FirstLexer::NE: kind = TokenKind::OpNe; break;
+    case FirstLexer::LT: kind = TokenKind::OpLt; break;
+    case FirstLexer::GT: kind = TokenKind::OpGt; break;
+    case FirstLexer::AND: kind = TokenKind::OpAnd; break;
+    case FirstLexer::OR: kind = TokenKind::OpOr; break;
+    case FirstLexer::NOT: kind = TokenKind::OpNot; break;
+    case FirstLexer::PLUS: kind = TokenKind::OpPlus; break;
+    case FirstLexer::MINUS: kind = TokenKind::OpMinus; break;
+    case FirstLexer::MUL: kind = TokenKind::OpMul; break;
+    case FirstLexer::DIV: kind = TokenKind::OpDiv; break;
+    case FirstLexer::MOD: kind = TokenKind::OpMod; break;
+    case FirstLexer::ASSIGN: kind = TokenKind::OpAssign; break;
+    case FirstLexer::PLUS_ASSIGN: kind = TokenKind::OpPlusAssign; break;
+    case FirstLexer::MINUS_ASSIGN: kind = TokenKind::OpMinusAssign; break;
+    case FirstLexer::MUL_ASSIGN: kind = TokenKind::OpMulAssign; break;
+    case FirstLexer::DIV_ASSIGN: kind = TokenKind::OpDivAssign; break;
+    case FirstLexer::ARROW: kind = TokenKind::OpArrow; break;
+    case FirstLexer::FAT_ARROW: kind = TokenKind::OpFatArrow; break;
+    case FirstLexer::RANGE_OP: kind = TokenKind::OpRange; break;
+    case FirstLexer::RANGE_INCLUSIVE: kind = TokenKind::OpRangeInclusive; break;
+
+    // Monadic operators (only valid in interaction functions; semantic
+    // restrictions are enforced later, we just surface them as tokens here).
+    case FirstLexer::BIND:  kind = TokenKind::OpBind; break;   // >>=
+    case FirstLexer::THEN:  kind = TokenKind::OpThen; break;   // >>
+    case FirstLexer::FMAP:  kind = TokenKind::OpFmap; break;   // <$>
+    case FirstLexer::APPLY: kind = TokenKind::OpApply; break;  // <*>
 
      case FirstLexer::LPAREN: kind = TokenKind::LParen; break;
      case FirstLexer::RPAREN: kind = TokenKind::RParen; break;
      case FirstLexer::LBRACE: kind = TokenKind::LBrace; break;
      case FirstLexer::RBRACE: kind = TokenKind::RBrace; break;
+     case FirstLexer::LREFINEMENT: kind = TokenKind::LRefinement; break;  // {{
+     case FirstLexer::RREFINEMENT: kind = TokenKind::RRefinement; break;  // }}
      case FirstLexer::LBRACKET: kind = TokenKind::LBracket; break;
      case FirstLexer::RBRACKET: kind = TokenKind::RBracket; break;
      case FirstLexer::SEMICOLON: kind = TokenKind::Semicolon; break;
@@ -721,12 +739,170 @@ void FirstParser::parseImplementationDecl() {
  // ---- Types (minimal subset used in tests) ----
 
  std::unique_ptr<ast::Type> FirstParser::parseType() {
-     return parsePrimaryType();
+     // Forall type: forall T U. Type
+     if (current().kind == TokenKind::KwForall) {
+         SourceLocation loc = current().loc;
+         advance(); // consume 'forall'
+         std::vector<std::string> typeVars;
+         while (current().kind == TokenKind::Identifier) {
+             typeVars.push_back(current().lexeme);
+             advance();
+         }
+         if (typeVars.empty()) {
+             reportSyntaxError("expected at least one type variable after 'forall'");
+             return nullptr;
+         }
+         if (!expect(TokenKind::Dot, "expected '.' after type variables in forall type")) {
+             return nullptr;
+         }
+         auto bodyType = parseType();
+         if (!bodyType) {
+             return nullptr;
+         }
+         return std::make_unique<ast::ForallType>(loc, std::move(typeVars), std::move(bodyType));
+     }
+     // Existential type: exists x: VarType. BodyType
+     if (current().kind == TokenKind::KwExists) {
+         SourceLocation loc = current().loc;
+         advance(); // consume 'exists'
+         if (current().kind != TokenKind::Identifier) {
+             reportSyntaxError("expected variable name after 'exists'");
+             return nullptr;
+         }
+         std::string varName = current().lexeme;
+         advance();
+         if (!expect(TokenKind::Colon, "expected ':' after variable name in existential type")) {
+             return nullptr;
+         }
+         auto varType = parseType();
+         if (!varType) {
+             return nullptr;
+         }
+         if (!expect(TokenKind::Dot, "expected '.' in existential type")) {
+             return nullptr;
+         }
+         auto bodyType = parseType();
+         if (!bodyType) {
+             return nullptr;
+         }
+         return std::make_unique<ast::ExistentialType>(loc, varName, std::move(varType), std::move(bodyType));
+     }
+     // ( type ) parenthesized, or ( id : type ) -> type (Pi) / ( id : type ) * type (Sigma)
+     if (current().kind == TokenKind::LParen) {
+         SourceLocation loc = current().loc;
+         advance(); // consume '('
+         bool isDependent = (current().kind == TokenKind::Identifier &&
+                            tokens_.lookahead(1).kind == TokenKind::Colon);
+         if (isDependent) {
+             std::string boundName = current().lexeme;
+             advance();
+             advance(); // consume ':'
+             auto firstType = parseType();
+             if (!firstType || !expect(TokenKind::RParen, "expected ')' after (id: type)")) {
+                 return nullptr;
+             }
+             if (match(TokenKind::OpArrow)) {
+                 auto returnType = parseType();
+                 if (returnType) {
+                     return std::make_unique<ast::DependentFunctionType>(
+                         loc, boundName, std::move(firstType), std::move(returnType));
+                 }
+             } else if (match(TokenKind::OpMul)) {
+                 auto bodyType = parseType();
+                 if (bodyType) {
+                     return std::make_unique<ast::DependentPairType>(
+                         loc, boundName, std::move(firstType), std::move(bodyType));
+                 }
+             } else {
+                 reportSyntaxError("expected '->' or '*' after (id: type) in dependent type");
+                 return nullptr;
+             }
+             return nullptr;
+         }
+         // Parenthesized type: ( type )
+         auto base = parsePrimaryType();
+         if (!base) {
+             return nullptr;
+         }
+         while (current().kind == TokenKind::LBracket) {
+             SourceLocation idxLoc = current().loc;
+             advance();
+             std::vector<std::shared_ptr<ast::Expr>> indices;
+             if (current().kind != TokenKind::RBracket) {
+                 while (true) {
+                     auto indexExpr = parseExpression();
+                     if (!indexExpr) {
+                         reportSyntaxError("expected index expression in indexed type");
+                         return nullptr;
+                     }
+                     indices.push_back(std::shared_ptr<ast::Expr>(std::move(indexExpr)));
+                     if (!match(TokenKind::Comma)) break;
+                 }
+             }
+             expect(TokenKind::RBracket, "expected ']' at end of indexed type");
+             base = std::make_unique<ast::IndexedType>(idxLoc, std::move(base), std::move(indices));
+         }
+         if (!expect(TokenKind::RParen, "expected ')' to close parenthesized type")) {
+             return nullptr;
+         }
+         return base;
+     }
+     auto base = parsePrimaryType();
+     if (!base) {
+         return nullptr;
+     }
+     // Indexed type: BaseType [ indexList ] (e.g. Vector[n], Array<Int>[n])
+     while (current().kind == TokenKind::LBracket) {
+         SourceLocation loc = current().loc;
+         advance(); // consume '['
+         std::vector<std::shared_ptr<ast::Expr>> indices;
+         if (current().kind != TokenKind::RBracket) {
+             while (true) {
+                 auto indexExpr = parseExpression();
+                 if (!indexExpr) {
+                     reportSyntaxError("expected index expression in indexed type");
+                     return nullptr;
+                 }
+                 indices.push_back(std::shared_ptr<ast::Expr>(std::move(indexExpr)));
+                 if (!match(TokenKind::Comma)) {
+                     break;
+                 }
+             }
+         }
+         expect(TokenKind::RBracket, "expected ']' at end of indexed type");
+         base = std::make_unique<ast::IndexedType>(loc, std::move(base), std::move(indices));
+     }
+     return base;
  }
 
  std::unique_ptr<ast::Type> FirstParser::parsePrimaryType() {
      SourceLocation loc = current().loc;
      switch (current().kind) {
+     case TokenKind::LRefinement: {
+         // Refinement type: {{ variable : BaseType where predicate }}
+         advance(); // consume '{{'
+         if (current().kind != TokenKind::Identifier) {
+             reportSyntaxError("expected variable name in refinement type");
+             return nullptr;
+         }
+         std::string varName = current().lexeme;
+         advance();
+         expect(TokenKind::Colon, "expected ':' after variable name in refinement type");
+         auto baseType = parseType();
+         if (!baseType) {
+             return nullptr;
+         }
+         expect(TokenKind::KwWhere, "expected 'where' in refinement type");
+         auto predicate = parseExpression();
+         if (!predicate) {
+             reportSyntaxError("expected predicate expression in refinement type");
+             return nullptr;
+         }
+         expect(TokenKind::RRefinement, "expected '}}' at end of refinement type");
+         return std::make_unique<ast::RefinementType>(
+             loc, varName, std::move(baseType),
+             std::shared_ptr<ast::Expr>(std::move(predicate)));
+     }
      case TokenKind::KwInt:
          advance();
          return std::make_unique<ast::PrimitiveType>(loc, ast::PrimitiveType::Kind::Int);
@@ -787,6 +963,8 @@ void FirstParser::parseImplementationDecl() {
          return parseIfStmt();
      case TokenKind::KwWhile:
          return parseWhileStmt();
+    case TokenKind::KwSelect:
+        return parseSelectStmt();
     case TokenKind::KwMatch: {
         // Allow `match` as a statement by wrapping the expression in an ExprStmt.
         auto expr = parseMatchExpr();
@@ -941,11 +1119,262 @@ void FirstParser::parseImplementationDecl() {
      return nullptr;
  }
 
- // ---- Expressions ----
+std::vector<std::unique_ptr<ast::SelectBranch>> FirstParser::parseSelectBranches() {
+    std::vector<std::unique_ptr<ast::SelectBranch>> branches;
+    while (current().kind != TokenKind::RBrace && current().kind != TokenKind::EndOfFile) {
+        SourceLocation branchLoc = current().loc;
+        // Receive: <- channel => var : statement
+        if (current().kind == TokenKind::OpLt && tokens_.lookahead(1).kind == TokenKind::OpMinus) {
+            advance(); // OpLt
+            advance(); // OpMinus
+            auto channelExpr = parseExpression();
+            if (!channelExpr || !expect(TokenKind::OpFatArrow, "expected '=>' in select receive")) {
+                break;
+            }
+            if (current().kind != TokenKind::Identifier) {
+                reportSyntaxError("expected variable name in select receive");
+                break;
+            }
+            std::string varName = current().lexeme;
+            advance();
+            if (!expect(TokenKind::Colon, "expected ':' in select receive")) {
+                break;
+            }
+            auto stmt = parseStatement();
+            if (!stmt) break;
+            branches.push_back(std::make_unique<ast::SelectBranch>(
+                branchLoc, ast::SelectBranch::Kind::Receive,
+                std::move(channelExpr), std::move(varName), nullptr, std::move(stmt)));
+            continue;
+        }
+        // Else: else : statement
+        if (current().kind == TokenKind::KwElse && tokens_.lookahead(1).kind == TokenKind::Colon) {
+            advance(); // KwElse
+            advance(); // Colon
+            auto stmt = parseStatement();
+            if (!stmt) break;
+            branches.push_back(std::make_unique<ast::SelectBranch>(
+                branchLoc, ast::SelectBranch::Kind::Else,
+                nullptr, "", nullptr, std::move(stmt)));
+            continue;
+        }
+        // Send: channel <- value : statement
+        auto channelExpr = parseExpression();
+        if (!channelExpr) break;
+        if (!match(TokenKind::OpLt) || !match(TokenKind::OpMinus)) {
+            reportSyntaxError("expected '<-' in select send");
+            break;
+        }
+        auto valueExpr = parseExpression();
+        if (!valueExpr || !expect(TokenKind::Colon, "expected ':' in select send")) {
+            break;
+        }
+        auto stmt = parseStatement();
+        if (!stmt) break;
+        branches.push_back(std::make_unique<ast::SelectBranch>(
+            branchLoc, ast::SelectBranch::Kind::Send,
+            std::move(channelExpr), "", std::move(valueExpr), std::move(stmt)));
+    }
+    return branches;
+}
 
- std::unique_ptr<ast::Expr> FirstParser::parseExpression() {
-     return parseLogicalOr();
- }
+std::unique_ptr<ast::SelectStmt> FirstParser::parseSelectStmt() {
+    SourceLocation loc = current().loc;
+    advance(); // 'select'
+    if (!expect(TokenKind::LBrace, "expected '{' after 'select'")) {
+        return nullptr;
+    }
+    auto branches = parseSelectBranches();
+    if (!expect(TokenKind::RBrace, "expected '}' at end of select")) {
+        return nullptr;
+    }
+    return std::make_unique<ast::SelectStmt>(loc, std::move(branches));
+}
+
+// ---- Expressions ----
+
+std::unique_ptr<ast::Expr> FirstParser::parseExpression() {
+    // Base expression using standard precedence (||, &&, ==, <, +, *, etc.)
+    auto expr = parseLogicalOr();
+
+    // Monadic / functional operators are parsed as syntactic sugar and
+    // immediately desugared into function calls:
+    //
+    //   a >>= f   => bind(a, f)
+    //   a >> b    => then(a, b)
+    //   f <$> m   => fmap(f, m)
+    //   f <*> m   => apply(f, m)
+    //
+    // We keep precedence simple: these operators chain left‑associatively and
+    // sit above the normal precedence ladder (we re-use parseLogicalOr for
+    // the right-hand side).
+    while (current().kind == TokenKind::OpBind ||
+           current().kind == TokenKind::OpThen ||
+           current().kind == TokenKind::OpFmap ||
+           current().kind == TokenKind::OpApply) {
+        SourceLocation loc = current().loc;
+        TokenKind op = current().kind;
+        advance();
+
+        auto rhs = parseLogicalOr();
+        if (!rhs) {
+            // Report a syntax error and stop chaining if the RHS is missing.
+            reportSyntaxError("expected expression after monadic operator");
+            break;
+        }
+
+        std::string funcName;
+        switch (op) {
+        case TokenKind::OpBind:  funcName = "bind";  break;
+        case TokenKind::OpThen:  funcName = "then";  break;
+        case TokenKind::OpFmap:  funcName = "fmap";  break;
+        case TokenKind::OpApply: funcName = "apply"; break;
+        default:
+            // Should be unreachable, but fall back to returning the base expr.
+            return expr;
+        }
+
+        std::vector<std::unique_ptr<ast::Expr>> args;
+        args.push_back(std::move(expr));
+        args.push_back(std::move(rhs));
+
+        expr = std::make_unique<ast::FunctionCallExpr>(
+            loc, funcName, std::move(args));
+    }
+
+    return expr;
+}
+
+std::unique_ptr<ast::Expr> FirstParser::parseDoBlockExpr() {
+    // do { ... } notation for monadic code. We support a restricted subset:
+    //   - x <- expr;
+    //   - expr;
+    //   - return expr;
+    //
+    // and desugar it into nested bind/then calls returning a single
+    // expression of monadic type.
+
+    SourceLocation doLoc = current().loc;
+    advance(); // consume 'do'
+    expect(TokenKind::LBrace, "expected '{' after 'do'");
+
+    enum class DoKind { Bind, Expr, Return };
+    struct DoItem {
+        DoKind kind;
+        SourceLocation loc;
+        std::string name; // for Bind
+        std::unique_ptr<ast::Expr> expr;
+    };
+
+    std::vector<DoItem> items;
+
+    while (current().kind != TokenKind::RBrace &&
+           current().kind != TokenKind::EndOfFile) {
+        if (current().kind == TokenKind::KwReturn) {
+            SourceLocation retLoc = current().loc;
+            advance(); // 'return'
+            auto value = parseExpression();
+            expect(TokenKind::Semicolon, "expected ';' after return expression in do-block");
+            DoItem item;
+            item.kind = DoKind::Return;
+            item.loc = retLoc;
+            item.expr = std::move(value);
+            items.push_back(std::move(item));
+            // Everything after a return is ignored for the purposes of
+            // desugaring; we'll still consume tokens up to '}' below.
+            break;
+        }
+
+        // x <- expr;
+        if (current().kind == TokenKind::Identifier &&
+            tokens_.lookahead(1).kind == TokenKind::OpLt &&
+            tokens_.lookahead(2).kind == TokenKind::OpMinus) {
+            std::string name = current().lexeme;
+            SourceLocation nameLoc = current().loc;
+            advance(); // identifier
+            advance(); // '<'
+            advance(); // '-'
+            auto rhs = parseExpression();
+            expect(TokenKind::Semicolon, "expected ';' after binding expression in do-block");
+
+            DoItem item;
+            item.kind = DoKind::Bind;
+            item.loc = nameLoc;
+            item.name = name;
+            item.expr = std::move(rhs);
+            items.push_back(std::move(item));
+            continue;
+        }
+
+        // Fallback: effect-only expression; expr;
+        auto e = parseExpression();
+        expect(TokenKind::Semicolon, "expected ';' after expression in do-block");
+        if (e) {
+            SourceLocation exprLoc = e->getLocation();
+            DoItem item;
+            item.kind = DoKind::Expr;
+            item.loc = exprLoc;
+            item.expr = std::move(e);
+            items.push_back(std::move(item));
+        }
+    }
+
+    expect(TokenKind::RBrace, "expected '}' at end of do-block");
+
+    if (items.empty() || items.back().kind != DoKind::Return) {
+        reportSyntaxError("do-block must end with 'return expr;'");
+        return nullptr;
+    }
+
+    // Start from the final return expression.
+    std::unique_ptr<ast::Expr> acc = std::move(items.back().expr);
+
+    // Fold backwards building bind/then chains.
+    for (std::ptrdiff_t i = static_cast<std::ptrdiff_t>(items.size()) - 2; i >= 0; --i) {
+        DoItem& item = items[static_cast<std::size_t>(i)];
+        std::string funcName;
+        std::vector<std::unique_ptr<ast::Parameter>> params;
+
+        if (!item.expr) {
+            continue;
+        }
+
+        if (item.kind == DoKind::Bind) {
+            funcName = "bind";
+            // function(x) { return acc; }
+            params.push_back(std::make_unique<ast::Parameter>(
+                item.loc,
+                item.name,
+                std::make_unique<ast::GenericType>(item.loc, "Any")));
+        } else if (item.kind == DoKind::Expr) {
+            funcName = "then";
+            // function(_) { return acc; }
+            params.push_back(std::make_unique<ast::Parameter>(
+                item.loc,
+                "_",
+                std::make_unique<ast::GenericType>(item.loc, "Any")));
+        } else {
+            continue;
+        }
+
+        SourceLocation retLoc = acc->getLocation();
+        std::vector<std::unique_ptr<ast::Stmt>> body;
+        body.push_back(std::make_unique<ast::ReturnStmt>(retLoc, std::move(acc)));
+
+        std::unique_ptr<ast::Type> retType; // inferred later
+        auto lambda = std::make_unique<ast::LambdaExpr>(
+            item.loc, std::move(params), std::move(retType), std::move(body));
+
+        std::vector<std::unique_ptr<ast::Expr>> args;
+        args.push_back(std::move(item.expr));
+        args.push_back(std::move(lambda));
+
+        acc = std::make_unique<ast::FunctionCallExpr>(
+            item.loc, funcName, std::move(args));
+    }
+
+    return acc;
+}
 
  std::unique_ptr<ast::Expr> FirstParser::parseLogicalOr() {
      auto left = parseLogicalAnd();
@@ -1151,6 +1580,60 @@ void FirstParser::parseImplementationDecl() {
     }
     case TokenKind::KwMatch:
         return parseMatchExpr();
+    case TokenKind::KwDo:
+        return parseDoBlockExpr();
+    case TokenKind::KwAsync: {
+        SourceLocation loc = current().loc;
+        advance(); // 'async'
+        auto operand = parsePrimaryExpr();
+        if (!operand) {
+            reportSyntaxError("expected expression after 'async'");
+            return nullptr;
+        }
+        return std::make_unique<ast::AsyncExpr>(loc, std::move(operand));
+    }
+    case TokenKind::KwAwait: {
+        SourceLocation loc = current().loc;
+        advance(); // 'await'
+        auto operand = parsePrimaryExpr();
+        if (!operand) {
+            reportSyntaxError("expected expression after 'await'");
+            return nullptr;
+        }
+        return std::make_unique<ast::AwaitExpr>(loc, std::move(operand));
+    }
+    case TokenKind::KwSpawn: {
+        SourceLocation loc = current().loc;
+        advance(); // 'spawn'
+        auto operand = parsePrimaryExpr();
+        if (!operand) {
+            reportSyntaxError("expected expression after 'spawn'");
+            return nullptr;
+        }
+        return std::make_unique<ast::SpawnExpr>(loc, std::move(operand));
+    }
+    case TokenKind::KwJoin: {
+        SourceLocation loc = current().loc;
+        advance(); // 'join'
+        auto operand = parsePrimaryExpr();
+        if (!operand) {
+            reportSyntaxError("expected expression after 'join'");
+            return nullptr;
+        }
+        return std::make_unique<ast::JoinExpr>(loc, std::move(operand));
+    }
+    case TokenKind::KwSelect: {
+        SourceLocation loc = current().loc;
+        advance(); // 'select'
+        if (!expect(TokenKind::LBrace, "expected '{' after 'select'")) {
+            return nullptr;
+        }
+        auto branches = parseSelectBranches();
+        if (!expect(TokenKind::RBrace, "expected '}' at end of select")) {
+            return nullptr;
+        }
+        return std::make_unique<ast::SelectExpr>(loc, std::move(branches));
+    }
     case TokenKind::KwFunction: {
         // Inline lambda expression: function(params) [-> Type]? { body }
         SourceLocation loc = current().loc;

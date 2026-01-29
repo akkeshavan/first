@@ -69,12 +69,18 @@ public:
     void visitConstructorExpr(ast::ConstructorExpr* node) override;
     void visitMatchExpr(ast::MatchExpr* node) override;
     void visitLambdaExpr(ast::LambdaExpr* node) override;
+    void visitAsyncExpr(ast::AsyncExpr* node) override;
+    void visitAwaitExpr(ast::AwaitExpr* node) override;
+    void visitSpawnExpr(ast::SpawnExpr* node) override;
+    void visitJoinExpr(ast::JoinExpr* node) override;
+    void visitSelectExpr(ast::SelectExpr* node) override;
     void visitVariableDecl(ast::VariableDecl* node) override;
     void visitReturnStmt(ast::ReturnStmt* node) override;
     void visitExprStmt(ast::ExprStmt* node) override;
     void visitIfStmt(ast::IfStmt* node) override;
     void visitWhileStmt(ast::WhileStmt* node) override;
     void visitAssignmentStmt(ast::AssignmentStmt* node) override;
+    void visitSelectStmt(ast::SelectStmt* node) override;
     void visitImportDecl(ast::ImportDecl* node) override;
     void visitTypeDecl(ast::TypeDecl* node) override;
     
@@ -114,6 +120,8 @@ private:
     std::unordered_map<std::string, llvm::AllocaInst*> localVars_;
     // Track variable types for proper loading (needed with opaque pointers)
     std::unordered_map<std::string, llvm::Type*> localVarTypes_;
+    // When evaluating a refinement predicate, map refinement variable name -> parameter alloca
+    std::unordered_map<std::string, llvm::AllocaInst*> refinementVarOverrides_;
     
     // Array metadata: maps array pointer to (elementType, arraySize)
     struct ArrayMetadata {
@@ -140,6 +148,9 @@ private:
     llvm::AllocaInst* getVariable(const std::string& name);
     llvm::Value* getDefaultValue(llvm::Type* type);
     void setVariable(const std::string& name, llvm::AllocaInst* value, llvm::Type* type = nullptr);
+    void pushRefinementBinding(const std::string& varName, llvm::AllocaInst* alloca, llvm::Type* type);
+    void popRefinementBinding(const std::string& varName);
+    void emitRefinementChecksForParams(const std::vector<ast::Parameter*>& params, llvm::Function* func, llvm::BasicBlock* entryBlock);
     
     // Expression evaluation helpers
     llvm::Value* evaluateExpr(ast::Expr* expr);
@@ -147,7 +158,7 @@ private:
     llvm::Value* evaluateBinary(ast::BinaryExpr* expr);
     llvm::Value* evaluateUnary(ast::UnaryExpr* expr);
     llvm::Value* evaluateVariable(ast::VariableExpr* expr);
-    llvm::Value* evaluateFunctionCall(ast::FunctionCallExpr* expr);
+    llvm::Value* evaluateFunctionCall(ast::FunctionCallExpr* expr, bool tailCall = false);
     llvm::Value* evaluateArrayLiteral(ast::ArrayLiteralExpr* expr);
     llvm::Value* evaluateArrayIndex(ast::ArrayIndexExpr* expr);
     llvm::Value* evaluateRecordLiteral(ast::RecordLiteralExpr* expr);
@@ -163,6 +174,7 @@ private:
     void generateIfStmt(ast::IfStmt* stmt);
     void generateWhileStmt(ast::WhileStmt* stmt);
     void generateAssignmentStmt(ast::AssignmentStmt* stmt);
+    void generateSelectStmt(ast::SelectStmt* stmt);
     
     // Short-circuit evaluation helpers
     llvm::Value* evaluateShortCircuitAnd(ast::BinaryExpr* expr);

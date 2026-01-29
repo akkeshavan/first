@@ -49,5 +49,8 @@ FileResult writeFile(const String& filename, const String& content);
 
 } // namespace io
 
+// Refinement failure: report message to stderr and abort (C linkage for compiler-generated calls)
+extern "C" void __first_refinement_fail(const char* message);
+
 } // namespace runtime
 } // namespace first

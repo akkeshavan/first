@@ -301,5 +301,93 @@ private:
     std::vector<std::unique_ptr<Stmt>> body_;
 };
 
+// Concurrency: async expr (returns Promise<T,E>), await expr (unwraps Promise)
+class AsyncExpr : public Expr {
+public:
+    AsyncExpr(const SourceLocation& location, std::unique_ptr<Expr> operand)
+        : Expr(location), operand_(std::move(operand)) {}
+
+    Expr* getOperand() const { return operand_.get(); }
+    void accept(ASTVisitor& visitor) override { visitor.visitAsyncExpr(this); }
+    std::string getNodeType() const override { return "AsyncExpr"; }
+private:
+    std::unique_ptr<Expr> operand_;
+};
+
+class AwaitExpr : public Expr {
+public:
+    AwaitExpr(const SourceLocation& location, std::unique_ptr<Expr> operand)
+        : Expr(location), operand_(std::move(operand)) {}
+
+    Expr* getOperand() const { return operand_.get(); }
+    void accept(ASTVisitor& visitor) override { visitor.visitAwaitExpr(this); }
+    std::string getNodeType() const override { return "AwaitExpr"; }
+private:
+    std::unique_ptr<Expr> operand_;
+};
+
+// spawn expr (returns Task<T>), join expr (unwraps Task)
+class SpawnExpr : public Expr {
+public:
+    SpawnExpr(const SourceLocation& location, std::unique_ptr<Expr> operand)
+        : Expr(location), operand_(std::move(operand)) {}
+
+    Expr* getOperand() const { return operand_.get(); }
+    void accept(ASTVisitor& visitor) override { visitor.visitSpawnExpr(this); }
+    std::string getNodeType() const override { return "SpawnExpr"; }
+private:
+    std::unique_ptr<Expr> operand_;
+};
+
+class JoinExpr : public Expr {
+public:
+    JoinExpr(const SourceLocation& location, std::unique_ptr<Expr> operand)
+        : Expr(location), operand_(std::move(operand)) {}
+
+    Expr* getOperand() const { return operand_.get(); }
+    void accept(ASTVisitor& visitor) override { visitor.visitJoinExpr(this); }
+    std::string getNodeType() const override { return "JoinExpr"; }
+private:
+    std::unique_ptr<Expr> operand_;
+};
+
+// Select branch: receive (<- channel => x: stmt) | send (channel <- value: stmt) | else: stmt
+class SelectBranch {
+public:
+    enum class Kind { Receive, Send, Else };
+    SelectBranch(SourceLocation location, Kind kind,
+                 std::unique_ptr<Expr> channelExpr,
+                 std::string varName,
+                 std::unique_ptr<Expr> valueExpr,
+                 std::unique_ptr<Stmt> statement);
+    ~SelectBranch();  // Defined in select_branch.cpp (needs complete Stmt type)
+    const SourceLocation& getLocation() const { return location_; }
+    Kind getKind() const { return kind_; }
+    Expr* getChannelExpr() const { return channelExpr_.get(); }
+    const std::string& getVarName() const { return varName_; }
+    Expr* getValueExpr() const { return valueExpr_.get(); }
+    Stmt* getStatement() const { return statement_.get(); }
+private:
+    SourceLocation location_;
+    Kind kind_;
+    std::unique_ptr<Expr> channelExpr_;
+    std::string varName_;
+    std::unique_ptr<Expr> valueExpr_;
+    std::unique_ptr<Stmt> statement_;
+};
+
+// Select expression: select { branches }
+class SelectExpr : public Expr {
+public:
+    SelectExpr(const SourceLocation& location,
+               std::vector<std::unique_ptr<SelectBranch>> branches)
+        : Expr(location), branches_(std::move(branches)) {}
+    const std::vector<std::unique_ptr<SelectBranch>>& getBranches() const { return branches_; }
+    void accept(ASTVisitor& visitor) override { visitor.visitSelectExpr(this); }
+    std::string getNodeType() const override { return "SelectExpr"; }
+private:
+    std::vector<std::unique_ptr<SelectBranch>> branches_;
+};
+
 } // namespace ast
 } // namespace first

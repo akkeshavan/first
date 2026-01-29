@@ -2,6 +2,7 @@
 #include <iostream>
 #include <fstream>
 #include <sstream>
+#include <cstdlib>
 
 namespace first {
 namespace runtime {
@@ -225,5 +226,11 @@ FileResult writeFile(const String& filename, const String& content) {
 }
 
 } // namespace io
+
+extern "C" void __first_refinement_fail(const char* message) {
+    std::cerr << "Refinement predicate failed: " << (message ? message : "(no message)") << std::endl;
+    std::abort();
+}
+
 } // namespace runtime
 } // namespace first

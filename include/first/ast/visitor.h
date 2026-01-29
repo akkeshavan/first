@@ -16,12 +16,18 @@ namespace ast {
     class ConstructorExpr;
     class MatchExpr;
     class LambdaExpr;
+    class AsyncExpr;
+    class AwaitExpr;
+    class SpawnExpr;
+    class JoinExpr;
+    class SelectExpr;
     class VariableDecl;
     class ReturnStmt;
     class ExprStmt;
     class IfStmt;
     class WhileStmt;
     class AssignmentStmt;
+    class SelectStmt;
     class FunctionDecl;
     class InteractionDecl;
     class TypeDecl;
@@ -51,6 +57,11 @@ public:
     virtual void visitConstructorExpr(ConstructorExpr* node) {}
     virtual void visitMatchExpr(MatchExpr* node) {}
     virtual void visitLambdaExpr(LambdaExpr* node) {}
+    virtual void visitAsyncExpr(AsyncExpr* node) {}
+    virtual void visitAwaitExpr(AwaitExpr* node) {}
+    virtual void visitSpawnExpr(SpawnExpr* node) {}
+    virtual void visitJoinExpr(JoinExpr* node) {}
+    virtual void visitSelectExpr(SelectExpr* node) {}
     
     // Statement nodes
     virtual void visitVariableDecl(VariableDecl* node) {}
@@ -59,6 +70,7 @@ public:
     virtual void visitIfStmt(IfStmt* node) {}
     virtual void visitWhileStmt(WhileStmt* node) {}
     virtual void visitAssignmentStmt(AssignmentStmt* node) {}
+    virtual void visitSelectStmt(SelectStmt* node) {}
     
     // Declaration nodes
     virtual void visitFunctionDecl(FunctionDecl* node) {}

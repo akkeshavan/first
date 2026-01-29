@@ -88,6 +88,7 @@
      std::unique_ptr<ast::IfStmt> parseIfStmt();
      std::unique_ptr<ast::WhileStmt> parseWhileStmt();
      std::unique_ptr<ast::AssignmentStmt> parseAssignmentStmt();
+     std::unique_ptr<ast::SelectStmt> parseSelectStmt();
 
      // Expressions (Pratt / precedence climbing)
      std::unique_ptr<ast::Expr> parseExpression();
@@ -102,10 +103,14 @@
      std::unique_ptr<ast::Expr> parsePrimaryExpr();
 
      std::unique_ptr<ast::Expr> parseLiteralExpr();
+     std::unique_ptr<ast::Expr> parseDoBlockExpr();
 
      // Pattern matching
      std::unique_ptr<ast::Expr> parseMatchExpr();
      std::unique_ptr<ast::Pattern> parsePattern();
+
+     // Concurrency: select branches (shared by SelectStmt and SelectExpr)
+     std::vector<std::unique_ptr<ast::SelectBranch>> parseSelectBranches();
 
      // Helpers
      void reportSyntaxError(const std::string& message,

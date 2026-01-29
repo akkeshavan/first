@@ -236,6 +236,34 @@ ast::Type* TypeChecker::inferExpression(ast::Expr* expr) {
         return inferConstructor(constructor);
     } else if (auto* match = dynamic_cast<ast::MatchExpr*>(expr)) {
         return inferMatch(match);
+    } else if (auto* asyncExpr = dynamic_cast<ast::AsyncExpr*>(expr)) {
+        ast::Type* inner = inferType(asyncExpr->getOperand());
+        if (!inner) return nullptr;
+        // async expr returns Promise<T,E>; simplified: treat as same type for now
+        return copyType(inner).release();
+    } else if (auto* awaitExpr = dynamic_cast<ast::AwaitExpr*>(expr)) {
+        ast::Type* promiseType = inferType(awaitExpr->getOperand());
+        if (!promiseType) return nullptr;
+        // await unwraps Promise<T> to T; simplified: return operand type
+        return copyType(promiseType).release();
+    } else if (auto* spawnExpr = dynamic_cast<ast::SpawnExpr*>(expr)) {
+        ast::Type* inner = inferType(spawnExpr->getOperand());
+        if (!inner) return nullptr;
+        // spawn returns Task<T>; simplified: treat as same type for now
+        return copyType(inner).release();
+    } else if (auto* joinExpr = dynamic_cast<ast::JoinExpr*>(expr)) {
+        ast::Type* taskType = inferType(joinExpr->getOperand());
+        if (!taskType) return nullptr;
+        // join unwraps Task<T> to T; simplified: return operand type
+        return copyType(taskType).release();
+    } else if (auto* selectExpr = dynamic_cast<ast::SelectExpr*>(expr)) {
+        // select { branches } type-checks each branch; result type is Unit or first branch
+        for (const auto& branch : selectExpr->getBranches()) {
+            if (branch->getStatement()) {
+                checkStatement(branch->getStatement());
+            }
+        }
+        return createUnitType().release();
     }
     // TODO: Add array literal inference, record construction, etc.
     
@@ -575,11 +603,40 @@ bool TypeChecker::checkType(ast::Expr* expr, ast::Type* expectedType) {
     return true;
 }
 
+// Unwrap refinement types to base type for structural comparison/assignability.
+static ast::Type* getEffectiveType(ast::Type* type) {
+    if (auto* ref = dynamic_cast<ast::RefinementType*>(type)) {
+        return ref->getBaseType();
+    }
+    return type;
+}
+
+// Compare two index expressions (for dependent/indexed type equality).
+// LiteralExpr: same type and value; VariableExpr: same name; otherwise false.
+static bool indexExprsEqual(ast::Expr* a, ast::Expr* b) {
+    if (!a || !b) {
+        return a == b;
+    }
+    auto* litA = dynamic_cast<ast::LiteralExpr*>(a);
+    auto* litB = dynamic_cast<ast::LiteralExpr*>(b);
+    if (litA && litB) {
+        return litA->getType() == litB->getType() && litA->getValue() == litB->getValue();
+    }
+    auto* varA = dynamic_cast<ast::VariableExpr*>(a);
+    auto* varB = dynamic_cast<ast::VariableExpr*>(b);
+    if (varA && varB) {
+        return varA->getName() == varB->getName();
+    }
+    return false;
+}
+
 bool TypeChecker::typesEqual(ast::Type* type1, ast::Type* type2) {
     if (!type1 || !type2) {
         return type1 == type2; // Both null or both non-null
     }
-    
+    type1 = getEffectiveType(type1);
+    type2 = getEffectiveType(type2);
+
     // Compare primitive types
     auto* prim1 = dynamic_cast<ast::PrimitiveType*>(type1);
     auto* prim2 = dynamic_cast<ast::PrimitiveType*>(type2);
@@ -594,6 +651,70 @@ bool TypeChecker::typesEqual(ast::Type* type1, ast::Type* type2) {
     
     if (arr1 && arr2) {
         return typesEqual(arr1->getElementType(), arr2->getElementType());
+    }
+    
+    // Compare indexed types (BaseType[indexList]): same base type and equal indices
+    auto* idx1 = dynamic_cast<ast::IndexedType*>(type1);
+    auto* idx2 = dynamic_cast<ast::IndexedType*>(type2);
+    if (idx1 && idx2) {
+        if (!typesEqual(idx1->getBaseType(), idx2->getBaseType())) {
+            return false;
+        }
+        const auto& i1 = idx1->getIndices();
+        const auto& i2 = idx2->getIndices();
+        if (i1.size() != i2.size()) {
+            return false;
+        }
+        for (size_t k = 0; k < i1.size(); ++k) {
+            if (!indexExprsEqual(i1[k].get(), i2[k].get())) {
+                return false;
+            }
+        }
+        return true;
+    }
+    
+    // Compare dependent function types (Pi): (x: A) -> B
+    auto* pi1 = dynamic_cast<ast::DependentFunctionType*>(type1);
+    auto* pi2 = dynamic_cast<ast::DependentFunctionType*>(type2);
+    if (pi1 && pi2) {
+        return pi1->getParamName() == pi2->getParamName() &&
+               typesEqual(pi1->getParamType(), pi2->getParamType()) &&
+               typesEqual(pi1->getReturnType(), pi2->getReturnType());
+    }
+    
+    // Compare dependent pair types (Sigma): (x: A) * B
+    auto* sigma1 = dynamic_cast<ast::DependentPairType*>(type1);
+    auto* sigma2 = dynamic_cast<ast::DependentPairType*>(type2);
+    if (sigma1 && sigma2) {
+        return sigma1->getVarName() == sigma2->getVarName() &&
+               typesEqual(sigma1->getVarType(), sigma2->getVarType()) &&
+               typesEqual(sigma1->getBodyType(), sigma2->getBodyType());
+    }
+    
+    // Compare forall types: forall T U. Body (same type vars and body)
+    auto* forall1 = dynamic_cast<ast::ForallType*>(type1);
+    auto* forall2 = dynamic_cast<ast::ForallType*>(type2);
+    if (forall1 && forall2) {
+        const auto& v1 = forall1->getTypeVars();
+        const auto& v2 = forall2->getTypeVars();
+        if (v1.size() != v2.size()) {
+            return false;
+        }
+        for (size_t i = 0; i < v1.size(); ++i) {
+            if (v1[i] != v2[i]) {
+                return false;
+            }
+        }
+        return typesEqual(forall1->getBodyType(), forall2->getBodyType());
+    }
+    
+    // Compare existential types: exists x: A. B
+    auto* ex1 = dynamic_cast<ast::ExistentialType*>(type1);
+    auto* ex2 = dynamic_cast<ast::ExistentialType*>(type2);
+    if (ex1 && ex2) {
+        return ex1->getVarName() == ex2->getVarName() &&
+               typesEqual(ex1->getVarType(), ex2->getVarType()) &&
+               typesEqual(ex1->getBodyType(), ex2->getBodyType());
     }
     
     // Compare generic types (by name)
@@ -668,12 +789,14 @@ bool TypeChecker::isAssignable(ast::Type* from, ast::Type* to) {
     if (!from || !to) {
         return false;
     }
-    
+    from = getEffectiveType(from);
+    to = getEffectiveType(to);
+
     // Exact type match
     if (typesEqual(from, to)) {
         return true;
     }
-    
+
     // Numeric promotion: Int -> Float
     auto* fromPrim = dynamic_cast<ast::PrimitiveType*>(from);
     auto* toPrim = dynamic_cast<ast::PrimitiveType*>(to);
@@ -692,6 +815,37 @@ bool TypeChecker::isAssignable(ast::Type* from, ast::Type* to) {
     
     if (fromArr && toArr) {
         return typesEqual(fromArr->getElementType(), toArr->getElementType());
+    }
+    
+    // Indexed types: exact structural match (same base and same indices)
+    auto* fromIdx = dynamic_cast<ast::IndexedType*>(from);
+    auto* toIdx = dynamic_cast<ast::IndexedType*>(to);
+    if (fromIdx && toIdx) {
+        return typesEqual(from, to);
+    }
+    
+    // Dependent function (Pi) and dependent pair (Sigma): exact structural match
+    auto* fromPi = dynamic_cast<ast::DependentFunctionType*>(from);
+    auto* toPi = dynamic_cast<ast::DependentFunctionType*>(to);
+    if (fromPi && toPi) {
+        return typesEqual(from, to);
+    }
+    auto* fromSigma = dynamic_cast<ast::DependentPairType*>(from);
+    auto* toSigma = dynamic_cast<ast::DependentPairType*>(to);
+    if (fromSigma && toSigma) {
+        return typesEqual(from, to);
+    }
+    
+    // Forall and existential: exact structural match
+    auto* fromForall = dynamic_cast<ast::ForallType*>(from);
+    auto* toForall = dynamic_cast<ast::ForallType*>(to);
+    if (fromForall && toForall) {
+        return typesEqual(from, to);
+    }
+    auto* fromEx = dynamic_cast<ast::ExistentialType*>(from);
+    auto* toEx = dynamic_cast<ast::ExistentialType*>(to);
+    if (fromEx && toEx) {
+        return typesEqual(from, to);
     }
     
     // Generic type parameter can be assigned from/to any type (will be checked at instantiation)
@@ -806,6 +960,69 @@ std::unique_ptr<ast::Type> TypeChecker::copyType(ast::Type* type) {
         return std::make_unique<ast::GenericType>(loc, gen->getName());
     }
     
+    // Copy refinement types (predicate is shared)
+    if (auto* ref = dynamic_cast<ast::RefinementType*>(type)) {
+        std::unique_ptr<ast::Type> baseCopy = copyType(ref->getBaseType());
+        if (!baseCopy) {
+            return nullptr;
+        }
+        return std::make_unique<ast::RefinementType>(
+            loc, ref->getVariableName(), std::move(baseCopy), ref->getPredicateShared());
+    }
+    
+    // Copy indexed types (indices are shared)
+    if (auto* idx = dynamic_cast<ast::IndexedType*>(type)) {
+        std::unique_ptr<ast::Type> baseCopy = copyType(idx->getBaseType());
+        if (!baseCopy) {
+            return nullptr;
+        }
+        std::vector<std::shared_ptr<ast::Expr>> indicesCopy(idx->getIndices().begin(), idx->getIndices().end());
+        return std::make_unique<ast::IndexedType>(loc, std::move(baseCopy), std::move(indicesCopy));
+    }
+    
+    // Copy dependent function type (Pi)
+    if (auto* pi = dynamic_cast<ast::DependentFunctionType*>(type)) {
+        std::unique_ptr<ast::Type> paramCopy = copyType(pi->getParamType());
+        std::unique_ptr<ast::Type> returnCopy = copyType(pi->getReturnType());
+        if (!paramCopy || !returnCopy) {
+            return nullptr;
+        }
+        return std::make_unique<ast::DependentFunctionType>(
+            loc, pi->getParamName(), std::move(paramCopy), std::move(returnCopy));
+    }
+    
+    // Copy dependent pair type (Sigma)
+    if (auto* sigma = dynamic_cast<ast::DependentPairType*>(type)) {
+        std::unique_ptr<ast::Type> varCopy = copyType(sigma->getVarType());
+        std::unique_ptr<ast::Type> bodyCopy = copyType(sigma->getBodyType());
+        if (!varCopy || !bodyCopy) {
+            return nullptr;
+        }
+        return std::make_unique<ast::DependentPairType>(
+            loc, sigma->getVarName(), std::move(varCopy), std::move(bodyCopy));
+    }
+    
+    // Copy forall type
+    if (auto* forall = dynamic_cast<ast::ForallType*>(type)) {
+        std::unique_ptr<ast::Type> bodyCopy = copyType(forall->getBodyType());
+        if (!bodyCopy) {
+            return nullptr;
+        }
+        return std::make_unique<ast::ForallType>(
+            loc, forall->getTypeVars(), std::move(bodyCopy));
+    }
+    
+    // Copy existential type
+    if (auto* ex = dynamic_cast<ast::ExistentialType*>(type)) {
+        std::unique_ptr<ast::Type> varCopy = copyType(ex->getVarType());
+        std::unique_ptr<ast::Type> bodyCopy = copyType(ex->getBodyType());
+        if (!varCopy || !bodyCopy) {
+            return nullptr;
+        }
+        return std::make_unique<ast::ExistentialType>(
+            loc, ex->getVarName(), std::move(varCopy), std::move(bodyCopy));
+    }
+
     // Copy parameterized types
     if (auto* param = dynamic_cast<ast::ParameterizedType*>(type)) {
         std::vector<std::unique_ptr<ast::Type>> argsCopy;

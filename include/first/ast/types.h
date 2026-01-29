@@ -5,9 +5,13 @@
 #include <string>
 #include <vector>
 #include <memory>
+#include <utility>
+#include <cstddef>
 
 namespace first {
 namespace ast {
+
+class Expr;
 
 // Base class for types
 class Type : public ASTNode {
@@ -140,6 +144,139 @@ private:
     std::vector<std::unique_ptr<Type>> paramTypes_;
     std::unique_ptr<Type> returnType_;
     bool isInteraction_; // true for interaction, false for pure function
+};
+
+// Refinement type: {{variable: BaseType where predicate}}
+// Values of this type satisfy the predicate at runtime (checked on entry).
+class RefinementType : public Type {
+public:
+    RefinementType(const SourceLocation& location,
+                   const std::string& variableName,
+                   std::unique_ptr<Type> baseType,
+                   std::shared_ptr<Expr> predicate);
+    ~RefinementType() override;
+
+    const std::string& getVariableName() const { return variableName_; }
+    Type* getBaseType() const { return baseType_.get(); }
+    Expr* getPredicate() const { return predicate_.get(); }
+    std::shared_ptr<Expr> getPredicateShared() const { return predicate_; }
+
+    void accept(ASTVisitor& visitor) override {
+        (void)visitor;
+    }
+    std::string getNodeType() const override { return "RefinementType"; }
+
+private:
+    std::string variableName_;
+    std::unique_ptr<Type> baseType_;
+    std::shared_ptr<Expr> predicate_;
+};
+
+// Indexed type: BaseType[index1, index2, ...] (e.g. Vector[n], Array<Int>[n])
+// Indices are expressions (literals or identifiers for type/term parameters).
+class IndexedType : public Type {
+public:
+    IndexedType(const SourceLocation& location,
+                std::unique_ptr<Type> baseType,
+                std::vector<std::shared_ptr<Expr>> indices);
+    ~IndexedType() override;
+
+    Type* getBaseType() const { return baseType_.get(); }
+    const std::vector<std::shared_ptr<Expr>>& getIndices() const { return indices_; }
+
+    void accept(ASTVisitor& visitor) override;
+    std::string getNodeType() const override { return "IndexedType"; }
+
+private:
+    std::unique_ptr<Type> baseType_;
+    std::vector<std::shared_ptr<Expr>> indices_;
+};
+
+// Dependent function type (Pi type): (paramName: ParamType) -> ReturnType
+// The return type can reference the parameter name (e.g. (n: Int) -> Vector[n]).
+class DependentFunctionType : public Type {
+public:
+    DependentFunctionType(const SourceLocation& location,
+                         const std::string& paramName,
+                         std::unique_ptr<Type> paramType,
+                         std::unique_ptr<Type> returnType);
+    ~DependentFunctionType() override;
+
+    const std::string& getParamName() const { return paramName_; }
+    Type* getParamType() const { return paramType_.get(); }
+    Type* getReturnType() const { return returnType_.get(); }
+
+    void accept(ASTVisitor& visitor) override;
+    std::string getNodeType() const override { return "DependentFunctionType"; }
+
+private:
+    std::string paramName_;
+    std::unique_ptr<Type> paramType_;
+    std::unique_ptr<Type> returnType_;
+};
+
+// Dependent pair type (Sigma type): (varName: VarType) * BodyType
+// The body type can reference the variable name (e.g. (n: Int) * Array<Int>[n]).
+class DependentPairType : public Type {
+public:
+    DependentPairType(const SourceLocation& location,
+                      const std::string& varName,
+                      std::unique_ptr<Type> varType,
+                      std::unique_ptr<Type> bodyType);
+    ~DependentPairType() override;
+
+    const std::string& getVarName() const { return varName_; }
+    Type* getVarType() const { return varType_.get(); }
+    Type* getBodyType() const { return bodyType_.get(); }
+
+    void accept(ASTVisitor& visitor) override;
+    std::string getNodeType() const override { return "DependentPairType"; }
+
+private:
+    std::string varName_;
+    std::unique_ptr<Type> varType_;
+    std::unique_ptr<Type> bodyType_;
+};
+
+// Forall type: forall T U. Type (polymorphic type; body can reference T, U)
+class ForallType : public Type {
+public:
+    ForallType(const SourceLocation& location,
+               std::vector<std::string> typeVars,
+               std::unique_ptr<Type> bodyType);
+    ~ForallType() override;
+
+    const std::vector<std::string>& getTypeVars() const { return typeVars_; }
+    Type* getBodyType() const { return bodyType_.get(); }
+
+    void accept(ASTVisitor& visitor) override;
+    std::string getNodeType() const override { return "ForallType"; }
+
+private:
+    std::vector<std::string> typeVars_;
+    std::unique_ptr<Type> bodyType_;
+};
+
+// Existential type: exists x: VarType. BodyType (body can reference x)
+class ExistentialType : public Type {
+public:
+    ExistentialType(const SourceLocation& location,
+                    const std::string& varName,
+                    std::unique_ptr<Type> varType,
+                    std::unique_ptr<Type> bodyType);
+    ~ExistentialType() override;
+
+    const std::string& getVarName() const { return varName_; }
+    Type* getVarType() const { return varType_.get(); }
+    Type* getBodyType() const { return bodyType_.get(); }
+
+    void accept(ASTVisitor& visitor) override;
+    std::string getNodeType() const override { return "ExistentialType"; }
+
+private:
+    std::string varName_;
+    std::unique_ptr<Type> varType_;
+    std::unique_ptr<Type> bodyType_;
 };
 
 // Generic type parameter

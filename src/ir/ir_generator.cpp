@@ -6,11 +6,14 @@
 #include "first/ast/match_case.h"
 #include "first/ast/patterns.h"
 #include "first/semantic/module_resolver.h"
+#include "first/source_location.h"
 #include <set>
 #include <map>
+#include <sstream>
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/Function.h>
 #include <llvm/IR/Instructions.h>
+#include <llvm/IR/Intrinsics.h>
 #include <llvm/IR/BasicBlock.h>
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/GlobalVariable.h>
@@ -178,6 +181,15 @@ void IRGenerator::visitFunctionDecl(ast::FunctionDecl* node) {
         funcName,
         module_.get()
     );
+
+    // Phase 6.2: Pure function optimization - mark as readonly (no writes; enables CSE, etc.)
+    func->addFnAttr(llvm::Attribute::ReadOnly);
+    // Phase 6.2: Immutability - mark pointer parameters as readonly
+    for (auto& arg : func->args()) {
+        if (arg.getType()->isPointerTy()) {
+            arg.addAttr(llvm::Attribute::ReadOnly);
+        }
+    }
     
     // Set parameter names
     unsigned idx = 0;
@@ -220,6 +232,13 @@ void IRGenerator::visitFunctionDecl(ast::FunctionDecl* node) {
         }
         idx++;
     }
+    
+    // Emit runtime refinement checks for parameters with refinement types
+    std::vector<ast::Parameter*> paramPtrs;
+    for (const auto& p : node->getParameters()) {
+        paramPtrs.push_back(p.get());
+    }
+    emitRefinementChecksForParams(paramPtrs, func, entryBlock);
     
     // Generate statements
     const auto& body = node->getBody();
@@ -342,6 +361,13 @@ void IRGenerator::visitInteractionDecl(ast::InteractionDecl* node) {
         idx++;
     }
     
+    // Emit runtime refinement checks for parameters with refinement types
+    std::vector<ast::Parameter*> interactionParamPtrs;
+    for (const auto& p : node->getParameters()) {
+        interactionParamPtrs.push_back(p.get());
+    }
+    emitRefinementChecksForParams(interactionParamPtrs, func, entryBlock);
+    
     // Generate statements
     const auto& body = node->getBody();
     bool hasReturn = false;
@@ -431,6 +457,39 @@ void IRGenerator::visitLambdaExpr(ast::LambdaExpr* node) {
     currentValue_ = evaluateLambda(node);
 }
 
+void IRGenerator::visitAsyncExpr(ast::AsyncExpr* node) {
+    // async expr: evaluate operand (stub: pass through; full impl would wrap in Promise)
+    currentValue_ = evaluateExpr(node->getOperand());
+}
+
+void IRGenerator::visitAwaitExpr(ast::AwaitExpr* node) {
+    // await expr: evaluate operand (stub: pass through; full impl would unwrap Promise)
+    currentValue_ = evaluateExpr(node->getOperand());
+}
+
+void IRGenerator::visitSpawnExpr(ast::SpawnExpr* node) {
+    // spawn expr: evaluate operand (stub: pass through; full impl would run in task)
+    currentValue_ = evaluateExpr(node->getOperand());
+}
+
+void IRGenerator::visitJoinExpr(ast::JoinExpr* node) {
+    // join expr: evaluate operand (stub: pass through; full impl would wait for Task)
+    currentValue_ = evaluateExpr(node->getOperand());
+}
+
+void IRGenerator::visitSelectExpr(ast::SelectExpr* node) {
+    // select { branches }: stub - run first branch's statement, return unit
+    const auto& branches = node->getBranches();
+    if (!branches.empty() && branches[0]->getStatement()) {
+        generateStatement(branches[0]->getStatement());
+    }
+    currentValue_ = llvm::ConstantInt::get(context_, llvm::APInt(1, 0));
+}
+
+void IRGenerator::visitSelectStmt(ast::SelectStmt* node) {
+    // Handled by generateStatement
+}
+
 void IRGenerator::visitVariableDecl(ast::VariableDecl* node) {
     // Handled by generateStatement
 }
@@ -467,6 +526,43 @@ llvm::Type* IRGenerator::convertType(ast::Type* type) {
         return nullptr;
     } else if (auto* paramType = dynamic_cast<ast::ParameterizedType*>(type)) {
         return convertParameterizedType(paramType);
+    } else if (auto* refType = dynamic_cast<ast::RefinementType*>(type)) {
+        // Refinement types have the same LLVM representation as their base type.
+        // Runtime check is emitted at function entry.
+        return convertType(refType->getBaseType());
+    } else if (auto* idxType = dynamic_cast<ast::IndexedType*>(type)) {
+        // Indexed types (e.g. Vector[n], Array<Int>[n]) have the same LLVM representation as base type.
+        // Indices are used only for type-checking / dependent typing.
+        return convertType(idxType->getBaseType());
+    } else if (auto* piType = dynamic_cast<ast::DependentFunctionType*>(type)) {
+        // Pi type (x: A) -> B: same representation as function(A) -> B (one parameter).
+        llvm::Type* paramTy = convertType(piType->getParamType());
+        llvm::Type* returnTy = convertType(piType->getReturnType());
+        if (!paramTy || !returnTy) {
+            return nullptr;
+        }
+        (void)llvm::FunctionType::get(returnTy, {paramTy}, false);
+        return llvm::PointerType::get(context_, 0);
+    } else if (auto* sigmaType = dynamic_cast<ast::DependentPairType*>(type)) {
+        // Sigma type (x: A) * B: struct { A; B } (first component, second component).
+        llvm::Type* varTy = convertType(sigmaType->getVarType());
+        llvm::Type* bodyTy = convertType(sigmaType->getBodyType());
+        if (!varTy || !bodyTy) {
+            return nullptr;
+        }
+        return llvm::StructType::get(context_, {varTy, bodyTy});
+    } else if (auto* forallType = dynamic_cast<ast::ForallType*>(type)) {
+        // Forall T U. Body: representation is the body type (instantiation happens at use sites).
+        // If body contains unsubstituted generics, convertType will fail.
+        return convertType(forallType->getBodyType());
+    } else if (auto* exType = dynamic_cast<ast::ExistentialType*>(type)) {
+        // Existential exists x: A. B: struct { A; B } (witness/value pair; B may depend on x).
+        llvm::Type* varTy = convertType(exType->getVarType());
+        llvm::Type* bodyTy = convertType(exType->getBodyType());
+        if (!varTy || !bodyTy) {
+            return nullptr;
+        }
+        return llvm::StructType::get(context_, {varTy, bodyTy});
     }
     
     // TODO: Handle other types (FunctionType, etc.)
@@ -629,16 +725,107 @@ void IRGenerator::enterFunction(llvm::Function* func) {
 void IRGenerator::exitFunction() {
     currentFunction_ = nullptr;
     localVars_.clear();
+    localVarTypes_.clear();
+    refinementVarOverrides_.clear();
     arrayMetadata_.clear();
     recordMetadata_.clear();
 }
 
 llvm::AllocaInst* IRGenerator::getVariable(const std::string& name) {
+    auto overrideIt = refinementVarOverrides_.find(name);
+    if (overrideIt != refinementVarOverrides_.end()) {
+        return overrideIt->second;
+    }
     auto it = localVars_.find(name);
     if (it != localVars_.end()) {
         return it->second;
     }
     return nullptr;
+}
+
+void IRGenerator::pushRefinementBinding(const std::string& varName, llvm::AllocaInst* alloca, llvm::Type* type) {
+    refinementVarOverrides_[varName] = alloca;
+    localVarTypes_[varName] = type;
+}
+
+void IRGenerator::popRefinementBinding(const std::string& varName) {
+    refinementVarOverrides_.erase(varName);
+    localVarTypes_.erase(varName);
+}
+
+void IRGenerator::emitRefinementChecksForParams(const std::vector<ast::Parameter*>& params, llvm::Function* func, llvm::BasicBlock* entryBlock) {
+    llvm::BasicBlock* currentBlock = entryBlock;
+    llvm::Function* refinementFailFn = nullptr;  // lazily declared when first needed
+    for (ast::Parameter* param : params) {
+        ast::Type* paramType = param->getType();
+        auto* refType = dynamic_cast<ast::RefinementType*>(paramType);
+        if (!refType || !refType->getPredicate()) {
+            continue;
+        }
+        const std::string& paramName = param->getName();
+        const std::string& refinementVarName = refType->getVariableName();
+        llvm::AllocaInst* paramAlloca = getVariable(paramName);
+        if (!paramAlloca) {
+            continue;
+        }
+        bool needOverride = (paramName != refinementVarName);
+        if (needOverride) {
+            llvm::Type* baseLlvmType = convertType(refType->getBaseType());
+            pushRefinementBinding(refinementVarName, paramAlloca, baseLlvmType);
+        }
+        llvm::Value* predVal = evaluateExpr(refType->getPredicate());
+        if (needOverride) {
+            popRefinementBinding(refinementVarName);
+        }
+        if (!predVal) {
+            continue;
+        }
+        if (!predVal->getType()->isIntegerTy(1)) {
+            errorReporter_.error(
+                refType->getPredicate()->getLocation(),
+                "Refinement predicate must be of type Bool"
+            );
+            continue;
+        }
+        // Build error message: function 'foo', parameter 'n' at file:line:col
+        std::ostringstream msg;
+        msg << "function '" << func->getName().str() << "', parameter '" << paramName << "'";
+        const SourceLocation& loc = param->getLocation();
+        if (!loc.getFile().empty() || loc.getLine() > 0) {
+            msg << " at ";
+            if (!loc.getFile().empty()) {
+                msg << loc.getFile();
+            }
+            if (loc.getLine() > 0) {
+                if (!loc.getFile().empty()) msg << ":";
+                msg << loc.getLine() << ":" << loc.getColumn();
+            }
+        }
+        std::string messageStr = msg.str();
+        llvm::BasicBlock* failBlock = llvm::BasicBlock::Create(context_, "refinement.fail", func);
+        llvm::BasicBlock* nextBlock = llvm::BasicBlock::Create(context_, "refinement.cont", func);
+        builder_->SetInsertPoint(currentBlock);
+        builder_->CreateCondBr(predVal, nextBlock, failBlock);
+        builder_->SetInsertPoint(failBlock);
+        if (!refinementFailFn) {
+            llvm::FunctionType* failFnType = llvm::FunctionType::get(
+                llvm::Type::getVoidTy(context_),
+                llvm::PointerType::get(context_, 0),
+                false
+            );
+            refinementFailFn = llvm::Function::Create(
+                failFnType,
+                llvm::Function::ExternalLinkage,
+                "__first_refinement_fail",
+                module_.get()
+            );
+        }
+        llvm::Value* msgPtr = builder_->CreateGlobalString(messageStr, "refinement.fail.msg", 0);
+        builder_->CreateCall(refinementFailFn, msgPtr);
+        builder_->CreateUnreachable();
+        currentBlock = nextBlock;
+    }
+    builder_->SetInsertPoint(currentBlock);
 }
 
 void IRGenerator::setVariable(const std::string& name, llvm::AllocaInst* value, llvm::Type* type) {
@@ -973,7 +1160,7 @@ llvm::Value* IRGenerator::evaluateVariable(ast::VariableExpr* expr) {
     return builder_->CreateAlignedLoad(loadType, alloca, llvm::Align(8), name);
 }
 
-llvm::Value* IRGenerator::evaluateFunctionCall(ast::FunctionCallExpr* expr) {
+llvm::Value* IRGenerator::evaluateFunctionCall(ast::FunctionCallExpr* expr, bool tailCall) {
     std::string funcName = expr->getName();
 
     // Evaluate arguments first (so we can synthesize an extern declaration if needed).
@@ -1011,8 +1198,14 @@ llvm::Value* IRGenerator::evaluateFunctionCall(ast::FunctionCallExpr* expr) {
         return nullptr;
     }
     
-    // Create call instruction
-    return builder_->CreateCall(func, args, "calltmp");
+    // Create call instruction (Phase 6.2: tail call when requested for TCO)
+    llvm::Value* callValue = builder_->CreateCall(func, args, "calltmp");
+    if (tailCall) {
+        if (auto* callInst = llvm::dyn_cast<llvm::CallInst>(callValue)) {
+            callInst->setTailCall(true);
+        }
+    }
+    return callValue;
 }
 
 void IRGenerator::generateStatement(ast::Stmt* stmt) {
@@ -1026,6 +1219,14 @@ void IRGenerator::generateStatement(ast::Stmt* stmt) {
         generateReturnStmt(returnStmt);
     } else if (auto* exprStmt = dynamic_cast<ast::ExprStmt*>(stmt)) {
         generateExprStmt(exprStmt);
+    } else if (auto* ifStmt = dynamic_cast<ast::IfStmt*>(stmt)) {
+        generateIfStmt(ifStmt);
+    } else if (auto* whileStmt = dynamic_cast<ast::WhileStmt*>(stmt)) {
+        generateWhileStmt(whileStmt);
+    } else if (auto* assignStmt = dynamic_cast<ast::AssignmentStmt*>(stmt)) {
+        generateAssignmentStmt(assignStmt);
+    } else if (auto* selectStmt = dynamic_cast<ast::SelectStmt*>(stmt)) {
+        generateSelectStmt(selectStmt);
     }
 }
 
@@ -1110,7 +1311,13 @@ void IRGenerator::generateVariableDecl(ast::VariableDecl* stmt) {
 void IRGenerator::generateReturnStmt(ast::ReturnStmt* stmt) {
     ast::Expr* returnExpr = stmt->getValue();
     if (returnExpr) {
-        llvm::Value* returnValue = evaluateExpr(returnExpr);
+        // Phase 6.2: Tail call optimization - emit tail call when return value is a direct call
+        llvm::Value* returnValue = nullptr;
+        if (auto* callExpr = dynamic_cast<ast::FunctionCallExpr*>(returnExpr)) {
+            returnValue = evaluateFunctionCall(callExpr, /*tailCall=*/ true);
+        } else {
+            returnValue = evaluateExpr(returnExpr);
+        }
         if (returnValue) {
             builder_->CreateRet(returnValue);
         } else {
@@ -2679,6 +2886,17 @@ void IRGenerator::generateAssignmentStmt(ast::AssignmentStmt* stmt) {
             stmt->getLocation(),
             "Assignment target must be a variable"
         );
+    }
+}
+
+void IRGenerator::generateSelectStmt(ast::SelectStmt* stmt) {
+    if (!stmt) {
+        return;
+    }
+    // select { branches }: stub - run first branch's statement
+    const auto& branches = stmt->getBranches();
+    if (!branches.empty() && branches[0]->getStatement()) {
+        generateStatement(branches[0]->getStatement());
     }
 }
 

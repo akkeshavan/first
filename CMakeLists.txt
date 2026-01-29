@@ -37,6 +37,8 @@ llvm_map_components_to_libnames(llvm_libs
     orcjit
     native
     target
+    Passes
+    ipo
 )
 
 # ANTLR4 grammar generation
@@ -131,6 +133,7 @@ set(COMPILER_SOURCES
     src/ast/match_case.cpp
     src/ast/match_expr.cpp
     src/ast/lambda_expr.cpp
+    src/ast/select_branch.cpp
     src/semantic/symbol_table.cpp
     src/semantic/type_checker.cpp
     src/semantic/semantic_checker.cpp

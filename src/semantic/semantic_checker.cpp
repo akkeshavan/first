@@ -50,9 +50,13 @@ void SemanticChecker::checkStatement(ast::Stmt* stmt) {
         if (retStmt->getValue()) {
             checkExpression(retStmt->getValue());
         }
+    } else if (auto* selectStmt = dynamic_cast<ast::SelectStmt*>(stmt)) {
+        for (const auto& branch : selectStmt->getBranches()) {
+            if (branch->getStatement()) {
+                checkStatement(branch->getStatement());
+            }
+        }
     }
-    // TODO: Check for while loops when WhileStmt AST node is added
-    // TODO: Check for assignments when AssignmentStmt AST node is added
 }
 
 void SemanticChecker::checkExpression(ast::Expr* expr) {
@@ -60,6 +64,7 @@ void SemanticChecker::checkExpression(ast::Expr* expr) {
     
     if (auto* call = dynamic_cast<ast::FunctionCallExpr*>(expr)) {
         checkIOOperation(call);
+        checkMonadicOperators(expr);
         // Check arguments recursively
         for (const auto& arg : call->getArgs()) {
             checkExpression(arg.get());
@@ -80,6 +85,20 @@ void SemanticChecker::checkExpression(ast::Expr* expr) {
         for (const auto& matchCase : match->getCases()) {
             if (matchCase->getBody()) {
                 checkExpression(matchCase->getBody());
+            }
+        }
+    } else if (auto* asyncExpr = dynamic_cast<ast::AsyncExpr*>(expr)) {
+        checkExpression(asyncExpr->getOperand());
+    } else if (auto* awaitExpr = dynamic_cast<ast::AwaitExpr*>(expr)) {
+        checkExpression(awaitExpr->getOperand());
+    } else if (auto* spawnExpr = dynamic_cast<ast::SpawnExpr*>(expr)) {
+        checkExpression(spawnExpr->getOperand());
+    } else if (auto* joinExpr = dynamic_cast<ast::JoinExpr*>(expr)) {
+        checkExpression(joinExpr->getOperand());
+    } else if (auto* selectExpr = dynamic_cast<ast::SelectExpr*>(expr)) {
+        for (const auto& branch : selectExpr->getBranches()) {
+            if (branch->getStatement()) {
+                checkStatement(branch->getStatement());
             }
         }
     }
@@ -107,14 +126,19 @@ void SemanticChecker::checkWhileLoop(ast::Stmt* stmt) {
 void SemanticChecker::checkMonadicOperators(ast::Expr* expr) {
     if (!inPureFunction_ || !expr) return;
     
-    // Check for monadic operators in binary expressions
-    if (auto* binary = dynamic_cast<ast::BinaryExpr*>(expr)) {
-        // Note: We don't have monadic operator enum values yet, but we can check by operator type
-        // Monadic operators would be: >>=, >>, <$>, <*>
-        // For now, this is a placeholder - we'll need to add these operators to BinaryExpr::Op
-        // or create a separate MonadicExpr node
-        
-        // TODO: Check for monadic operators when they're added to the AST
+    // After parser desugaring, monadic operators are represented as ordinary
+    // function calls to bind/then/fmap/apply. We treat those specially in
+    // pure functions and report a semantic restriction violation.
+    auto* call = dynamic_cast<ast::FunctionCallExpr*>(expr);
+    if (!call) return;
+
+    const std::string& name = call->getName();
+    if (name == "bind" || name == "then" ||
+        name == "fmap" || name == "apply") {
+        reportViolation(
+            call->getLocation(),
+            "Monadic operators (`>>=`, `>>`, `<$>`, `<*>`) can only be used in interaction functions, not in pure functions"
+        );
     }
 }
 
