@@ -9,6 +9,9 @@
 #include <cstdlib>
 #include <algorithm>
 #include <limits>
+#include <map>
+#include <vector>
+#include <string>
 
 #ifndef _WIN32
 #include <sys/socket.h>
@@ -16,6 +19,7 @@
 #include <arpa/inet.h>
 #include <netdb.h>
 #include <unistd.h>
+#include <fcntl.h>
 #endif
 
 namespace {
@@ -231,6 +235,503 @@ char* first_http_get(const char* url) {
 
 char* first_http_post(const char* url, const char* body) {
     return http_via_socket(url, "POST", body);
+}
+
+// --- HTTP Client/Server (dev implementation) ---
+#ifndef _WIN32
+namespace {
+
+struct HttpResponse {
+    int64_t status = 0;
+    std::string headers_json;
+    std::string body;
+};
+
+struct HttpRequest {
+    std::string method;
+    std::string path;
+    std::string params_json;
+    std::string query_json;
+    std::string headers_json;
+    std::string body;
+};
+
+using HandlerFn = int64_t(*)(int64_t); // (reqHandle) -> respHandle
+
+static int64_t ptr_to_handle(void* p) {
+    return static_cast<int64_t>(reinterpret_cast<intptr_t>(p));
+}
+static void* handle_to_ptr(int64_t h) {
+    return reinterpret_cast<void*>(static_cast<intptr_t>(h));
+}
+
+static bool parse_http_url(const std::string& url, std::string& host, int64_t& port, std::string& path) {
+    // Very small parser: http://host[:port]/path
+    std::string u = url;
+    const std::string prefix = "http://";
+    if (u.rfind(prefix, 0) == 0) u = u.substr(prefix.size());
+    auto slash = u.find('/');
+    std::string hostport = (slash == std::string::npos) ? u : u.substr(0, slash);
+    path = (slash == std::string::npos) ? "/" : u.substr(slash);
+    auto colon = hostport.find(':');
+    if (colon == std::string::npos) {
+        host = hostport;
+        port = 80;
+    } else {
+        host = hostport.substr(0, colon);
+        port = std::strtoll(hostport.substr(colon + 1).c_str(), nullptr, 10);
+    }
+    return !host.empty() && port > 0;
+}
+
+static std::string json_escape(const std::string& s) {
+    std::string out;
+    out.reserve(s.size() + 8);
+    for (char c : s) {
+        switch (c) {
+        case '\"': out += "\\\""; break;
+        case '\\': out += "\\\\"; break;
+        case '\n': out += "\\n"; break;
+        case '\r': out += "\\r"; break;
+        case '\t': out += "\\t"; break;
+        default: out += c; break;
+        }
+    }
+    return out;
+}
+
+static std::string kv_to_json_object(const std::map<std::string, std::string>& kv) {
+    std::string out = "{";
+    bool first = true;
+    for (const auto& [k, v] : kv) {
+        if (!first) out += ",";
+        first = false;
+        out += "\"" + json_escape(k) + "\":\"" + json_escape(v) + "\"";
+    }
+    out += "}";
+    return out;
+}
+
+static std::map<std::string, std::string> parse_query_kv(const std::string& qs) {
+    std::map<std::string, std::string> m;
+    size_t i = 0;
+    while (i < qs.size()) {
+        size_t amp = qs.find('&', i);
+        std::string pair = qs.substr(i, amp == std::string::npos ? std::string::npos : amp - i);
+        size_t eq = pair.find('=');
+        std::string k = (eq == std::string::npos) ? pair : pair.substr(0, eq);
+        std::string v = (eq == std::string::npos) ? "" : pair.substr(eq + 1);
+        if (!k.empty()) m[k] = v;
+        if (amp == std::string::npos) break;
+        i = amp + 1;
+    }
+    return m;
+}
+
+static void split_path_query(const std::string& full, std::string& path, std::string& query) {
+    auto q = full.find('?');
+    if (q == std::string::npos) { path = full; query.clear(); return; }
+    path = full.substr(0, q);
+    query = full.substr(q + 1);
+}
+
+static bool route_match(const std::string& route, const std::string& path, std::map<std::string, std::string>& params) {
+    // route like /users/:id/books/:bookId
+    auto split = [](const std::string& s) {
+        std::vector<std::string> parts;
+        size_t i = 0;
+        while (i < s.size()) {
+            while (i < s.size() && s[i] == '/') ++i;
+            if (i >= s.size()) break;
+            size_t j = s.find('/', i);
+            parts.push_back(s.substr(i, j == std::string::npos ? std::string::npos : j - i));
+            if (j == std::string::npos) break;
+            i = j + 1;
+        }
+        return parts;
+    };
+    auto r = split(route);
+    auto p = split(path);
+    if (r.size() != p.size()) return false;
+    for (size_t i = 0; i < r.size(); ++i) {
+        const std::string& seg = r[i];
+        if (!seg.empty() && seg[0] == ':') {
+            params[seg.substr(1)] = p[i];
+        } else if (seg != p[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+struct Route {
+    std::string method;
+    std::string route;
+    HandlerFn handler = nullptr;
+};
+
+struct HttpServer {
+    std::string host;
+    int64_t port = 0;
+    int listen_fd = -1;
+    bool should_close = false;
+    std::vector<Route> routes;
+};
+
+static bool read_line(int fd, std::string& line) {
+    line.clear();
+    char c;
+    while (true) {
+        ssize_t n = recv(fd, &c, 1, 0);
+        if (n <= 0) return false;
+        if (c == '\r') continue;
+        if (c == '\n') break;
+        line.push_back(c);
+        if (line.size() > 8192) break;
+    }
+    return true;
+}
+
+static bool read_exact(int fd, std::string& out, size_t n) {
+    out.clear();
+    out.resize(n);
+    size_t off = 0;
+    while (off < n) {
+        ssize_t r = recv(fd, &out[off], n - off, 0);
+        if (r <= 0) return false;
+        off += static_cast<size_t>(r);
+    }
+    return true;
+}
+
+static void write_all(int fd, const std::string& s) {
+    size_t off = 0;
+    while (off < s.size()) {
+        ssize_t n = send(fd, s.data() + off, s.size() - off, 0);
+        if (n <= 0) return;
+        off += static_cast<size_t>(n);
+    }
+}
+
+static std::string status_text(int64_t code) {
+    switch (code) {
+    case 200: return "OK";
+    case 400: return "Bad Request";
+    case 404: return "Not Found";
+    case 500: return "Internal Server Error";
+    default: return "OK";
+    }
+}
+
+static int create_listen_socket(const std::string& host, int64_t port) {
+    int fd = socket(AF_INET, SOCK_STREAM, 0);
+    if (fd < 0) return -1;
+    int opt = 1;
+    setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+    sockaddr_in addr{};
+    addr.sin_family = AF_INET;
+    addr.sin_port = htons(static_cast<uint16_t>(port));
+    addr.sin_addr.s_addr = host.empty() ? htonl(INADDR_ANY) : inet_addr(host.c_str());
+    if (bind(fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)) != 0) { close(fd); return -1; }
+    if (listen(fd, 64) != 0) { close(fd); return -1; }
+    return fd;
+}
+
+static int64_t http_response_create_internal(int64_t status, const char* headers_json, const char* body) {
+    auto* r = new HttpResponse();
+    r->status = status;
+    r->headers_json = headers_json ? headers_json : "{}";
+    r->body = body ? body : "";
+    return ptr_to_handle(r);
+}
+
+static void handle_client(HttpServer* s, int cfd) {
+    std::string requestLine;
+    if (!read_line(cfd, requestLine)) { close(cfd); return; }
+    std::string method, target, version;
+    {
+        std::istringstream iss(requestLine);
+        iss >> method >> target >> version;
+    }
+    std::map<std::string, std::string> headers;
+    while (true) {
+        std::string line;
+        if (!read_line(cfd, line)) { close(cfd); return; }
+        if (line.empty()) break;
+        auto colon = line.find(':');
+        if (colon != std::string::npos) {
+            std::string k = line.substr(0, colon);
+            std::string v = line.substr(colon + 1);
+            while (!v.empty() && v[0] == ' ') v.erase(v.begin());
+            headers[k] = v;
+        }
+    }
+    size_t contentLen = 0;
+    if (headers.find("Content-Length") != headers.end()) {
+        contentLen = static_cast<size_t>(std::strtoll(headers["Content-Length"].c_str(), nullptr, 10));
+    }
+    std::string body;
+    if (contentLen > 0) {
+        if (!read_exact(cfd, body, contentLen)) body.clear();
+    }
+    std::string path, query;
+    split_path_query(target, path, query);
+    auto queryKv = parse_query_kv(query);
+
+    Route* matched = nullptr;
+    std::map<std::string, std::string> params;
+    for (auto& r : s->routes) {
+        if (r.method != method) continue;
+        std::map<std::string, std::string> tmp;
+        if (route_match(r.route, path, tmp)) {
+            matched = &r;
+            params = std::move(tmp);
+            break;
+        }
+    }
+
+    int64_t respHandle = 0;
+    if (matched && matched->handler) {
+        auto* req = new HttpRequest();
+        req->method = method;
+        req->path = path;
+        req->params_json = kv_to_json_object(params);
+        req->query_json = kv_to_json_object(queryKv);
+        req->headers_json = kv_to_json_object(headers);
+        req->body = body;
+        int64_t reqHandle = ptr_to_handle(req);
+        respHandle = matched->handler(reqHandle);
+        delete req;
+    } else {
+        respHandle = http_response_create_internal(404, "{}", "Not Found");
+    }
+
+    auto* resp = static_cast<HttpResponse*>(handle_to_ptr(respHandle));
+    if (!resp) resp = static_cast<HttpResponse*>(handle_to_ptr(http_response_create_internal(500, "{}", "Internal Server Error")));
+
+    std::string outBody = resp->body;
+    std::string out =
+        "HTTP/1.1 " + std::to_string(resp->status) + " " + status_text(resp->status) + "\r\n"
+        "Content-Type: text/plain\r\n"
+        "Content-Length: " + std::to_string(outBody.size()) + "\r\n"
+        "Connection: close\r\n"
+        "\r\n" + outBody;
+    write_all(cfd, out);
+    close(cfd);
+}
+
+} // namespace
+#endif // !_WIN32
+
+int64_t first_http_server_create(const char* host, int64_t port) {
+#ifndef _WIN32
+    auto* s = new HttpServer();
+    s->host = host ? host : "";
+    s->port = port;
+    return ptr_to_handle(s);
+#else
+    (void)host; (void)port;
+    return 0;
+#endif
+}
+
+void first_http_server_get(int64_t server, const char* route, int64_t handler_fn_ptr) {
+#ifndef _WIN32
+    auto* s = static_cast<HttpServer*>(handle_to_ptr(server));
+    if (!s || !route) return;
+    Route r;
+    r.method = "GET";
+    r.route = route;
+    r.handler = reinterpret_cast<HandlerFn>(static_cast<intptr_t>(handler_fn_ptr));
+    s->routes.push_back(std::move(r));
+#else
+    (void)server; (void)route; (void)handler_fn_ptr;
+#endif
+}
+
+void first_http_server_post(int64_t server, const char* route, int64_t handler_fn_ptr) {
+#ifndef _WIN32
+    auto* s = static_cast<HttpServer*>(handle_to_ptr(server));
+    if (!s || !route) return;
+    Route r;
+    r.method = "POST";
+    r.route = route;
+    r.handler = reinterpret_cast<HandlerFn>(static_cast<intptr_t>(handler_fn_ptr));
+    s->routes.push_back(std::move(r));
+#else
+    (void)server; (void)route; (void)handler_fn_ptr;
+#endif
+}
+
+void first_http_server_listen(int64_t server) {
+#ifndef _WIN32
+    auto* s = static_cast<HttpServer*>(handle_to_ptr(server));
+    if (!s) return;
+    if (s->listen_fd < 0) {
+        s->listen_fd = create_listen_socket(s->host, s->port);
+    }
+    if (s->listen_fd < 0) return;
+    while (!s->should_close) {
+        int cfd = accept(s->listen_fd, nullptr, nullptr);
+        if (cfd < 0) continue;
+        handle_client(s, cfd);
+    }
+#else
+    (void)server;
+#endif
+}
+
+void first_http_server_close(int64_t server) {
+#ifndef _WIN32
+    auto* s = static_cast<HttpServer*>(handle_to_ptr(server));
+    if (!s) return;
+    s->should_close = true;
+    if (s->listen_fd >= 0) close(s->listen_fd);
+#else
+    (void)server;
+#endif
+}
+
+const char* first_http_req_method(int64_t req) {
+#ifndef _WIN32
+    auto* r = static_cast<HttpRequest*>(handle_to_ptr(req));
+    return r ? r->method.c_str() : nullptr;
+#else
+    (void)req; return nullptr;
+#endif
+}
+const char* first_http_req_path(int64_t req) {
+#ifndef _WIN32
+    auto* r = static_cast<HttpRequest*>(handle_to_ptr(req));
+    return r ? r->path.c_str() : nullptr;
+#else
+    (void)req; return nullptr;
+#endif
+}
+const char* first_http_req_params_json(int64_t req) {
+#ifndef _WIN32
+    auto* r = static_cast<HttpRequest*>(handle_to_ptr(req));
+    return r ? r->params_json.c_str() : nullptr;
+#else
+    (void)req; return nullptr;
+#endif
+}
+const char* first_http_req_query_json(int64_t req) {
+#ifndef _WIN32
+    auto* r = static_cast<HttpRequest*>(handle_to_ptr(req));
+    return r ? r->query_json.c_str() : nullptr;
+#else
+    (void)req; return nullptr;
+#endif
+}
+const char* first_http_req_headers_json(int64_t req) {
+#ifndef _WIN32
+    auto* r = static_cast<HttpRequest*>(handle_to_ptr(req));
+    return r ? r->headers_json.c_str() : nullptr;
+#else
+    (void)req; return nullptr;
+#endif
+}
+const char* first_http_req_body(int64_t req) {
+#ifndef _WIN32
+    auto* r = static_cast<HttpRequest*>(handle_to_ptr(req));
+    return r ? r->body.c_str() : nullptr;
+#else
+    (void)req; return nullptr;
+#endif
+}
+
+int64_t first_http_response_create(int64_t status, const char* headers_json, const char* body) {
+#ifndef _WIN32
+    return http_response_create_internal(status, headers_json, body);
+#else
+    (void)status; (void)headers_json; (void)body;
+    return 0;
+#endif
+}
+int64_t first_http_resp_status(int64_t resp) {
+#ifndef _WIN32
+    auto* r = static_cast<HttpResponse*>(handle_to_ptr(resp));
+    return r ? r->status : 0;
+#else
+    (void)resp; return 0;
+#endif
+}
+const char* first_http_resp_headers_json(int64_t resp) {
+#ifndef _WIN32
+    auto* r = static_cast<HttpResponse*>(handle_to_ptr(resp));
+    return r ? r->headers_json.c_str() : nullptr;
+#else
+    (void)resp; return nullptr;
+#endif
+}
+const char* first_http_resp_body(int64_t resp) {
+#ifndef _WIN32
+    auto* r = static_cast<HttpResponse*>(handle_to_ptr(resp));
+    return r ? r->body.c_str() : nullptr;
+#else
+    (void)resp; return nullptr;
+#endif
+}
+
+int64_t first_http_request(const char* method,
+                           const char* url,
+                           const char* path_params_json,
+                           const char* query_json,
+                           const char* headers_json,
+                           const char* body) {
+#ifndef _WIN32
+    (void)path_params_json;
+    (void)headers_json;
+    // Minimal generic client: supports http://host[:port]/path and sends body for POST.
+    if (!method || !url) return 0;
+    std::string host, path;
+    int64_t port = 80;
+    if (!parse_http_url(url, host, port, path)) return 0;
+    // Append query_json as raw query string if provided and not "{}"
+    if (query_json && std::strcmp(query_json, "{}") != 0) {
+        // Expect query_json already URL-encoded key/values is out-of-scope for now.
+        // For dev use: allow passing "?a=b" literal via query_json by convention.
+        if (query_json[0] == '?') path += query_json;
+    }
+    int64_t fd = first_socket_connect(host.c_str(), port);
+    if (fd < 0) return 0;
+    std::string b = body ? body : "";
+    std::string req =
+        std::string(method) + " " + path + " HTTP/1.1\r\n" +
+        "Host: " + host + "\r\n" +
+        "Connection: close\r\n";
+    if (!b.empty()) {
+        req += "Content-Length: " + std::to_string(b.size()) + "\r\n";
+        req += "Content-Type: text/plain\r\n";
+    }
+    req += "\r\n";
+    req += b;
+    write_all(static_cast<int>(fd), req);
+    // Read entire response (best-effort)
+    std::string resp;
+    char buf[4096];
+    while (true) {
+        ssize_t n = recv(static_cast<int>(fd), buf, sizeof(buf), 0);
+        if (n <= 0) break;
+        resp.append(buf, buf + n);
+    }
+    first_socket_close(fd);
+    // Very small parsing: status line + body after \r\n\r\n
+    int64_t status = 200;
+    auto sp = resp.find(' ');
+    if (sp != std::string::npos && resp.rfind("HTTP/", 0) == 0) {
+        auto sp2 = resp.find(' ', sp + 1);
+        status = std::strtoll(resp.substr(sp + 1, sp2 - sp - 1).c_str(), nullptr, 10);
+    }
+    std::string bodyOut;
+    auto sep = resp.find("\r\n\r\n");
+    if (sep != std::string::npos) bodyOut = resp.substr(sep + 4);
+    return http_response_create_internal(status, "{}", bodyOut.c_str());
+#else
+    (void)method; (void)url; (void)path_params_json; (void)query_json; (void)headers_json; (void)body;
+    return 0;
+#endif
 }
 
 // --- JSON (minimal: prettify = indent; stringify = trivial) ---

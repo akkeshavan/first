@@ -427,18 +427,43 @@ ast::Type* TypeChecker::inferVariable(ast::VariableExpr* expr) {
         return nullptr;
     }
     
-    if (symbol->getKind() != SymbolKind::Variable) {
-        errorReporter_.error(
-            expr->getLocation(),
-            "Expected variable, found: " + expr->getName()
-        );
+    if (symbol->getKind() == SymbolKind::Variable) {
+        VariableSymbol* varSymbol = dynamic_cast<VariableSymbol*>(symbol);
+        if (varSymbol && varSymbol->getType()) {
+            return varSymbol->getType(); // Return non-owning pointer
+        }
         return nullptr;
     }
-    
-    VariableSymbol* varSymbol = dynamic_cast<VariableSymbol*>(symbol);
-    if (varSymbol && varSymbol->getType()) {
-        return varSymbol->getType(); // Return non-owning pointer
+
+    // Allow referring to a function/interaction by name as a value (function pointer-like).
+    if (symbol->getKind() == SymbolKind::Function) {
+        auto* funcSym = dynamic_cast<FunctionSymbol*>(symbol);
+        if (!funcSym || !funcSym->getFunction()) return nullptr;
+        ast::FunctionDecl* f = funcSym->getFunction();
+        std::vector<std::unique_ptr<ast::Type>> paramTypes;
+        for (const auto& p : f->getParameters()) {
+            paramTypes.push_back(copyType(p->getType()));
+        }
+        auto ret = copyType(f->getReturnType());
+        return createFunctionType(std::move(paramTypes), std::move(ret), /*isInteraction*/ false).release();
     }
+    if (symbol->getKind() == SymbolKind::Interaction) {
+        auto* interSym = dynamic_cast<InteractionSymbol*>(symbol);
+        if (!interSym || !interSym->getInteraction()) return nullptr;
+        ast::InteractionDecl* i = interSym->getInteraction();
+        std::vector<std::unique_ptr<ast::Type>> paramTypes;
+        for (const auto& p : i->getParameters()) {
+            paramTypes.push_back(copyType(p->getType()));
+        }
+        auto ret = copyType(i->getReturnType());
+        return createFunctionType(std::move(paramTypes), std::move(ret), /*isInteraction*/ true).release();
+    }
+
+    errorReporter_.error(
+        expr->getLocation(),
+        "Expected value, found: " + expr->getName()
+    );
+    return nullptr;
     
     return nullptr;
 }
@@ -550,6 +575,48 @@ ast::Type* TypeChecker::inferStdlibCall(ast::FunctionCallExpr* expr) {
     if (name == "httpPost") {
         if (n != 2) return err("httpPost(url, body) expects 2 arguments");
         if (!arg(0) || !arg(1)) return nullptr;
+        return createStringType().release();
+    }
+    // HTTP client/server (handles are Int)
+    if (name == "httpRequest") {
+        if (n != 6) return err("httpRequest(method, url, pathParamsJson, queryJson, headersJson, body) expects 6 arguments");
+        for (size_t i = 0; i < n; ++i) if (!arg(i)) return nullptr;
+        return createIntType().release(); // Response handle
+    }
+    if (name == "httpServerCreate") {
+        if (n != 2) return err("httpServerCreate(host, port) expects 2 arguments");
+        if (!arg(0) || !arg(1)) return nullptr;
+        return createIntType().release(); // Server handle
+    }
+    if (name == "httpServerGet" || name == "httpServerPost") {
+        if (n != 3) return err(name + "(server, route, handler) expects 3 arguments");
+        if (!arg(0) || !arg(1) || !arg(2)) return nullptr;
+        return createUnitType().release();
+    }
+    if (name == "httpServerListen" || name == "httpServerClose") {
+        if (n != 1) return err(name + "(server) expects 1 argument");
+        if (!arg(0)) return nullptr;
+        return createUnitType().release();
+    }
+    if (name == "httpReqMethod" || name == "httpReqPath" || name == "httpReqParamsJson" ||
+        name == "httpReqQueryJson" || name == "httpReqHeadersJson" || name == "httpReqBody") {
+        if (n != 1) return err(name + "(req) expects 1 argument");
+        if (!arg(0)) return nullptr;
+        return createStringType().release();
+    }
+    if (name == "httpResponseCreate") {
+        if (n != 3) return err("httpResponseCreate(status, headersJson, body) expects 3 arguments");
+        if (!arg(0) || !arg(1) || !arg(2)) return nullptr;
+        return createIntType().release(); // Response handle
+    }
+    if (name == "httpRespStatus") {
+        if (n != 1) return err("httpRespStatus(resp) expects 1 argument");
+        if (!arg(0)) return nullptr;
+        return createIntType().release();
+    }
+    if (name == "httpRespHeadersJson" || name == "httpRespBody") {
+        if (n != 1) return err(name + "(resp) expects 1 argument");
+        if (!arg(0)) return nullptr;
         return createStringType().release();
     }
     // JSON

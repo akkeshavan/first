@@ -482,6 +482,62 @@ Standard libraries required for linux and MACOS (apple silicon) distribution.
 - [x] HTTP lib: `httpGet(url)`, `httpPost(url, body)` — C linkage (stub; full impl via socket)
 - [x] JSON: `jsonPrettify(str)`, `jsonStringifyInt`, `jsonStringifyFloat`, `jsonStringifyString` — C linkage (prettify + stringify)
 
+#### HTTP Client + Server (Node.js-like)
+**Goal**: Provide both **client** and **server** HTTP libraries (not just client). Server endpoints expose proper Request/Response objects. Client supports generic endpoint calls with path params, query params, headers, and body (POST/PUT/PATCH).
+
+**Data representation (initial, ABI-simple)**:
+- Use **JSON strings** for `headers`, `query`, `params` at the ABI boundary (Option A).
+- Runtime objects for `Request`, `Response`, `Server`, and `Promise<Response>` are **opaque pointers** (`i8*` in IR).
+
+**User-facing API (blocking dev server now)**:
+- **Types** (conceptual):
+  - `type Request = { method: String, path: String, paramsJson: String, queryJson: String, headersJson: String, body: String }`
+  - `type Response = { status: Int, headersJson: String, body: String }`
+  - `type Server = ...` (opaque)
+- **Server**:
+  - `httpServerCreate(host: String, port: Int) -> Server`
+  - `httpServerGet(server: Server, route: String, handler: function(req: Request) -> Response) -> Unit`
+  - `httpServerPost(server: Server, route: String, handler: function(req: Request) -> Response) -> Unit`
+  - `httpServerListen(server: Server) -> Unit` *(blocking dev server)*
+  - `httpServerClose(server: Server) -> Unit`
+- **Client**:
+  - `httpRequest(method: String, url: String, pathParamsJson: String, queryJson: String, headersJson: String, body: String) -> Response`
+  - Convenience wrappers: `httpGet(url, queryJson, headersJson) -> Response`, `httpPost(url, body, headersJson) -> Response`
+- **Routing**:
+  - Route params use `:name` segments (e.g. `/users/:id/books/:bookId`), exported to `req.paramsJson`.
+
+**Future: non-blocking concurrent server (Model 3: event loop + async handlers)**:
+- Handler type becomes: `interaction(req: Request) -> Promise<Response>`
+- Server start becomes non-blocking: `httpServerListenAsync(server: Server) -> Unit`
+- Runtime runs a single-threaded event loop (kqueue/epoll/select) with non-blocking sockets.
+- The event loop invokes First handlers, receives a `Promise<Response>`, and registers continuations; on resolve it writes the response.
+
+**Runtime ABI (C linkage) – minimal surface for Model 3**:
+- **Server lifecycle / routing**
+  - `first_http_server_t* first_http_server_create(const char* host, int64_t port);`
+  - `void first_http_server_route(first_http_server_t* s, const char* method, const char* route, void* handler_fn);`
+  - `void first_http_server_listen(first_http_server_t* s);` *(blocking)*
+  - `void first_http_server_listen_async(first_http_server_t* s);` *(future)*
+  - `void first_http_server_close(first_http_server_t* s);`
+- **Request/Response**
+  - `first_http_request_t* first_http_request_create(const char* method, const char* path, const char* params_json, const char* query_json, const char* headers_json, const char* body);`
+  - `first_http_response_t* first_http_response_create(int64_t status, const char* headers_json, const char* body);`
+  - `int64_t first_http_response_status(first_http_response_t* r);`
+  - `const char* first_http_response_headers_json(first_http_response_t* r);`
+  - `const char* first_http_response_body(first_http_response_t* r);`
+- **Generic client**
+  - `first_http_response_t* first_http_request(const char* method, const char* url, const char* path_params_json, const char* query_json, const char* headers_json, const char* body);`
+- **Promise (for Model 3)**
+  - `first_promise_t* first_promise_create();`
+  - `void first_promise_resolve(first_promise_t* p, void* value /*first_http_response_t* */);`
+  - `void first_promise_reject(first_promise_t* p, const char* error);`
+  - `void first_promise_then(first_promise_t* p, void* user_data, void (*on_resolve)(void* user_data, void* value), void (*on_reject)(void* user_data, const char* error));`
+
+**Compiler integration**
+- Type checker: extend `inferStdlibCall()` with the HTTP server/client + Promise builtins.
+- IR: extend stdlib signature map to these runtime symbols; represent opaque handles as `i8*`.
+- Runtime: implement blocking server first; async server depends on full Promise runtime + real lowering of `await` (Phase 9.3 pending).
+
 **Deliverable**: Standard library implementation (runtime stdlib.h/stdlib.cpp; type checker inferStdlibCall; IR getStdlibSig + arrayLength intrinsic)
 
 ---

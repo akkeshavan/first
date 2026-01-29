@@ -48,6 +48,38 @@ void first_socket_close(int64_t fd);
 char* first_http_get(const char* url);   // caller must free; null on error
 char* first_http_post(const char* url, const char* body);  // caller must free; null on error
 
+// --- HTTP Client (generic) ---
+// Returns Response handle (opaque); 0 on error.
+int64_t first_http_request(const char* method,
+                           const char* url,
+                           const char* path_params_json,
+                           const char* query_json,
+                           const char* headers_json,
+                           const char* body);
+
+// --- HTTP Server (blocking dev server) ---
+// Opaque handles are returned as int64_t. 0 indicates failure.
+int64_t first_http_server_create(const char* host, int64_t port);
+void first_http_server_get(int64_t server, const char* route, int64_t handler_fn_ptr);
+void first_http_server_post(int64_t server, const char* route, int64_t handler_fn_ptr);
+void first_http_server_listen(int64_t server);  // blocking
+void first_http_server_close(int64_t server);
+
+// --- HTTP Request/Response objects (handles) ---
+// Request accessors (return pointers valid while request is alive during handler execution).
+const char* first_http_req_method(int64_t req);
+const char* first_http_req_path(int64_t req);
+const char* first_http_req_params_json(int64_t req);
+const char* first_http_req_query_json(int64_t req);
+const char* first_http_req_headers_json(int64_t req);
+const char* first_http_req_body(int64_t req);
+
+// Response creation/accessors.
+int64_t first_http_response_create(int64_t status, const char* headers_json, const char* body);
+int64_t first_http_resp_status(int64_t resp);
+const char* first_http_resp_headers_json(int64_t resp);
+const char* first_http_resp_body(int64_t resp);
+
 // --- JSON (minimal: stringify only for now) ---
 char* first_json_prettify(const char* json_str);  // caller must free; null on error
 char* first_json_stringify_int(int64_t n);        // trivial

@@ -1115,10 +1115,11 @@ llvm::Value* IRGenerator::evaluateVariable(ast::VariableExpr* expr) {
     llvm::AllocaInst* alloca = getVariable(name);
     
     if (!alloca) {
-        errorReporter_.error(
-            expr->getLocation(),
-            "Undefined variable: " + name
-        );
+        // Allow referencing a function/interaction by name as a value (function pointer-like).
+        if (llvm::Function* f = module_->getFunction(name)) {
+            return builder_->CreateBitCast(f, llvm::PointerType::get(context_, 0), name + "_fnptr");
+        }
+        errorReporter_.error(expr->getLocation(), "Undefined variable: " + name);
         return nullptr;
     }
     
@@ -1234,6 +1235,23 @@ llvm::Value* IRGenerator::evaluateFunctionCall(ast::FunctionCallExpr* expr, bool
         if (name == "socketClose") return {"first_socket_close", llvm::FunctionType::get(voidTy, {i64}, false)};
         if (name == "httpGet") return {"first_http_get", llvm::FunctionType::get(i8ptr, {i8ptr}, false)};
         if (name == "httpPost") return {"first_http_post", llvm::FunctionType::get(i8ptr, {i8ptr, i8ptr}, false)};
+        // HTTP client/server handles (i64)
+        if (name == "httpRequest") return {"first_http_request", llvm::FunctionType::get(i64, {i8ptr, i8ptr, i8ptr, i8ptr, i8ptr, i8ptr}, false)};
+        if (name == "httpServerCreate") return {"first_http_server_create", llvm::FunctionType::get(i64, {i8ptr, i64}, false)};
+        if (name == "httpServerGet") return {"first_http_server_get", llvm::FunctionType::get(voidTy, {i64, i8ptr, i64}, false)};
+        if (name == "httpServerPost") return {"first_http_server_post", llvm::FunctionType::get(voidTy, {i64, i8ptr, i64}, false)};
+        if (name == "httpServerListen") return {"first_http_server_listen", llvm::FunctionType::get(voidTy, {i64}, false)};
+        if (name == "httpServerClose") return {"first_http_server_close", llvm::FunctionType::get(voidTy, {i64}, false)};
+        if (name == "httpReqMethod") return {"first_http_req_method", llvm::FunctionType::get(i8ptr, {i64}, false)};
+        if (name == "httpReqPath") return {"first_http_req_path", llvm::FunctionType::get(i8ptr, {i64}, false)};
+        if (name == "httpReqParamsJson") return {"first_http_req_params_json", llvm::FunctionType::get(i8ptr, {i64}, false)};
+        if (name == "httpReqQueryJson") return {"first_http_req_query_json", llvm::FunctionType::get(i8ptr, {i64}, false)};
+        if (name == "httpReqHeadersJson") return {"first_http_req_headers_json", llvm::FunctionType::get(i8ptr, {i64}, false)};
+        if (name == "httpReqBody") return {"first_http_req_body", llvm::FunctionType::get(i8ptr, {i64}, false)};
+        if (name == "httpResponseCreate") return {"first_http_response_create", llvm::FunctionType::get(i64, {i64, i8ptr, i8ptr}, false)};
+        if (name == "httpRespStatus") return {"first_http_resp_status", llvm::FunctionType::get(i64, {i64}, false)};
+        if (name == "httpRespHeadersJson") return {"first_http_resp_headers_json", llvm::FunctionType::get(i8ptr, {i64}, false)};
+        if (name == "httpRespBody") return {"first_http_resp_body", llvm::FunctionType::get(i8ptr, {i64}, false)};
         if (name == "jsonPrettify") return {"first_json_prettify", llvm::FunctionType::get(i8ptr, {i8ptr}, false)};
         if (name == "jsonStringifyString") return {"first_json_stringify_string", llvm::FunctionType::get(i8ptr, {i8ptr}, false)};
         if (name == "jsonStringifyInt") return {"first_json_stringify_int", llvm::FunctionType::get(i8ptr, {i64}, false)};
@@ -1264,6 +1282,20 @@ llvm::Value* IRGenerator::evaluateFunctionCall(ast::FunctionCallExpr* expr, bool
         return nullptr;
     }
     
+    // If the callee has a known function type, cast arguments as needed (opaque ptr -> i64 etc.).
+    if (func->getFunctionType() && func->getFunctionType()->getNumParams() == args.size()) {
+        for (size_t i = 0; i < args.size(); ++i) {
+            llvm::Type* pt = func->getFunctionType()->getParamType(static_cast<unsigned>(i));
+            if (!args[i]) continue;
+            llvm::Type* at = args[i]->getType();
+            if (pt->isIntegerTy(64) && at->isPointerTy()) {
+                args[i] = builder_->CreatePtrToInt(args[i], llvm::Type::getInt64Ty(context_), "ptrtoint");
+            } else if (pt->isPointerTy() && at->isIntegerTy(64)) {
+                args[i] = builder_->CreateIntToPtr(args[i], llvm::PointerType::get(context_, 0), "inttoptr");
+            }
+        }
+    }
+
     // Create call instruction (Phase 6.2: tail call when requested for TCO)
     llvm::Value* callValue = builder_->CreateCall(func, args, "calltmp");
     if (tailCall) {
