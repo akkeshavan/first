@@ -106,7 +106,8 @@ else()
     message(FATAL_ERROR "ANTLR4 runtime not found. Please install antlr4-cpp-runtime")
 endif()
 
-# Generated parser library
+# Generated lexer/parser library (ANTLR used only for lexing in the current
+# compiler pipeline; the hand-written parser lives in src/parser/parser.cpp).
 add_library(first_parser STATIC
     ${GENERATED_FILES}
 )
@@ -125,7 +126,6 @@ set(COMPILER_SOURCES
     src/error_reporter.cpp
     src/source_location.cpp
     src/parser/parser.cpp
-    src/ast/builder.cpp
     src/ast/types.cpp
     src/ast/validator.cpp
     src/ast/match_case.cpp

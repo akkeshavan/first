@@ -69,19 +69,9 @@ extern void test_ast_function_decl();
 extern void test_ast_function_signature();
 extern void test_ast_interaction_decl();
 extern void test_ast_function_with_generics();
-extern void test_ast_builder_literal_int();
-extern void test_ast_builder_literal_string();
-extern void test_ast_builder_variable_expr();
-extern void test_ast_builder_variable_decl();
 extern void test_ast_integration_simple_program();
 extern void test_ast_integration_multiple_statements();
 extern void test_ast_integration_with_errors();
-extern void test_ast_builder_binary_add();
-extern void test_ast_builder_binary_multiply();
-extern void test_ast_builder_binary_chain();
-extern void test_ast_builder_binary_precedence();
-extern void test_ast_builder_binary_equality();
-extern void test_ast_builder_binary_logical();
 extern void test_ast_validator_valid_program();
 extern void test_ast_validator_binary_expr_missing_operand();
 extern void test_ast_validator_unary_expr_missing_operand();
@@ -241,24 +231,10 @@ void run_all_tests() {
     test_ast_interaction_decl();
     test_ast_function_with_generics();
     
-    std::cout << "Testing AST Builder...\n";
-    test_ast_builder_literal_int();
-    test_ast_builder_literal_string();
-    test_ast_builder_variable_expr();
-    test_ast_builder_variable_decl();
-    
     std::cout << "Testing AST Integration...\n";
     test_ast_integration_simple_program();
     test_ast_integration_multiple_statements();
     test_ast_integration_with_errors();
-    
-    std::cout << "Testing Binary Expressions...\n";
-    test_ast_builder_binary_add();
-    test_ast_builder_binary_multiply();
-    test_ast_builder_binary_chain();
-    test_ast_builder_binary_precedence();
-    test_ast_builder_binary_equality();
-    test_ast_builder_binary_logical();
     
     std::cout << "Testing AST Validation...\n";
     test_ast_validator_valid_program();

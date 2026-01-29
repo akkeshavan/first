@@ -16,10 +16,10 @@ brew install cmake
 # Install LLVM
 brew install llvm
 
-# Install ANTLR4 C++ runtime
+# Install ANTLR4 C++ runtime (used only for lexing)
 brew install antlr4-cpp-runtime
 
-# Install ANTLR4 tool (Python package)
+# Install ANTLR4 tool (Python package, used to generate the lexer)
 pip3 install antlr4-tools
 ```
 
@@ -61,8 +61,8 @@ Download from: https://llvm.org/releases/
 Or use: `brew install llvm`
 
 ### ANTLR4
-- Runtime: `brew install antlr4-cpp-runtime`
-- Tool: `pip3 install antlr4-tools`
+- Runtime: `brew install antlr4-cpp-runtime` (lexer runtime only)
+- Tool: `pip3 install antlr4-tools` (for regenerating the lexer)
 
 ## Quick Install Script
 

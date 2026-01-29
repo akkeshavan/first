@@ -22,7 +22,7 @@
    sudo apt-get install llvm-15-dev libllvm15
    ```
 
-3. **ANTLR4 Runtime** (C++)
+3. **ANTLR4 Runtime** (C++) — used only for lexing
    ```bash
    # macOS
    brew install antlr4-cpp-runtime
@@ -31,7 +31,7 @@
    sudo apt-get install libantlr4-runtime-dev
    ```
 
-4. **ANTLR4 Tool** (for generating parser)
+4. **ANTLR4 Tool** (for generating lexer)
    ```bash
    pip install antlr4-tools
    # Or download from https://www.antlr.org/download.html
@@ -117,9 +117,10 @@ If CMake can't find LLVM:
 cmake -DLLVM_DIR=/usr/lib/llvm-15/lib/cmake/llvm ..
 ```
 
-### Parser Generation Fails
+### Lexer Generation Fails
 
-Make sure `antlr4` command is in your PATH:
+Make sure `antlr4` command is in your PATH (needed to generate the `FirstLexer`
+from `docs/First.g4` at configure time):
 ```bash
 which antlr4
 # If not found, add to PATH or use full path in CMakeLists.txt

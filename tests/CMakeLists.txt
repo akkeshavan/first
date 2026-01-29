@@ -13,9 +13,7 @@ add_executable(test_compiler
     test_ast_basic.cpp
     test_ast_statements.cpp
     test_ast_functions.cpp
-    test_ast_builder.cpp
     test_ast_integration.cpp
-    test_ast_binary.cpp
     test_ast_validation.cpp
     test_symbol_table.cpp
     test_type_checker.cpp
@@ -45,7 +43,6 @@ target_sources(test_compiler PRIVATE
     ${CMAKE_SOURCE_DIR}/src/source_location.cpp
     ${CMAKE_SOURCE_DIR}/src/parser/parser.cpp
     ${CMAKE_SOURCE_DIR}/src/ast/types.cpp
-    ${CMAKE_SOURCE_DIR}/src/ast/builder.cpp
     ${CMAKE_SOURCE_DIR}/src/ast/validator.cpp
     ${CMAKE_SOURCE_DIR}/src/ast/match_case.cpp
     ${CMAKE_SOURCE_DIR}/src/ast/match_expr.cpp
