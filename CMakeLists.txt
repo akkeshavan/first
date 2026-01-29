@@ -124,11 +124,13 @@ set(COMPILER_SOURCES
     src/compiler.cpp
     src/error_reporter.cpp
     src/source_location.cpp
+    src/parser/parser.cpp
     src/ast/builder.cpp
     src/ast/types.cpp
     src/ast/validator.cpp
     src/ast/match_case.cpp
     src/ast/match_expr.cpp
+    src/ast/lambda_expr.cpp
     src/semantic/symbol_table.cpp
     src/semantic/type_checker.cpp
     src/semantic/semantic_checker.cpp
@@ -163,3 +165,8 @@ endif()
 
 # Installation
 install(TARGETS firstc DESTINATION bin)
+
+# Multi-module compilation support
+# This allows compiling multiple First modules and linking them together
+# Usage: firstc -o output.bc module1.first module2.first module3.first
+# The compiler will automatically resolve imports and link modules

@@ -1,0 +1,9 @@
+// Main module that imports Math and uses it.
+module Main;
+
+import { square } "Math";
+
+export function compute() -> Int {
+    return square(5);
+}
+

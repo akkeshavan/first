@@ -57,6 +57,63 @@ private:
     std::unique_ptr<Type> elementType_;
 };
 
+// Record field definition
+class RecordField {
+public:
+    RecordField(const SourceLocation& location,
+                const std::string& name,
+                std::unique_ptr<Type> type)
+        : location_(location), name_(name), type_(std::move(type)) {}
+
+    const SourceLocation& getLocation() const { return location_; }
+    const std::string& getName() const { return name_; }
+    Type* getType() const { return type_.get(); }
+
+private:
+    SourceLocation location_;
+    std::string name_;
+    std::unique_ptr<Type> type_;
+};
+
+// Record type (struct/product type)
+class RecordType : public Type {
+public:
+    RecordType(const SourceLocation& location,
+               std::vector<std::unique_ptr<RecordField>> fields)
+        : Type(location), fields_(std::move(fields)) {}
+
+    const std::vector<std::unique_ptr<RecordField>>& getFields() const { return fields_; }
+    
+    // Find field by name
+    RecordField* getField(const std::string& name) const {
+        for (const auto& field : fields_) {
+            if (field->getName() == name) {
+                return field.get();
+            }
+        }
+        return nullptr;
+    }
+    
+    // Get field index by name
+    size_t getFieldIndex(const std::string& name) const {
+        for (size_t i = 0; i < fields_.size(); ++i) {
+            if (fields_[i]->getName() == name) {
+                return i;
+            }
+        }
+        return fields_.size(); // Not found
+    }
+    
+    void accept(ASTVisitor& visitor) override {
+        (void)visitor;
+    }
+    
+    std::string getNodeType() const override { return "RecordType"; }
+
+private:
+    std::vector<std::unique_ptr<RecordField>> fields_;
+};
+
 // Function type: function(ParamTypes) -> ReturnType
 class FunctionType : public Type {
 public:

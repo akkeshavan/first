@@ -3,6 +3,7 @@
 #include "first/ast/statements.h"
 #include "first/ast/expressions.h"
 #include "first/ast/match_case.h"
+#include "first/semantic/module_resolver.h"
 #include <sstream>
 
 namespace first {
@@ -14,10 +15,14 @@ bool TypeChecker::check(ast::Program* program) {
         return false;
     }
     
+    // Track the current program so we can consult its imports when resolving
+    // symbols via the module resolver (for multi-module calls, etc.).
+    currentProgram_ = program;
     checkProgram(program);
+    currentProgram_ = nullptr;
     
-    // Return true if no errors (errorReporter tracks errors)
-    return true; // We'll check error count separately if needed
+    // Return true if no errors (ErrorReporter tracks errors)
+    return true; // callers check errorReporter_ for actual failures
 }
 
 void TypeChecker::checkProgram(ast::Program* program) {
@@ -413,6 +418,63 @@ ast::Type* TypeChecker::inferFunctionCall(ast::FunctionCallExpr* expr) {
     std::vector<Symbol*> functions = symbolTable_.lookupAll(expr->getName());
     
     if (functions.empty()) {
+        // Try resolving as an imported symbol via module resolver, but only
+        // through modules that are explicitly imported by this program,
+        // respecting the import kind (All/Specific/Default).
+        if (moduleResolver_ && currentProgram_) {
+            // Temporary debug output for multi-module resolution issues.
+            // This will be removed once the module search path is stable.
+            // It is intentionally minimal to avoid noisy logs.
+            // std::cerr << "[TypeChecker] resolving call to '" << expr->getName()
+            //           << "' in module '" << currentProgram_->getModuleName() << "'\n";
+            // Infer argument types first (needed for signature match).
+            std::vector<ast::Type*> argTypes;
+            for (const auto& arg : expr->getArgs()) {
+                ast::Type* argType = inferType(arg.get());
+                if (!argType) {
+                    return nullptr;
+                }
+                argTypes.push_back(argType);
+            }
+
+            std::vector<std::string> candidateModules;
+            for (const auto& impPtr : currentProgram_->getImports()) {
+                auto* imp = impPtr.get();
+                if (!imp) continue;
+                const std::string& modName = imp->getModuleName();
+                switch (imp->getKind()) {
+                case ast::ImportDecl::ImportKind::All:
+                case ast::ImportDecl::ImportKind::Default:
+                    candidateModules.push_back(modName);
+                    break;
+                case ast::ImportDecl::ImportKind::Specific: {
+                    const auto& syms = imp->getSymbols();
+                    if (std::find(syms.begin(), syms.end(), expr->getName()) != syms.end()) {
+                        candidateModules.push_back(modName);
+                    }
+                    break;
+                }
+                }
+            }
+
+            for (const auto& modName : candidateModules) {
+                if (!moduleResolver_->isModuleLoaded(modName)) {
+                    continue;
+                }
+                if (auto* f = moduleResolver_->getFunction(modName, expr->getName())) {
+                    // For imported symbols, trust the callee's signature and
+                    // use its declared return type without re-checking the
+                    // full parameter list. This keeps multi-module resolution
+                    // simple while still allowing local type checking to be
+                    // strict.
+                    return f->getReturnType();
+                }
+                if (auto* i = moduleResolver_->getInteraction(modName, expr->getName())) {
+                    return i->getReturnType();
+                }
+            }
+        }
+
         errorReporter_.error(
             expr->getLocation(),
             "Undefined function: " + expr->getName()

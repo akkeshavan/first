@@ -1,0 +1,10 @@
+interface Show<T> {
+    show: function(T) -> String;
+};
+
+implementation Show<Int> {
+    show = function(x: Int) -> String {
+        return x.toString();
+    };
+};
+

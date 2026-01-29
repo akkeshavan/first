@@ -13,8 +13,8 @@ namespace ast {
 // Top-level program node
 class Program : public ASTNode {
 public:
-    Program(const SourceLocation& location)
-        : ASTNode(location) {}
+    Program(const SourceLocation& location, const std::string& moduleName = "")
+        : ASTNode(location), moduleName_(moduleName) {}
 
     void addFunction(std::unique_ptr<FunctionDecl> func) {
         functions_.push_back(std::move(func));
@@ -31,6 +31,9 @@ public:
     void addImport(std::unique_ptr<ImportDecl> import) {
         imports_.push_back(std::move(import));
     }
+    
+    void setModuleName(const std::string& name) { moduleName_ = name; }
+    const std::string& getModuleName() const { return moduleName_; }
 
     const std::vector<std::unique_ptr<FunctionDecl>>& getFunctions() const { return functions_; }
     const std::vector<std::unique_ptr<InteractionDecl>>& getInteractions() const { return interactions_; }
@@ -44,6 +47,7 @@ public:
     std::string getNodeType() const override { return "Program"; }
 
 private:
+    std::string moduleName_;
     std::vector<std::unique_ptr<FunctionDecl>> functions_;
     std::vector<std::unique_ptr<InteractionDecl>> interactions_;
     std::vector<std::unique_ptr<TypeDecl>> typeDecls_;

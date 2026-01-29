@@ -58,6 +58,9 @@ void test_function_call() {
     
     first::ir::IRGenerator irGen(compiler.getErrorReporter(), "test_call_module");
     bool irSuccess = irGen.generate(ast);
+    if (!irSuccess || compiler.getErrorReporter().hasErrors()) {
+        compiler.getErrorReporter().printErrors();
+    }
     ASSERT(irSuccess, "IR generation should succeed");
     ASSERT(!compiler.getErrorReporter().hasErrors(), "No errors should occur");
     
@@ -216,6 +219,9 @@ void test_multiple_functions() {
     
     first::ir::IRGenerator irGen(compiler.getErrorReporter(), "test_multiple_module");
     bool irSuccess = irGen.generate(ast);
+    if (!irSuccess || compiler.getErrorReporter().hasErrors()) {
+        compiler.getErrorReporter().printErrors();
+    }
     ASSERT(irSuccess, "IR generation should succeed");
     ASSERT(!compiler.getErrorReporter().hasErrors(), "No errors should occur");
     

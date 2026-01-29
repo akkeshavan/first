@@ -146,6 +146,29 @@ extern void test_multiple_assignments();
 extern void test_array_literal();
 extern void test_array_indexing();
 extern void test_array_type();
+extern void test_record_literal();
+extern void test_field_access();
+extern void test_record_type();
+extern void test_constructor_expr();
+extern void test_adt_type();
+extern void test_match_expr();
+extern void test_lambda_expr_ast_building();
+extern void test_closure_ir_generation();
+extern void test_closure_no_captures();
+extern void test_closure_multiple_parameters();
+extern void test_closure_invocation();
+extern void test_generic_type_parsing();
+extern void test_generic_type_ast_building();
+extern void test_generic_type_parameter_ast_building();
+extern void test_generic_type_ir_generation();
+extern void test_generic_type_parameter_ir_generation();
+extern void test_multiple_type_arguments();
+extern void test_nested_generic_types();
+extern void test_type_substitution();
+extern void test_type_substitution_parameterized();
+extern void test_type_substitution_array();
+extern void test_monomorphize_function_name();
+extern void test_multimodule_end_to_end_linking();
 
 void run_all_tests() {
     std::cout << "Testing ErrorReporter...\n";
@@ -314,4 +337,35 @@ void run_all_tests() {
     test_array_literal();
     test_array_indexing();
     test_array_type();
+    
+    std::cout << "Testing Record IR Generation...\n";
+    test_record_literal();
+    test_field_access();
+    test_record_type();
+    
+    std::cout << "Testing ADT IR Generation...\n";
+    test_constructor_expr();
+    test_adt_type();
+    test_match_expr();
+    test_lambda_expr_ast_building();
+    test_closure_ir_generation();
+    test_closure_no_captures();
+    test_closure_multiple_parameters();
+    test_closure_invocation();
+    
+    std::cout << "Testing Generic Code Generation...\n";
+    test_generic_type_parsing();
+    test_generic_type_ast_building();
+    test_generic_type_parameter_ast_building();
+    test_generic_type_ir_generation();
+    test_generic_type_parameter_ir_generation();
+    test_multiple_type_arguments();
+    test_nested_generic_types();
+    test_type_substitution();
+    test_type_substitution_parameterized();
+    test_type_substitution_array();
+    test_monomorphize_function_name();
+
+    std::cout << "Testing Multi-Module Compilation...\n";
+    test_multimodule_end_to_end_linking();
 }

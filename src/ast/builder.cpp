@@ -23,8 +23,141 @@ std::unique_ptr<Program> ASTBuilder::buildProgram(FirstParser::ProgramContext* c
     SourceLocation loc = getLocation(ctx);
     auto program = std::make_unique<Program>(loc);
     
-    // TODO: Build top-level declarations
-    // For now, return empty program
+    auto stripQuotes = [](const std::string& s) -> std::string {
+        if (s.size() >= 2 && s.front() == '"' && s.back() == '"') {
+            return s.substr(1, s.size() - 2);
+        }
+        return s;
+    };
+
+    auto buildGenericParams = [](FirstParser::GenericParamsContext* gctx) -> std::vector<std::string> {
+        std::vector<std::string> params;
+        if (!gctx) return params;
+        for (auto* id : gctx->IDENTIFIER()) {
+            if (id) params.push_back(id->getText());
+        }
+        return params;
+    };
+
+    auto buildParameters = [&](FirstParser::ParameterListContext* pctx) -> std::vector<std::unique_ptr<Parameter>> {
+        std::vector<std::unique_ptr<Parameter>> params;
+        if (!pctx) return params;
+        for (auto* paramCtx : pctx->parameter()) {
+            if (!paramCtx || !paramCtx->IDENTIFIER()) continue;
+            std::string name = paramCtx->IDENTIFIER()->getText();
+            std::unique_ptr<Type> ty = nullptr;
+            if (paramCtx->type_()) {
+                ty = buildType(paramCtx->type_());
+            }
+            if (!ty) {
+                // Allow missing types (type inference later); use Unit placeholder to keep AST valid.
+                ty = std::make_unique<PrimitiveType>(getLocation(paramCtx), PrimitiveType::Kind::Unit);
+            }
+            params.push_back(std::make_unique<Parameter>(getLocation(paramCtx), name, std::move(ty)));
+        }
+        return params;
+    };
+
+    auto buildFunctionBody = [&](FirstParser::FunctionBodyContext* bctx) -> std::vector<std::unique_ptr<Stmt>> {
+        std::vector<std::unique_ptr<Stmt>> body;
+        if (!bctx) return body;
+        for (auto* stmtCtx : bctx->statement()) {
+            auto stmt = buildStatement(stmtCtx);
+            if (stmt) body.push_back(std::move(stmt));
+        }
+        return body;
+    };
+
+    auto buildFunctionDecl = [&](FirstParser::FunctionDeclContext* fctx, bool isExported) -> std::unique_ptr<FunctionDecl> {
+        if (!fctx || !fctx->IDENTIFIER()) return nullptr;
+        SourceLocation floc = getLocation(fctx);
+        std::string name = fctx->IDENTIFIER()->getText();
+        std::vector<std::string> generics = buildGenericParams(fctx->genericParams());
+        std::vector<std::unique_ptr<Parameter>> params = buildParameters(fctx->parameterList());
+        std::unique_ptr<Type> ret = nullptr;
+        if (fctx->returnType()) {
+            ret = buildType(fctx->returnType()->type_());
+        }
+        if (!ret) {
+            // Default return type is Unit if omitted.
+            ret = std::make_unique<PrimitiveType>(floc, PrimitiveType::Kind::Unit);
+        }
+        std::vector<std::unique_ptr<Stmt>> body;
+        if (fctx->functionBody()) {
+            body = buildFunctionBody(fctx->functionBody());
+        }
+        return std::make_unique<FunctionDecl>(floc, name, std::move(generics), std::move(params), std::move(ret), std::move(body), isExported);
+    };
+
+    // Build select top-level declarations needed for module/import/function workflows.
+    // (Other top-level constructs may be added incrementally.)
+    for (auto* top : ctx->topLevel()) {
+        if (!top) continue;
+
+        if (top->moduleDecl() && top->moduleDecl()->IDENTIFIER()) {
+            program->setModuleName(top->moduleDecl()->IDENTIFIER()->getText());
+            continue;
+        }
+
+        if (auto* imp = top->importDecl()) {
+            SourceLocation iloc = getLocation(imp);
+            auto* spec = imp->importSpec();
+            if (!spec) continue;
+
+            // import * "module"
+            if (spec->MUL() && spec->STRING_LITERAL()) {
+                program->addImport(std::make_unique<ImportDecl>(
+                    iloc,
+                    ImportDecl::ImportKind::All,
+                    stripQuotes(spec->STRING_LITERAL()->getText())
+                ));
+                continue;
+            }
+
+            // import { a, b } "module"
+            if (spec->LBRACE() && spec->RBRACE() && spec->STRING_LITERAL()) {
+                std::vector<std::string> symbols;
+                if (auto* list = spec->importList()) {
+                    for (auto* id : list->IDENTIFIER()) {
+                        if (id) symbols.push_back(id->getText());
+                    }
+                }
+                program->addImport(std::make_unique<ImportDecl>(
+                    iloc,
+                    ImportDecl::ImportKind::Specific,
+                    stripQuotes(spec->STRING_LITERAL()->getText()),
+                    std::move(symbols)
+                ));
+                continue;
+            }
+
+            // import "module"
+            if (spec->STRING_LITERAL()) {
+                program->addImport(std::make_unique<ImportDecl>(
+                    iloc,
+                    ImportDecl::ImportKind::Default,
+                    stripQuotes(spec->STRING_LITERAL()->getText())
+                ));
+                continue;
+            }
+
+            continue;
+        }
+
+        if (auto* ef = top->exportFunctionDecl()) {
+            if (auto f = buildFunctionDecl(ef->functionDecl(), true)) {
+                program->addFunction(std::move(f));
+            }
+            continue;
+        }
+
+        if (auto* f = top->functionDecl()) {
+            if (auto fn = buildFunctionDecl(f, false)) {
+                program->addFunction(std::move(fn));
+            }
+            continue;
+        }
+    }
     
     return program;
 }
@@ -383,13 +516,33 @@ std::unique_ptr<Expr> ASTBuilder::buildExpression(FirstParser::PostfixExprContex
         
         // Function call: postfixExpr LPAREN expressionList? RPAREN
         if (ctx->LPAREN()) {
-            // This is handled as FunctionCallExpr in the grammar
-            // For now, return base - function calls are handled separately
+            // Build argument expressions
+            std::vector<std::unique_ptr<Expr>> args;
+            if (ctx->expressionList()) {
+                for (auto* exprCtx : ctx->expressionList()->expression()) {
+                    if (auto arg = buildExpression(exprCtx)) {
+                        args.push_back(std::move(arg));
+                    }
+                }
+            }
+
+            // Currently we support direct calls like: foo(a, b)
+            // where the callee is an identifier (VariableExpr).
+            if (auto* var = dynamic_cast<VariableExpr*>(base.get())) {
+                std::string calleeName = var->getName();
+                return std::make_unique<FunctionCallExpr>(loc, calleeName, std::move(args));
+            }
+
+            // If the callee isn't a simple identifier yet (e.g. calling a lambda/field),
+            // just return the base for now.
             return base;
         }
         
         // Member access: postfixExpr DOT IDENTIFIER
-        // TODO: Handle member access
+        if (ctx->DOT() && ctx->IDENTIFIER()) {
+            std::string fieldName = ctx->IDENTIFIER()->getText();
+            return std::make_unique<FieldAccessExpr>(loc, std::move(base), fieldName);
+        }
         
         return base;
     }
@@ -412,8 +565,27 @@ std::unique_ptr<Expr> ASTBuilder::buildExpression(FirstParser::PostfixExprContex
         
         // Check for function call
         if (ctx->LPAREN()) {
-            // Function calls are handled separately
+            std::vector<std::unique_ptr<Expr>> args;
+            if (ctx->expressionList()) {
+                for (auto* exprCtx : ctx->expressionList()->expression()) {
+                    if (auto arg = buildExpression(exprCtx)) {
+                        args.push_back(std::move(arg));
+                    }
+                }
+            }
+
+            if (auto* var = dynamic_cast<VariableExpr*>(base.get())) {
+                std::string calleeName = var->getName();
+                return std::make_unique<FunctionCallExpr>(loc, calleeName, std::move(args));
+            }
+
             return base;
+        }
+        
+        // Check for field access
+        if (ctx->DOT() && ctx->IDENTIFIER()) {
+            std::string fieldName = ctx->IDENTIFIER()->getText();
+            return std::make_unique<FieldAccessExpr>(loc, std::move(base), fieldName);
         }
         
         return base;
@@ -452,9 +624,78 @@ std::unique_ptr<Expr> ASTBuilder::buildExpression(FirstParser::PrimaryExprContex
         return buildArrayLiteral(ctx->arrayLiteral());
     }
     
-    // TODO: Handle other primary expressions (records, constructors, lambdas, conditionals)
+    // Check for record literal
+    if (ctx->recordLiteral()) {
+        return buildRecordLiteral(ctx->recordLiteral());
+    }
+    
+    // Check for lambda expression
+    if (ctx->lambdaExpr()) {
+        return buildLambdaExpr(ctx->lambdaExpr());
+    }
+    
+    // TODO: Handle other primary expressions (constructors, conditionals)
     
     return nullptr;
+}
+
+std::unique_ptr<LambdaExpr> ASTBuilder::buildLambdaExpr(FirstParser::LambdaExprContext* ctx) {
+    if (!ctx) {
+        return nullptr;
+    }
+    
+    SourceLocation loc = getLocation(ctx);
+    
+    // Build parameters
+    std::vector<std::unique_ptr<Parameter>> parameters;
+    if (ctx->parameterList()) {
+        auto params = ctx->parameterList()->parameter();
+        for (auto* paramCtx : params) {
+            if (!paramCtx) continue;
+            
+            std::string paramName = paramCtx->IDENTIFIER()->getText();
+            auto paramType = buildType(paramCtx->type_());
+            if (!paramType) {
+                // Allow unannotated lambda params in the parser-only pipeline.
+                // Full type inference can be added later; for now treat as a generic placeholder.
+                paramType = std::make_unique<GenericType>(getLocation(paramCtx), "Any");
+            }
+            
+            parameters.push_back(std::make_unique<Parameter>(
+                getLocation(paramCtx),
+                paramName,
+                std::move(paramType)
+            ));
+        }
+    }
+    
+    // Build return type (optional)
+    std::unique_ptr<Type> returnType = nullptr;
+    if (ctx->returnType()) {
+        returnType = buildType(ctx->returnType()->type_());
+    }
+    
+    // Build body
+    std::vector<std::unique_ptr<Stmt>> body;
+    if (ctx->functionBody()) {
+        // Function body with statements
+        auto stmts = ctx->functionBody()->statement();
+        for (auto* stmtCtx : stmts) {
+            auto stmt = buildStatement(stmtCtx);
+            if (stmt) {
+                body.push_back(std::move(stmt));
+            }
+        }
+    } else if (ctx->expression()) {
+        // Single expression body - convert to return statement
+        auto expr = buildExpression(ctx->expression());
+        if (expr) {
+            SourceLocation exprLoc = expr->getLocation();
+            body.push_back(std::make_unique<ReturnStmt>(exprLoc, std::move(expr)));
+        }
+    }
+    
+    return std::make_unique<LambdaExpr>(loc, std::move(parameters), std::move(returnType), std::move(body));
 }
 
 std::unique_ptr<Type> ASTBuilder::buildType(FirstParser::Type_Context* ctx) {
@@ -484,7 +725,12 @@ std::unique_ptr<Type> ASTBuilder::buildType(FirstParser::PrimaryTypeContext* ctx
         return buildPrimitiveType(ctx->builtinType());
     }
     
-    // TODO: Handle other primary types (arrays, generics, etc.)
+    // Check for generic type (e.g., Option<T>, Array<Int>)
+    if (ctx->genericType()) {
+        return buildGenericType(ctx->genericType());
+    }
+    
+    // TODO: Handle other primary types (arrays, etc.)
     
     return nullptr;
 }
@@ -509,6 +755,52 @@ std::unique_ptr<PrimitiveType> ASTBuilder::buildPrimitiveType(FirstParser::Built
     }
     
     return nullptr;
+}
+
+std::unique_ptr<Type> ASTBuilder::buildGenericType(FirstParser::GenericTypeContext* ctx) {
+    if (!ctx) {
+        return nullptr;
+    }
+    
+    SourceLocation loc = getLocation(ctx);
+    
+    // Get the base identifier name
+    if (!ctx->IDENTIFIER()) {
+        return nullptr;
+    }
+    
+    std::string baseName = ctx->IDENTIFIER()->getText();
+    
+    // Check if there are type arguments (e.g., Option<T>, Array<Int>)
+    // The grammar is: genericType: IDENTIFIER (LT typeList GT)?
+    // typeList: type_ (COMMA type_)*
+    if (ctx->typeList()) {
+        // This is a parameterized type (e.g., Option<T>, Array<Int>)
+        std::vector<std::unique_ptr<Type>> typeArgs;
+        auto types = ctx->typeList()->type_();
+        for (auto* typeCtx : types) {
+            auto type = buildType(typeCtx);
+            if (type) {
+                typeArgs.push_back(std::move(type));
+            } else {
+                errorReporter_.error(
+                    getLocation(typeCtx),
+                    "Invalid type argument in generic type"
+                );
+            }
+        }
+        
+        return std::make_unique<ParameterizedType>(loc, baseName, std::move(typeArgs));
+    } else {
+        // This could be either:
+        // 1. A generic type parameter (e.g., T in function<T>(x: T))
+        // 2. A type name (e.g., Int, String, Option)
+        // For now, we'll treat it as a GenericType (type parameter)
+        // In the future, we might need to look it up in the symbol table
+        // to distinguish between type parameters and actual type names
+        // TODO: Look up in symbol table to determine if it's a type parameter or type name
+        return std::make_unique<GenericType>(loc, baseName);
+    }
 }
 
 std::unique_ptr<Stmt> ASTBuilder::buildStatement(FirstParser::StatementContext* ctx) {
@@ -703,6 +995,31 @@ std::unique_ptr<ArrayLiteralExpr> ASTBuilder::buildArrayLiteral(FirstParser::Arr
     }
     
     return std::make_unique<ArrayLiteralExpr>(loc, std::move(elements));
+}
+
+std::unique_ptr<RecordLiteralExpr> ASTBuilder::buildRecordLiteral(FirstParser::RecordLiteralContext* ctx) {
+    if (!ctx) {
+        return nullptr;
+    }
+    
+    SourceLocation loc = getLocation(ctx);
+    
+    std::vector<RecordLiteralExpr::Field> fields;
+    
+    // Build field expressions
+    if (ctx->recordLiteralFieldList()) {
+        for (auto* fieldCtx : ctx->recordLiteralFieldList()->recordLiteralField()) {
+            if (fieldCtx->IDENTIFIER() && fieldCtx->expression()) {
+                std::string fieldName = fieldCtx->IDENTIFIER()->getText();
+                auto fieldValue = buildExpression(fieldCtx->expression());
+                if (fieldValue) {
+                    fields.emplace_back(fieldName, std::move(fieldValue));
+                }
+            }
+        }
+    }
+    
+    return std::make_unique<RecordLiteralExpr>(loc, std::move(fields));
 }
 
 } // namespace ast

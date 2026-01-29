@@ -11,6 +11,11 @@ namespace ast {
     class FunctionCallExpr;
     class ArrayLiteralExpr;
     class ArrayIndexExpr;
+    class RecordLiteralExpr;
+    class FieldAccessExpr;
+    class ConstructorExpr;
+    class MatchExpr;
+    class LambdaExpr;
     class VariableDecl;
     class ReturnStmt;
     class ExprStmt;
@@ -41,6 +46,11 @@ public:
     virtual void visitFunctionCallExpr(FunctionCallExpr* node) {}
     virtual void visitArrayLiteralExpr(ArrayLiteralExpr* node) {}
     virtual void visitArrayIndexExpr(ArrayIndexExpr* node) {}
+    virtual void visitRecordLiteralExpr(RecordLiteralExpr* node) {}
+    virtual void visitFieldAccessExpr(FieldAccessExpr* node) {}
+    virtual void visitConstructorExpr(ConstructorExpr* node) {}
+    virtual void visitMatchExpr(MatchExpr* node) {}
+    virtual void visitLambdaExpr(LambdaExpr* node) {}
     
     // Statement nodes
     virtual void visitVariableDecl(VariableDecl* node) {}

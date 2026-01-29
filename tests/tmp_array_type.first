@@ -1,0 +1,4 @@
+function test(arr: Array<Int>) -> Int {
+    return 0;
+}
+

@@ -12,6 +12,9 @@ namespace ast {
 // Forward declarations
 class Pattern;
 class MatchCase;
+class Parameter;
+class Stmt;
+class Type;
 
 // Base class for expressions
 class Expr : public ASTNode {
@@ -152,7 +155,7 @@ public:
     const std::vector<std::unique_ptr<Expr>>& getArguments() const { return arguments_; }
     
     void accept(ASTVisitor& visitor) override {
-        (void)visitor;
+        visitor.visitConstructorExpr(this);
     }
     
     std::string getNodeType() const override { return "ConstructorExpr"; }
@@ -173,7 +176,7 @@ public:
     const std::vector<std::unique_ptr<MatchCase>>& getCases() const;
     
     void accept(ASTVisitor& visitor) override {
-        (void)visitor;
+        visitor.visitMatchExpr(this);
     }
     
     std::string getNodeType() const override { return "MatchExpr"; }
@@ -222,6 +225,80 @@ public:
 private:
     std::unique_ptr<Expr> array_;
     std::unique_ptr<Expr> index_;
+};
+
+// Record literal expression: {field1: value1, field2: value2}
+class RecordLiteralExpr : public Expr {
+public:
+    struct Field {
+        std::string name;
+        std::unique_ptr<Expr> value;
+        
+        Field(const std::string& n, std::unique_ptr<Expr> v)
+            : name(n), value(std::move(v)) {}
+    };
+
+    RecordLiteralExpr(const SourceLocation& location,
+                      std::vector<Field> fields)
+        : Expr(location), fields_(std::move(fields)) {}
+
+    const std::vector<Field>& getFields() const { return fields_; }
+    
+    void accept(ASTVisitor& visitor) override {
+        visitor.visitRecordLiteralExpr(this);
+    }
+    
+    std::string getNodeType() const override { return "RecordLiteralExpr"; }
+
+private:
+    std::vector<Field> fields_;
+};
+
+// Field access expression: record.field
+class FieldAccessExpr : public Expr {
+public:
+    FieldAccessExpr(const SourceLocation& location,
+                    std::unique_ptr<Expr> record,
+                    const std::string& fieldName)
+        : Expr(location), record_(std::move(record)), fieldName_(fieldName) {}
+
+    Expr* getRecord() const { return record_.get(); }
+    const std::string& getFieldName() const { return fieldName_; }
+    
+    void accept(ASTVisitor& visitor) override {
+        visitor.visitFieldAccessExpr(this);
+    }
+    
+    std::string getNodeType() const override { return "FieldAccessExpr"; }
+
+private:
+    std::unique_ptr<Expr> record_;
+    std::string fieldName_;
+};
+
+// Lambda expression (closure): (params) => body or function(params) body
+// Forward declarations for Parameter and Stmt are in the forward declarations section
+class LambdaExpr : public Expr {
+public:
+    LambdaExpr(const SourceLocation& location,
+               std::vector<std::unique_ptr<Parameter>> parameters,
+               std::unique_ptr<Type> returnType,
+               std::vector<std::unique_ptr<Stmt>> body);
+    
+    const std::vector<std::unique_ptr<Parameter>>& getParameters() const { return parameters_; }
+    Type* getReturnType() const { return returnType_.get(); }
+    const std::vector<std::unique_ptr<Stmt>>& getBody() const { return body_; }
+    
+    void accept(ASTVisitor& visitor) override {
+        visitor.visitLambdaExpr(this);
+    }
+    
+    std::string getNodeType() const override { return "LambdaExpr"; }
+
+private:
+    std::vector<std::unique_ptr<Parameter>> parameters_;
+    std::unique_ptr<Type> returnType_;
+    std::vector<std::unique_ptr<Stmt>> body_;
 };
 
 } // namespace ast

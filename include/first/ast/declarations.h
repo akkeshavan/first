@@ -47,10 +47,11 @@ public:
                  std::vector<std::string> genericParams,
                  std::vector<std::unique_ptr<Parameter>> parameters,
                  std::unique_ptr<Type> returnType,
-                 std::vector<std::unique_ptr<Stmt>> body)
+                 std::vector<std::unique_ptr<Stmt>> body,
+                 bool isExported = false)
         : ASTNode(location), name_(name), genericParams_(std::move(genericParams)),
           parameters_(std::move(parameters)), returnType_(std::move(returnType)),
-          body_(std::move(body)) {}
+          body_(std::move(body)), isExported_(isExported) {}
 
     const std::string& getName() const { return name_; }
     const std::vector<std::string>& getGenericParams() const { return genericParams_; }
@@ -58,6 +59,7 @@ public:
     Type* getReturnType() const { return returnType_.get(); }
     const std::vector<std::unique_ptr<Stmt>>& getBody() const { return body_; }
     bool isSignature() const { return body_.empty(); } // Function signature without body
+    bool isExported() const { return isExported_; }
     
     void accept(ASTVisitor& visitor) override {
         visitor.visitFunctionDecl(this);
@@ -71,6 +73,7 @@ private:
     std::vector<std::unique_ptr<Parameter>> parameters_;
     std::unique_ptr<Type> returnType_;
     std::vector<std::unique_ptr<Stmt>> body_;
+    bool isExported_;
 };
 
 // Interaction declaration  
@@ -81,16 +84,18 @@ public:
                     std::vector<std::string> genericParams,
                     std::vector<std::unique_ptr<Parameter>> parameters,
                     std::unique_ptr<Type> returnType,
-                    std::vector<std::unique_ptr<Stmt>> body)
+                    std::vector<std::unique_ptr<Stmt>> body,
+                    bool isExported = false)
         : ASTNode(location), name_(name), genericParams_(std::move(genericParams)),
           parameters_(std::move(parameters)), returnType_(std::move(returnType)),
-          body_(std::move(body)) {}
+          body_(std::move(body)), isExported_(isExported) {}
 
     const std::string& getName() const { return name_; }
     const std::vector<std::string>& getGenericParams() const { return genericParams_; }
     const std::vector<std::unique_ptr<Parameter>>& getParameters() const { return parameters_; }
     Type* getReturnType() const { return returnType_.get(); }
     const std::vector<std::unique_ptr<Stmt>>& getBody() const { return body_; }
+    bool isExported() const { return isExported_; }
     
     void accept(ASTVisitor& visitor) override {
         visitor.visitInteractionDecl(this);
@@ -104,30 +109,56 @@ private:
     std::vector<std::unique_ptr<Parameter>> parameters_;
     std::unique_ptr<Type> returnType_;
     std::vector<std::unique_ptr<Stmt>> body_;
+    bool isExported_;
 };
 
 // Type declaration
 class TypeDecl : public ASTNode {
 public:
-    TypeDecl(const SourceLocation& location) : ASTNode(location) {}
+    TypeDecl(const SourceLocation& location, bool isExported = false)
+        : ASTNode(location), isExported_(isExported) {}
+    
+    bool isExported() const { return isExported_; }
     
     void accept(ASTVisitor& visitor) override {
         visitor.visitTypeDecl(this);
     }
     
     std::string getNodeType() const override { return "TypeDecl"; }
+
+private:
+    bool isExported_;
 };
 
 // Import declaration
 class ImportDecl : public ASTNode {
 public:
-    ImportDecl(const SourceLocation& location) : ASTNode(location) {}
+    enum class ImportKind {
+        All,        // import * "module"
+        Specific,   // import { a, b, c } "module"
+        Default     // import "module"
+    };
+    
+    ImportDecl(const SourceLocation& location,
+               ImportKind kind,
+               const std::string& moduleName,
+               std::vector<std::string> symbols = {})
+        : ASTNode(location), kind_(kind), moduleName_(moduleName), symbols_(std::move(symbols)) {}
+    
+    ImportKind getKind() const { return kind_; }
+    const std::string& getModuleName() const { return moduleName_; }
+    const std::vector<std::string>& getSymbols() const { return symbols_; }
     
     void accept(ASTVisitor& visitor) override {
         visitor.visitImportDecl(this);
     }
     
     std::string getNodeType() const override { return "ImportDecl"; }
+
+private:
+    ImportKind kind_;
+    std::string moduleName_;
+    std::vector<std::string> symbols_; // For Specific imports
 };
 
 } // namespace ast

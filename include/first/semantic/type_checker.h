@@ -14,11 +14,18 @@
 namespace first {
 namespace semantic {
 
+class ModuleResolver;
+
 // Type checker for semantic analysis
 class TypeChecker {
 public:
     TypeChecker(ErrorReporter& errorReporter)
-        : errorReporter_(errorReporter), symbolTable_() {}
+        : errorReporter_(errorReporter)
+        , symbolTable_()
+        , moduleResolver_(nullptr)
+        , currentProgram_(nullptr) {}
+
+    void setModuleResolver(ModuleResolver* resolver) { moduleResolver_ = resolver; }
     
     // Main entry point: type check a program
     bool check(ast::Program* program);
@@ -45,6 +52,8 @@ public:
 private:
     ErrorReporter& errorReporter_;
     SymbolTable symbolTable_;
+    ModuleResolver* moduleResolver_;
+    ast::Program* currentProgram_;
     
     // Helper methods
     void checkProgram(ast::Program* program);

@@ -196,6 +196,9 @@ void test_function_calls() {
     
     first::ir::IRGenerator irGen(compiler.getErrorReporter(), "test_function_calls_module");
     bool irSuccess = irGen.generate(ast);
+    if (!irSuccess || compiler.getErrorReporter().hasErrors()) {
+        compiler.getErrorReporter().printErrors();
+    }
     ASSERT(irSuccess, "IR generation should succeed");
     ASSERT(!compiler.getErrorReporter().hasErrors(), "No errors should occur");
     

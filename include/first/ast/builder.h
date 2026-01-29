@@ -41,11 +41,14 @@ public:
     std::unique_ptr<Expr> buildExpression(FirstParser::PrimaryExprContext* ctx);
     std::unique_ptr<LiteralExpr> buildLiteral(FirstParser::LiteralContext* ctx);
     std::unique_ptr<ArrayLiteralExpr> buildArrayLiteral(FirstParser::ArrayLiteralContext* ctx);
+    std::unique_ptr<RecordLiteralExpr> buildRecordLiteral(FirstParser::RecordLiteralContext* ctx);
+    std::unique_ptr<LambdaExpr> buildLambdaExpr(FirstParser::LambdaExprContext* ctx);
     
     // Type builders
     std::unique_ptr<Type> buildType(FirstParser::Type_Context* ctx);
     std::unique_ptr<Type> buildType(FirstParser::PrimaryTypeContext* ctx);
     std::unique_ptr<PrimitiveType> buildPrimitiveType(FirstParser::BuiltinTypeContext* ctx);
+    std::unique_ptr<Type> buildGenericType(FirstParser::GenericTypeContext* ctx);
     
     // Statement builders
     std::unique_ptr<Stmt> buildStatement(FirstParser::StatementContext* ctx);

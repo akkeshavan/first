@@ -1,0 +1,7 @@
+// Simple math module for end-to-end multi-module compilation test
+module Math;
+
+export function square(x: Int) -> Int {
+    return x * x;
+}
+
