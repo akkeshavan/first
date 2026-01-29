@@ -82,4 +82,37 @@ void test_record_type() {
     std::cout << "✓ Record type IR generation works\n";
 }
 
+void test_record_pattern_match() {
+    first::Compiler compiler;
+
+    std::string source = R"(
+        function test() -> Int {
+            let rec = {x: 1, y: 2};
+            let v = match rec {
+                {x: 1, y: _} => 10,
+                {x: _, y: _} => 20,
+                _ => 0
+            };
+            return v;
+        }
+    )";
+
+    bool success = compiler.compileFromString(source, "test_record_pattern_match.first");
+    (void)success;
+
+    auto* ast = compiler.getAST();
+    ASSERT(ast != nullptr, "AST should exist");
+    first::ir::IRGenerator irGen(compiler.getErrorReporter(), "test_record_pattern_match_module");
+    bool irSuccess = irGen.generate(ast);
+    if (!irSuccess || compiler.getErrorReporter().hasErrors()) {
+        compiler.getErrorReporter().printErrors();
+    }
+    ASSERT(irSuccess, "IR generation should succeed for record pattern match");
+    ASSERT(!compiler.getErrorReporter().hasErrors(), "No errors expected");
+    llvm::Module* module = irGen.getModule();
+    ASSERT(module != nullptr, "Module should exist");
+
+    std::cout << "✓ Record pattern matching IR generation works\n";
+}
+
 // Test functions are called from test_main.cpp

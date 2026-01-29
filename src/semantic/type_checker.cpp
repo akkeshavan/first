@@ -3,8 +3,10 @@
 #include "first/ast/statements.h"
 #include "first/ast/expressions.h"
 #include "first/ast/match_case.h"
+#include "first/ast/patterns.h"
 #include "first/semantic/module_resolver.h"
 #include <sstream>
+#include <set>
 
 namespace first {
 namespace semantic {
@@ -1224,7 +1226,31 @@ ast::Type* TypeChecker::inferMatch(ast::MatchExpr* expr) {
     
     for (const auto& matchCase : expr->getCases()) {
         // Check pattern matches matched type
-        // TODO: Implement pattern type checking
+        if (auto* recType = dynamic_cast<ast::RecordType*>(matchedType)) {
+            if (auto* recPat = dynamic_cast<ast::RecordPattern*>(matchCase->getPattern())) {
+                for (const auto& fp : recPat->getFields()) {
+                    ast::RecordField* field = recType->getField(fp.name);
+                    if (!field) {
+                        errorReporter_.error(
+                            matchCase->getPattern()->getLocation(),
+                            "Record pattern references unknown field '" + fp.name + "'"
+                        );
+                        continue;
+                    }
+                    // Minimal nested checking: literal patterns must be type-compatible.
+                    if (auto* litPat = dynamic_cast<ast::LiteralPattern*>(fp.pattern.get())) {
+                        ast::Type* ft = field->getType();
+                        ast::Type* lt = inferType(litPat->getLiteral());
+                        if (ft && lt && !isAssignable(lt, ft)) {
+                            errorReporter_.error(
+                                litPat->getLocation(),
+                                "Record pattern field '" + fp.name + "' literal has incompatible type"
+                            );
+                        }
+                    }
+                }
+            }
+        }
         
         // Infer body type
         ast::Type* bodyType = inferType(matchCase->getBody());
@@ -1245,8 +1271,48 @@ ast::Type* TypeChecker::inferMatch(ast::MatchExpr* expr) {
         }
     }
     
-    // TODO: Check exhaustiveness
-    
+    // Exhaustiveness: if matched type is ADT, ensure all constructors are covered
+    if (auto* adtType = dynamic_cast<ast::ADTType*>(matchedType)) {
+        std::set<std::string> covered;
+        bool hasCatchAll = false;
+        for (const auto& matchCase : expr->getCases()) {
+            ast::Pattern* p = matchCase->getPattern();
+            if (!p) continue;
+            if (auto* cp = dynamic_cast<ast::ConstructorPattern*>(p)) {
+                const std::string& name = cp->getConstructorName();
+                for (const auto& c : adtType->getConstructors()) {
+                    if (c->getName() == name) { covered.insert(name); break; }
+                }
+            } else if (dynamic_cast<ast::VariablePattern*>(p) || dynamic_cast<ast::WildcardPattern*>(p)) {
+                hasCatchAll = true;
+                break;
+            } else if (auto* ap = dynamic_cast<ast::AsPattern*>(p)) {
+                ast::Pattern* inner = ap->getPattern();
+                if (inner && (dynamic_cast<ast::VariablePattern*>(inner) || dynamic_cast<ast::WildcardPattern*>(inner))) {
+                    hasCatchAll = true;
+                    break;
+                }
+                if (auto* innerCp = dynamic_cast<ast::ConstructorPattern*>(inner)) {
+                    const std::string& name = innerCp->getConstructorName();
+                    for (const auto& c : adtType->getConstructors()) {
+                        if (c->getName() == name) { covered.insert(name); break; }
+                    }
+                }
+            }
+        }
+        if (!hasCatchAll) {
+            for (const auto& c : adtType->getConstructors()) {
+                if (covered.find(c->getName()) == covered.end()) {
+                    errorReporter_.error(
+                        expr->getLocation(),
+                        "Non-exhaustive match: constructor '" + c->getName() + "' is not covered"
+                    );
+                    break;
+                }
+            }
+        }
+    }
+
     return returnType;
 }
 

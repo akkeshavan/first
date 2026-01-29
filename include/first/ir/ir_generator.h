@@ -1,6 +1,7 @@
 #pragma once
 
 #include "first/ast/program.h"
+#include "first/ast/types.h"
 #include "first/ast/visitor.h"
 #include "first/error_reporter.h"
 #include <llvm/IR/LLVMContext.h>
@@ -10,6 +11,7 @@
 #include <llvm/IR/Type.h>
 #include <memory>
 #include <string>
+#include <utility>
 #include <unordered_map>
 #include <map>
 
@@ -203,6 +205,15 @@ private:
     
     // Module/import helpers
     void generateExternalDeclaration(const std::string& symbolName, const std::string& moduleName);
+
+    // ADT constructor index map: constructor name -> (ADTType*, index)
+    void buildConstructorIndexMap(ast::Program* program);
+    void registerADTFromType(ast::Type* type);
+    void collectTypesFromStmt(ast::Stmt* stmt);
+    std::pair<ast::ADTType*, size_t> getConstructorIndex(const std::string& name) const;
+
+    ast::Program* currentProgram_;
+    std::map<std::string, std::pair<ast::ADTType*, size_t>> constructorIndexMap_;
 };
 
 } // namespace ir

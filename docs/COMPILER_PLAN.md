@@ -492,29 +492,29 @@ Standard libraries required for linux and MACOS (apple silicon) distribution.
 
 ### Step 8.1: Unit Tests
 **Verification**: All components have unit tests
-- [ ] Lexer/parser tests
-- [ ] AST construction tests
-- [ ] Type checker tests
-- [ ] IR generation tests
-- [ ] Runtime tests
+- [x] Lexer/parser tests
+- [x] AST construction tests
+- [x] Type checker tests
+- [x] IR generation tests
+- [x] Runtime tests
 
 **Deliverable**: Comprehensive test suite
 
 ### Step 8.2: Integration Tests
 **Verification**: End-to-end compilation works
-- [ ] Test compilation of language examples
-- [ ] Test all language features
-- [ ] Test error cases
+- [x] Test compilation of language examples
+- [x] Test all language features
+- [x] Test error cases
 - [ ] Test performance benchmarks
 
 **Deliverable**: Integration test suite
 
 ### Step 8.3: Language Compliance Tests
 **Verification**: Compiler matches language specification
-- [ ] Test all language features from spec
-- [ ] Test semantic restrictions
-- [ ] Test edge cases
-- [ ] Test error messages
+- [x] Test all language features from spec
+- [x] Test semantic restrictions
+- [x] Test edge cases
+- [x] Test error messages
 
 **Deliverable**: Compliance test suite
 

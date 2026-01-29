@@ -9,6 +9,8 @@
 #include "first/source_location.h"
 #include <set>
 #include <map>
+#include <algorithm>
+#include <functional>
 #include <sstream>
 #include <llvm/IR/Constants.h>
 #include <llvm/IR/Function.h>
@@ -33,6 +35,7 @@ IRGenerator::IRGenerator(ErrorReporter& errorReporter, const std::string& module
     , moduleResolver_(nullptr)
     , currentFunction_(nullptr)
     , currentValue_(nullptr)
+    , currentProgram_(nullptr)
 {
 }
 
@@ -46,6 +49,7 @@ IRGenerator::IRGenerator(ErrorReporter& errorReporter, llvm::LLVMContext& extern
     , moduleResolver_(nullptr)
     , currentFunction_(nullptr)
     , currentValue_(nullptr)
+    , currentProgram_(nullptr)
 {
 }
 
@@ -97,18 +101,21 @@ void IRGenerator::visitProgram(ast::Program* node) {
     if (!node) {
         return;
     }
-    
+    currentProgram_ = node;
+    constructorIndexMap_.clear();
+    buildConstructorIndexMap(node);
+
     // Set module name for this IR generation
     std::string moduleName = node->getModuleName();
     if (moduleName.empty()) {
         moduleName = "main";
     }
-    
+
     // Update module name if different
     if (module_->getName() != moduleName) {
         module_->setModuleIdentifier(llvm::StringRef(moduleName));
     }
-    
+
     // IMPORTANT: process imports first so we have external declarations available
     // when generating function bodies (so calls like `square(5)` resolve).
     for (const auto& import : node->getImports()) {
@@ -1866,63 +1873,66 @@ llvm::Value* IRGenerator::evaluateConstructor(ast::ConstructorExpr* expr) {
     if (!expr) {
         return nullptr;
     }
-    
-    // For constructor calls, we need to:
-    // 1. Determine which ADT this constructor belongs to
-    // 2. Allocate space for the ADT value (tagged union)
-    // 3. Set the tag (constructor index)
-    // 4. Store constructor arguments in the payload
-    
-    // TODO: This requires type information from the semantic analyzer
-    // For now, we'll create a basic implementation
-    
+
     const std::string& constructorName = expr->getConstructorName();
     const auto& arguments = expr->getArguments();
-    
-    // Evaluate constructor arguments
+
     std::vector<llvm::Value*> argValues;
     for (const auto& arg : arguments) {
         llvm::Value* argValue = evaluateExpr(arg.get());
-        if (!argValue) {
-            return nullptr;
-        }
+        if (!argValue) return nullptr;
         argValues.push_back(argValue);
     }
-    
-    // For now, create a simple struct with tag and payload
-    // Tag will be 0 (we need to look up constructor index from ADT type)
+
+    auto [adtAstType, tagIndex] = getConstructorIndex(constructorName);
+    (void)adtAstType;
+
     llvm::Type* tagType = llvm::Type::getInt64Ty(context_);
     llvm::Type* payloadType = llvm::PointerType::get(context_, 0);
-    
-    // Create struct type
     std::vector<llvm::Type*> structFields = {tagType, payloadType};
     llvm::StructType* adtType = llvm::StructType::get(context_, structFields);
-    
-    // Allocate ADT value on stack
     llvm::AllocaInst* adtAlloca = builder_->CreateAlloca(adtType, nullptr, "adttmp");
-    
-    // Set tag to 0 (placeholder - needs proper constructor index)
-    llvm::Value* indices[] = {
+
+    llvm::Value* tagIndices[] = {
         llvm::ConstantInt::get(context_, llvm::APInt(64, 0)),
         llvm::ConstantInt::get(context_, llvm::APInt(64, 0))
     };
-    llvm::Value* tagPtr = builder_->CreateGEP(adtType, adtAlloca, indices, "tagptr");
-    llvm::Value* tagValue = llvm::ConstantInt::get(context_, llvm::APInt(64, 0));
-    builder_->CreateStore(tagValue, tagPtr);
-    
-    // TODO: Store constructor arguments in payload
-    // For now, use null pointer as placeholder
+    llvm::Value* tagPtr = builder_->CreateGEP(adtType, adtAlloca, tagIndices, "tagptr");
+    builder_->CreateStore(
+        llvm::ConstantInt::get(context_, llvm::APInt(64, tagIndex)),
+        tagPtr
+    );
+
+    llvm::Value* payloadValue = nullptr;
+    if (!argValues.empty()) {
+        std::vector<llvm::Type*> fieldTypes;
+        for (llvm::Value* v : argValues) fieldTypes.push_back(v->getType());
+        llvm::StructType* payloadStructType = llvm::StructType::get(context_, fieldTypes);
+        llvm::AllocaInst* payloadAlloca = builder_->CreateAlloca(payloadStructType, nullptr, "payload");
+        for (size_t i = 0; i < argValues.size(); ++i) {
+            llvm::Value* fieldIndices[] = {
+                llvm::ConstantInt::get(context_, llvm::APInt(64, 0)),
+                llvm::ConstantInt::get(context_, llvm::APInt(64, i))
+            };
+            llvm::Value* fieldPtr = builder_->CreateGEP(payloadStructType, payloadAlloca, fieldIndices, "fieldptr");
+            builder_->CreateStore(argValues[i], fieldPtr);
+        }
+        payloadValue = builder_->CreateBitCast(
+            payloadAlloca,
+            llvm::PointerType::get(context_, 0),
+            "payloadptr"
+        );
+    } else {
+        payloadValue = llvm::ConstantPointerNull::get(llvm::PointerType::get(context_, 0));
+    }
+
     llvm::Value* payloadIndices[] = {
         llvm::ConstantInt::get(context_, llvm::APInt(64, 0)),
         llvm::ConstantInt::get(context_, llvm::APInt(64, 1))
     };
     llvm::Value* payloadPtr = builder_->CreateGEP(adtType, adtAlloca, payloadIndices, "payloadptr");
-    llvm::Value* nullPayload = llvm::ConstantPointerNull::get(
-        llvm::PointerType::get(context_, 0)
-    );
-    builder_->CreateStore(nullPayload, payloadPtr);
-    
-    // Return pointer to ADT (cast to i8* for compatibility)
+    builder_->CreateStore(payloadValue, payloadPtr);
+
     return builder_->CreateBitCast(
         adtAlloca,
         llvm::PointerType::get(context_, 0),
@@ -1975,6 +1985,24 @@ llvm::Value* IRGenerator::evaluateMatch(ast::MatchExpr* expr) {
     
     // Create a default block for when no pattern matches
     llvm::BasicBlock* defaultBB = llvm::BasicBlock::Create(context_, "matchdefault", currentFunction_);
+
+    // If the match includes an explicit catch-all (wildcard/variable) case without a guard,
+    // then reaching the default block should be impossible. In that scenario, we should not
+    // report a compile-time error for non-exhaustiveness.
+    std::function<bool(ast::Pattern*)> isCatchAll = [&](ast::Pattern* p) -> bool {
+        if (!p) return false;
+        if (dynamic_cast<ast::WildcardPattern*>(p) || dynamic_cast<ast::VariablePattern*>(p)) return true;
+        if (auto* ap = dynamic_cast<ast::AsPattern*>(p)) return isCatchAll(ap->getPattern());
+        return false;
+    };
+    bool hasExplicitCatchAll = false;
+    for (const auto& c : cases) {
+        if (!c) continue;
+        if (!c->hasGuard() && isCatchAll(c->getPattern())) {
+            hasExplicitCatchAll = true;
+            break;
+        }
+    }
     
     // Start with first case
     builder_->CreateBr(caseBlocks[0]);
@@ -2032,10 +2060,12 @@ llvm::Value* IRGenerator::evaluateMatch(ast::MatchExpr* expr) {
     
     // Default case: no pattern matched
     builder_->SetInsertPoint(defaultBB);
-    errorReporter_.error(
-        expr->getLocation(),
-        "Match expression: no pattern matched (non-exhaustive match)"
-    );
+    if (!hasExplicitCatchAll) {
+        errorReporter_.error(
+            expr->getLocation(),
+            "Match expression: no pattern matched (non-exhaustive match)"
+        );
+    }
     // Return default value based on expected return type
     // TODO: Determine return type from context
     llvm::Value* defaultResult = llvm::ConstantInt::get(context_, llvm::APInt(64, 0));
@@ -2125,6 +2155,75 @@ bool IRGenerator::generatePatternMatch(ast::Pattern* pattern, llvm::Value* value
         builder_->CreateCondBr(comparison, matchBB, nextBB);
         return true;
     }
+    else if (auto* recordPattern = dynamic_cast<ast::RecordPattern*>(pattern)) {
+        // Record pattern: extract specified fields and match subpatterns.
+        // This relies on recordMetadata_ (same mechanism as field access).
+        auto it = recordMetadata_.find(value);
+        if (it == recordMetadata_.end()) {
+            // Try to find metadata via local variable allocas (same fallback as evaluateFieldAccess)
+            for (const auto& varPair : localVars_) {
+                llvm::Value* varAlloca = varPair.second;
+                auto varIt = recordMetadata_.find(varAlloca);
+                if (varIt != recordMetadata_.end()) {
+                    it = varIt;
+                    break;
+                }
+            }
+        }
+        if (it == recordMetadata_.end()) {
+            errorReporter_.error(pattern->getLocation(),
+                                 "Pattern matching: record type information not available");
+            builder_->CreateBr(nextBB);
+            return false;
+        }
+
+        const RecordMetadata& meta = it->second;
+        llvm::StructType* structType = meta.structType;
+        if (!structType) {
+            builder_->CreateBr(nextBB);
+            return false;
+        }
+
+        llvm::Value* recPtr = builder_->CreateBitCast(value, llvm::PointerType::get(context_, 0), "recptr");
+
+        llvm::Function* func = currentFunction_;
+        llvm::BasicBlock* curBB = builder_->GetInsertBlock();
+
+        const auto& fields = recordPattern->getFields();
+        if (fields.empty()) {
+            builder_->CreateBr(matchBB);
+            return true;
+        }
+
+        for (size_t i = 0; i < fields.size(); ++i) {
+            const auto& fp = fields[i];
+            auto nameIt = std::find(meta.fieldNames.begin(), meta.fieldNames.end(), fp.name);
+            if (nameIt == meta.fieldNames.end()) {
+                errorReporter_.error(pattern->getLocation(),
+                                     "Pattern matching: record has no field named '" + fp.name + "'");
+                builder_->CreateBr(nextBB);
+                return false;
+            }
+            size_t fieldIndex = static_cast<size_t>(std::distance(meta.fieldNames.begin(), nameIt));
+            llvm::Type* fieldTy = structType->getElementType(static_cast<unsigned>(fieldIndex));
+
+            builder_->SetInsertPoint(curBB);
+            llvm::Value* idxs[] = {
+                llvm::ConstantInt::get(context_, llvm::APInt(64, 0)),
+                llvm::ConstantInt::get(context_, llvm::APInt(64, fieldIndex))
+            };
+            llvm::Value* fieldPtr = builder_->CreateGEP(structType, recPtr, idxs, "recfieldptr");
+            llvm::Value* fieldVal = builder_->CreateLoad(fieldTy, fieldPtr, "recfieldval");
+
+            llvm::BasicBlock* nextFieldBB =
+                (i == fields.size() - 1) ? matchBB : llvm::BasicBlock::Create(context_, "recpat_next", func);
+            if (!generatePatternMatch(fp.pattern.get(), fieldVal, nextFieldBB, nextBB)) {
+                return false;
+            }
+            curBB = nextFieldBB;
+        }
+        return true;
+    }
     else if (auto* constructorPattern = dynamic_cast<ast::ConstructorPattern*>(pattern)) {
         // Constructor pattern: check ADT tag
         // Value should be a pointer to ADT struct {tag, payload}
@@ -2160,12 +2259,11 @@ bool IRGenerator::generatePatternMatch(ast::Pattern* pattern, llvm::Value* value
         };
         llvm::Value* tagPtr = builder_->CreateGEP(adtType, adtPtr, tagIndices, "tagptr");
         llvm::Value* tag = builder_->CreateLoad(tagType, tagPtr, "tag");
-        
-        // TODO: Look up constructor index by name from ADT type
-        // For now, assume constructor index is 0 for first constructor
-        // In a full implementation, we'd look up the constructor name in the ADT type
+
         const std::string& constructorName = constructorPattern->getConstructorName();
-        llvm::Value* expectedTag = llvm::ConstantInt::get(context_, llvm::APInt(64, 0));
+        auto [adtAstType, tagIndex] = getConstructorIndex(constructorName);
+        llvm::Value* expectedTag = llvm::ConstantInt::get(context_, llvm::APInt(64, tagIndex));
+        (void)adtAstType;
         llvm::Value* tagMatch = builder_->CreateICmpEQ(tag, expectedTag, "tagcmp");
         
         builder_->CreateCondBr(tagMatch, matchBB, nextBB);
@@ -2203,75 +2301,92 @@ void IRGenerator::bindPatternVariables(ast::Pattern* pattern, llvm::Value* value
         builder_->CreateStore(value, alloca);
         setVariable(varName, alloca, varType);
     }
-    else if (auto* constructorPattern = dynamic_cast<ast::ConstructorPattern*>(pattern)) {
-        // Destructure constructor: extract payload and bind to argument patterns
-        const auto& argPatterns = constructorPattern->getArguments();
-        
-        if (!argPatterns.empty()) {
-            // Extract payload from ADT
-            llvm::Type* tagType = llvm::Type::getInt64Ty(context_);
-            llvm::Type* payloadType = llvm::PointerType::get(context_, 0);
-            std::vector<llvm::Type*> structFields = {tagType, payloadType};
-            llvm::StructType* adtType = llvm::StructType::get(context_, structFields);
-            
-            // Cast value to ADT pointer
-            llvm::Value* adtPtr = nullptr;
-            if (value->getType()->isPointerTy()) {
-                adtPtr = builder_->CreateBitCast(
-                    value,
-                    llvm::PointerType::get(context_, 0),
-                    "adtptr"
-                );
-            } else {
-                errorReporter_.error(
-                    pattern->getLocation(),
-                    "Pattern matching: constructor pattern requires ADT pointer"
-                );
-                return;
-            }
-            
-            // Load payload
-            llvm::Value* payloadIndices[] = {
-                llvm::ConstantInt::get(context_, llvm::APInt(64, 0)),
-                llvm::ConstantInt::get(context_, llvm::APInt(64, 1))
-            };
-            llvm::Value* payloadPtr = builder_->CreateGEP(adtType, adtPtr, payloadIndices, "payloadptr");
-            llvm::Value* payload = builder_->CreateLoad(payloadType, payloadPtr, "payload");
-            
-            // Destructure payload based on constructor argument types
-            // The payload should be a struct containing the constructor arguments
-            // For now, we'll handle single and multiple arguments
-            
-            if (argPatterns.size() == 1) {
-                // Single argument: payload is the value directly (or a pointer to it)
-                bindPatternVariables(argPatterns[0].get(), payload);
-            } else if (argPatterns.size() > 1) {
-                // Multiple arguments: payload is a struct with fields for each argument
-                // TODO: Get actual struct type from constructor definition
-                // For now, assume payload is a struct pointer and extract fields
-                
-                // Cast payload to struct pointer (we need the actual struct type)
-                // This is a simplified implementation - in reality we'd look up the constructor
-                // definition to get the exact struct type
-                llvm::Type* payloadStructType = nullptr;
-                
-                // For now, create a placeholder struct type
-                // In a full implementation, we'd get this from the ADT type information
-                std::vector<llvm::Type*> fieldTypes;
-                for (size_t j = 0; j < argPatterns.size(); ++j) {
-                    // Use i8* as placeholder - actual types should come from type checker
-                    fieldTypes.push_back(llvm::PointerType::get(context_, 0));
+    else if (auto* recordPattern = dynamic_cast<ast::RecordPattern*>(pattern)) {
+        auto it = recordMetadata_.find(value);
+        if (it == recordMetadata_.end()) {
+            for (const auto& varPair : localVars_) {
+                llvm::Value* varAlloca = varPair.second;
+                auto varIt = recordMetadata_.find(varAlloca);
+                if (varIt != recordMetadata_.end()) {
+                    it = varIt;
+                    break;
                 }
-                payloadStructType = llvm::StructType::get(context_, fieldTypes);
-                
-                // Cast payload to struct pointer
-                llvm::Value* structPtr = builder_->CreateBitCast(
-                    payload,
-                    llvm::PointerType::get(context_, 0),
-                    "structptr"
-                );
-                
-                // Extract each field and bind to corresponding pattern
+            }
+        }
+        if (it == recordMetadata_.end()) {
+            errorReporter_.error(pattern->getLocation(),
+                                 "Pattern matching: record type information not available for bindings");
+            return;
+        }
+        const RecordMetadata& meta = it->second;
+        llvm::StructType* structType = meta.structType;
+        if (!structType) return;
+
+        llvm::Value* recPtr = builder_->CreateBitCast(value, llvm::PointerType::get(context_, 0), "recptr");
+
+        for (const auto& fp : recordPattern->getFields()) {
+            auto nameIt = std::find(meta.fieldNames.begin(), meta.fieldNames.end(), fp.name);
+            if (nameIt == meta.fieldNames.end()) continue;
+            size_t fieldIndex = static_cast<size_t>(std::distance(meta.fieldNames.begin(), nameIt));
+            llvm::Type* fieldTy = structType->getElementType(static_cast<unsigned>(fieldIndex));
+            llvm::Value* idxs[] = {
+                llvm::ConstantInt::get(context_, llvm::APInt(64, 0)),
+                llvm::ConstantInt::get(context_, llvm::APInt(64, fieldIndex))
+            };
+            llvm::Value* fieldPtr = builder_->CreateGEP(structType, recPtr, idxs, "recfieldptr");
+            llvm::Value* fieldVal = builder_->CreateLoad(fieldTy, fieldPtr, "recfieldval");
+            bindPatternVariables(fp.pattern.get(), fieldVal);
+        }
+    }
+    else if (auto* constructorPattern = dynamic_cast<ast::ConstructorPattern*>(pattern)) {
+        const auto& argPatterns = constructorPattern->getArguments();
+        if (argPatterns.empty()) return;
+
+        llvm::Type* tagType = llvm::Type::getInt64Ty(context_);
+        llvm::Type* payloadPtrType = llvm::PointerType::get(context_, 0);
+        std::vector<llvm::Type*> structFields = {tagType, payloadPtrType};
+        llvm::StructType* adtType = llvm::StructType::get(context_, structFields);
+
+        llvm::Value* adtPtr = nullptr;
+        if (value->getType()->isPointerTy()) {
+            adtPtr = builder_->CreateBitCast(value, llvm::PointerType::get(context_, 0), "adtptr");
+        } else {
+            errorReporter_.error(
+                pattern->getLocation(),
+                "Pattern matching: constructor pattern requires ADT pointer"
+            );
+            return;
+        }
+
+        llvm::Value* payloadIndices[] = {
+            llvm::ConstantInt::get(context_, llvm::APInt(64, 0)),
+            llvm::ConstantInt::get(context_, llvm::APInt(64, 1))
+        };
+        llvm::Value* payloadPtr = builder_->CreateGEP(adtType, adtPtr, payloadIndices, "payloadptr");
+        llvm::Value* payload = builder_->CreateLoad(payloadPtrType, payloadPtr, "payload");
+
+        auto [adtAstType, tagIndex] = getConstructorIndex(constructorPattern->getConstructorName());
+        (void)tagIndex;
+        if (!adtAstType || adtAstType->getConstructors().size() <= 0) {
+            bindPatternVariables(argPatterns[0].get(), payload);
+            return;
+        }
+        ast::Constructor* constructor = nullptr;
+        for (const auto& c : adtAstType->getConstructors()) {
+            if (c->getName() == constructorPattern->getConstructorName()) {
+                constructor = c.get();
+                break;
+            }
+        }
+        if (!constructor || constructor->getArgumentTypes().size() != argPatterns.size()) {
+            if (argPatterns.size() == 1) {
+                bindPatternVariables(argPatterns[0].get(), payload);
+            } else {
+                std::vector<llvm::Type*> fieldTypes;
+                for (size_t j = 0; j < argPatterns.size(); ++j)
+                    fieldTypes.push_back(llvm::PointerType::get(context_, 0));
+                llvm::StructType* payloadStructType = llvm::StructType::get(context_, fieldTypes);
+                llvm::Value* structPtr = builder_->CreateBitCast(payload, llvm::PointerType::get(context_, 0), "structptr");
                 for (size_t j = 0; j < argPatterns.size(); ++j) {
                     llvm::Value* fieldIndices[] = {
                         llvm::ConstantInt::get(context_, llvm::APInt(64, 0)),
@@ -2279,10 +2394,39 @@ void IRGenerator::bindPatternVariables(ast::Pattern* pattern, llvm::Value* value
                     };
                     llvm::Value* fieldPtr = builder_->CreateGEP(payloadStructType, structPtr, fieldIndices, "fieldptr");
                     llvm::Value* fieldValue = builder_->CreateLoad(fieldTypes[j], fieldPtr, "fieldval");
-                    
-                    // Bind field value to pattern (recursively handles nested patterns)
                     bindPatternVariables(argPatterns[j].get(), fieldValue);
                 }
+            }
+            return;
+        }
+
+        const auto& argTypes = constructor->getArgumentTypes();
+        if (argPatterns.size() == 1) {
+            llvm::Type* fieldType = convertType(argTypes[0].get());
+            if (fieldType && payload->getType()->isPointerTy()) {
+                llvm::Value* casted = builder_->CreateBitCast(payload, llvm::PointerType::get(context_, 0), "payloadcast");
+                llvm::Value* loaded = builder_->CreateLoad(fieldType, casted, "payloadval");
+                bindPatternVariables(argPatterns[0].get(), loaded);
+            } else {
+                bindPatternVariables(argPatterns[0].get(), payload);
+            }
+        } else {
+            std::vector<llvm::Type*> fieldTypes;
+            for (const auto& t : argTypes) {
+                llvm::Type* lt = convertType(t.get());
+                fieldTypes.push_back(lt ? lt : llvm::PointerType::get(context_, 0));
+            }
+            llvm::StructType* payloadStructType = llvm::StructType::get(context_, fieldTypes);
+            llvm::Value* structPtr = builder_->CreateBitCast(payload, llvm::PointerType::get(context_, 0), "structptr");
+            for (size_t j = 0; j < argPatterns.size(); ++j) {
+                llvm::Value* fieldIndices[] = {
+                    llvm::ConstantInt::get(context_, llvm::APInt(64, 0)),
+                    llvm::ConstantInt::get(context_, llvm::APInt(64, j))
+                };
+                llvm::Value* fieldPtr = builder_->CreateGEP(payloadStructType, structPtr, fieldIndices, "fieldptr");
+                llvm::Type* ft = fieldTypes[j];
+                llvm::Value* fieldValue = builder_->CreateLoad(ft, fieldPtr, "fieldval");
+                bindPatternVariables(argPatterns[j].get(), fieldValue);
             }
         }
     }
@@ -3396,13 +3540,138 @@ void IRGenerator::visitTypeDecl(ast::TypeDecl* node) {
     if (!node) {
         return;
     }
-    
+
     // Type declarations typically don't generate IR directly
     // They define types that are used by other declarations
     // The type information is used during IR generation for other nodes
-    
+
     // For exported types, we may need to generate type metadata
     // For now, type declarations are handled during semantic analysis
+}
+
+void IRGenerator::buildConstructorIndexMap(ast::Program* program) {
+    if (!program) return;
+    for (const auto& func : program->getFunctions()) {
+        if (!func) continue;
+        for (const auto& param : func->getParameters()) {
+            if (param && param->getType()) registerADTFromType(param->getType());
+        }
+        if (func->getReturnType()) registerADTFromType(func->getReturnType());
+        for (const auto& stmt : func->getBody()) {
+            if (stmt) collectTypesFromStmt(stmt.get());
+        }
+    }
+    for (const auto& interaction : program->getInteractions()) {
+        if (!interaction) continue;
+        for (const auto& param : interaction->getParameters()) {
+            if (param && param->getType()) registerADTFromType(param->getType());
+        }
+        if (interaction->getReturnType()) registerADTFromType(interaction->getReturnType());
+        for (const auto& stmt : interaction->getBody()) {
+            if (stmt) collectTypesFromStmt(stmt.get());
+        }
+    }
+}
+
+void IRGenerator::registerADTFromType(ast::Type* type) {
+    if (!type) return;
+    if (auto* adt = dynamic_cast<ast::ADTType*>(type)) {
+        const auto& constructors = adt->getConstructors();
+        for (size_t i = 0; i < constructors.size(); ++i) {
+            const std::string& name = constructors[i]->getName();
+            if (constructorIndexMap_.find(name) == constructorIndexMap_.end()) {
+                constructorIndexMap_[name] = std::make_pair(adt, i);
+            }
+        }
+        return;
+    }
+    if (auto* arr = dynamic_cast<ast::ArrayType*>(type)) {
+        if (arr->getElementType()) registerADTFromType(arr->getElementType());
+        return;
+    }
+    if (auto* rec = dynamic_cast<ast::RecordType*>(type)) {
+        for (const auto& field : rec->getFields()) {
+            if (field && field->getType()) registerADTFromType(field->getType());
+        }
+        return;
+    }
+    if (auto* param = dynamic_cast<ast::ParameterizedType*>(type)) {
+        for (const auto& arg : param->getTypeArgs()) {
+            if (arg) registerADTFromType(arg.get());
+        }
+        return;
+    }
+    if (auto* ref = dynamic_cast<ast::RefinementType*>(type)) {
+        if (ref->getBaseType()) registerADTFromType(ref->getBaseType());
+        return;
+    }
+    if (auto* idx = dynamic_cast<ast::IndexedType*>(type)) {
+        if (idx->getBaseType()) registerADTFromType(idx->getBaseType());
+        return;
+    }
+    if (auto* pi = dynamic_cast<ast::DependentFunctionType*>(type)) {
+        if (pi->getParamType()) registerADTFromType(pi->getParamType());
+        if (pi->getReturnType()) registerADTFromType(pi->getReturnType());
+        return;
+    }
+    if (auto* sigma = dynamic_cast<ast::DependentPairType*>(type)) {
+        if (sigma->getVarType()) registerADTFromType(sigma->getVarType());
+        if (sigma->getBodyType()) registerADTFromType(sigma->getBodyType());
+        return;
+    }
+    if (auto* forall = dynamic_cast<ast::ForallType*>(type)) {
+        if (forall->getBodyType()) registerADTFromType(forall->getBodyType());
+        return;
+    }
+    if (auto* ex = dynamic_cast<ast::ExistentialType*>(type)) {
+        if (ex->getVarType()) registerADTFromType(ex->getVarType());
+        if (ex->getBodyType()) registerADTFromType(ex->getBodyType());
+        return;
+    }
+    if (auto* func = dynamic_cast<ast::FunctionType*>(type)) {
+        if (func->getReturnType()) registerADTFromType(func->getReturnType());
+        for (const auto& pt : func->getParamTypes()) {
+            if (pt) registerADTFromType(pt.get());
+        }
+        return;
+    }
+}
+
+void IRGenerator::collectTypesFromStmt(ast::Stmt* stmt) {
+    if (!stmt) return;
+    if (auto* varDecl = dynamic_cast<ast::VariableDecl*>(stmt)) {
+        if (varDecl->getType()) registerADTFromType(varDecl->getType());
+        return;
+    }
+    if (auto* exprStmt = dynamic_cast<ast::ExprStmt*>(stmt)) {
+        (void)exprStmt;
+        return;
+    }
+    if (auto* retStmt = dynamic_cast<ast::ReturnStmt*>(stmt)) {
+        (void)retStmt;
+        return;
+    }
+    if (auto* selectStmt = dynamic_cast<ast::SelectStmt*>(stmt)) {
+        for (const auto& branch : selectStmt->getBranches()) {
+            if (branch && branch->getStatement()) collectTypesFromStmt(branch->getStatement());
+        }
+        return;
+    }
+    if (auto* ifStmt = dynamic_cast<ast::IfStmt*>(stmt)) {
+        if (ifStmt->getThenBranch()) collectTypesFromStmt(ifStmt->getThenBranch());
+        if (ifStmt->getElseBranch()) collectTypesFromStmt(ifStmt->getElseBranch());
+        return;
+    }
+    if (auto* whileStmt = dynamic_cast<ast::WhileStmt*>(stmt)) {
+        if (whileStmt->getBody()) collectTypesFromStmt(whileStmt->getBody());
+        return;
+    }
+}
+
+std::pair<ast::ADTType*, size_t> IRGenerator::getConstructorIndex(const std::string& name) const {
+    auto it = constructorIndexMap_.find(name);
+    if (it == constructorIndexMap_.end()) return {nullptr, 0};
+    return it->second;
 }
 
 } // namespace ir

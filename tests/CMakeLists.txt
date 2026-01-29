@@ -32,6 +32,8 @@ add_executable(test_compiler
     test_ir_adts.cpp
     test_ir_closures.cpp
     test_ir_generics.cpp
+    test_integration.cpp
+    test_compliance.cpp
 )
 
 # target_link_libraries moved below
@@ -47,6 +49,7 @@ target_sources(test_compiler PRIVATE
     ${CMAKE_SOURCE_DIR}/src/ast/match_case.cpp
     ${CMAKE_SOURCE_DIR}/src/ast/match_expr.cpp
     ${CMAKE_SOURCE_DIR}/src/ast/lambda_expr.cpp
+    ${CMAKE_SOURCE_DIR}/src/ast/select_branch.cpp
     ${CMAKE_SOURCE_DIR}/src/semantic/symbol_table.cpp
     ${CMAKE_SOURCE_DIR}/src/semantic/type_checker.cpp
     ${CMAKE_SOURCE_DIR}/src/semantic/semantic_checker.cpp

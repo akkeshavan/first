@@ -98,6 +98,10 @@
      Comma,
      Colon,
      Dot,
+
+     // Misc pattern tokens
+     Underscore, // _
+     At,         // @
  };
 
  struct Token {

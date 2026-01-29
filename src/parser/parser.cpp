@@ -23,6 +23,14 @@
                                               std::size_t column) {
      TokenKind kind = TokenKind::EndOfFile;
 
+    // Some punctuation is defined as literals in the grammar (ANTLR may emit T__N tokens).
+    // Handle these by text to keep TokenKind decoupled from generated token numbers.
+    if (text == "_") {
+        kind = TokenKind::Underscore;
+    } else if (text == "@") {
+        kind = TokenKind::At;
+    }
+
      switch (rawType) {
      case FirstLexer::IDENTIFIER:
          kind = TokenKind::Identifier;
@@ -130,9 +138,11 @@
      case FirstLexer::COLON: kind = TokenKind::Colon; break;
      case FirstLexer::DOT: kind = TokenKind::Dot; break;
      default:
-         // Unclassified tokens (whitespace, comments, etc.) should never be
-         // surfaced as real tokens. Callers are responsible for skipping them.
-         kind = TokenKind::EndOfFile;
+        // If we already classified the token by text (e.g. '_' / '@'), keep it.
+        // Otherwise, treat it as non-surfaceable.
+        if (kind == TokenKind::EndOfFile) {
+            kind = TokenKind::EndOfFile;
+        }
          break;
      }
 
@@ -1743,6 +1753,35 @@ std::unique_ptr<ast::Expr> FirstParser::parseDoBlockExpr() {
         expect(TokenKind::RBracket, "expected ']' in array literal");
         return std::make_unique<ast::ArrayLiteralExpr>(loc, std::move(elements));
      }
+    case TokenKind::LBrace: {
+        // Record literal: { field: expr, ... }
+        SourceLocation loc = current().loc;
+        advance(); // '{'
+        std::vector<ast::RecordLiteralExpr::Field> fields;
+        if (current().kind != TokenKind::RBrace) {
+            while (true) {
+                if (current().kind != TokenKind::Identifier) {
+                    reportSyntaxError("expected field name in record literal");
+                    break;
+                }
+                std::string fieldName = current().lexeme;
+                advance();
+                expect(TokenKind::Colon, "expected ':' after field name in record literal");
+                auto fieldExpr = parseExpression();
+                if (!fieldExpr) {
+                    reportSyntaxError("expected expression after ':' in record literal");
+                    break;
+                }
+                fields.push_back(ast::RecordLiteralExpr::Field(fieldName, std::move(fieldExpr)));
+                if (match(TokenKind::Comma)) {
+                    continue;
+                }
+                break;
+            }
+        }
+        expect(TokenKind::RBrace, "expected '}' in record literal");
+        return std::make_unique<ast::RecordLiteralExpr>(loc, std::move(fields));
+    }
      default:
          reportSyntaxError("expected expression");
          return nullptr;
@@ -1831,6 +1870,11 @@ std::unique_ptr<ast::Expr> FirstParser::parseMatchExpr() {
 
         cases.push_back(std::make_unique<ast::MatchCase>(
             std::move(pat), std::move(guard), std::move(body)));
+
+        // Optional comma separators between cases (matches grammar).
+        if (current().kind == TokenKind::Comma) {
+            advance();
+        }
     }
 
     expect(TokenKind::RBrace, "expected '}' at end of match expression");
@@ -1841,6 +1885,48 @@ std::unique_ptr<ast::Expr> FirstParser::parseMatchExpr() {
 
 std::unique_ptr<ast::Pattern> FirstParser::parsePattern() {
     SourceLocation loc = current().loc;
+
+    // Wildcard pattern
+    if (match(TokenKind::Underscore)) {
+        return std::make_unique<ast::WildcardPattern>(loc);
+    }
+
+    // Record pattern: { field: pattern, ... }
+    if (match(TokenKind::LBrace)) {
+        std::vector<ast::RecordPattern::FieldPattern> fields;
+        if (current().kind != TokenKind::RBrace) {
+            while (true) {
+                if (current().kind != TokenKind::Identifier) {
+                    reportSyntaxError("expected field name in record pattern");
+                    break;
+                }
+                std::string fieldName = current().lexeme;
+                advance();
+                expect(TokenKind::Colon, "expected ':' after field name in record pattern");
+                auto fieldPat = parsePattern();
+                if (fieldPat) {
+                    fields.push_back(ast::RecordPattern::FieldPattern{fieldName, std::move(fieldPat)});
+                }
+                if (match(TokenKind::Comma)) {
+                    continue;
+                }
+                break;
+            }
+        }
+        expect(TokenKind::RBrace, "expected '}' at end of record pattern");
+        auto base = std::make_unique<ast::RecordPattern>(loc, std::move(fields));
+        // As-pattern: <pattern> @ name
+        if (match(TokenKind::At)) {
+            if (current().kind != TokenKind::Identifier) {
+                reportSyntaxError("expected identifier after '@' in as-pattern");
+                return base;
+            }
+            std::string name = current().lexeme;
+            advance();
+            return std::make_unique<ast::AsPattern>(loc, std::move(base), name);
+        }
+        return base;
+    }
 
     // Constructor or variable pattern
     if (current().kind == TokenKind::Identifier) {
@@ -1867,7 +1953,17 @@ std::unique_ptr<ast::Pattern> FirstParser::parsePattern() {
         }
 
         // Simple variable pattern
-        return std::make_unique<ast::VariablePattern>(loc, name);
+        auto base = std::make_unique<ast::VariablePattern>(loc, name);
+        if (match(TokenKind::At)) {
+            if (current().kind != TokenKind::Identifier) {
+                reportSyntaxError("expected identifier after '@' in as-pattern");
+                return base;
+            }
+            std::string asName = current().lexeme;
+            advance();
+            return std::make_unique<ast::AsPattern>(loc, std::move(base), asName);
+        }
+        return base;
     }
 
     // Literal pattern: reuse literal expression parsing
@@ -1885,8 +1981,18 @@ std::unique_ptr<ast::Pattern> FirstParser::parsePattern() {
         if (!litPtr) {
             return nullptr;
         }
-        return std::make_unique<ast::LiteralPattern>(
+        auto base = std::make_unique<ast::LiteralPattern>(
             loc, std::unique_ptr<ast::LiteralExpr>(litPtr));
+        if (match(TokenKind::At)) {
+            if (current().kind != TokenKind::Identifier) {
+                reportSyntaxError("expected identifier after '@' in as-pattern");
+                return base;
+            }
+            std::string asName = current().lexeme;
+            advance();
+            return std::make_unique<ast::AsPattern>(loc, std::move(base), asName);
+        }
+        return base;
     }
 
     reportSyntaxError("expected pattern");

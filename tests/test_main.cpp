@@ -153,6 +153,7 @@ extern void test_array_type();
 extern void test_record_literal();
 extern void test_field_access();
 extern void test_record_type();
+extern void test_record_pattern_match();
 extern void test_constructor_expr();
 extern void test_adt_type();
 extern void test_match_expr();
@@ -173,6 +174,14 @@ extern void test_type_substitution_parameterized();
 extern void test_type_substitution_array();
 extern void test_monomorphize_function_name();
 extern void test_multimodule_end_to_end_linking();
+extern void test_integration_hello_compiles_to_ir();
+extern void test_integration_stdlib_compiles_to_ir();
+extern void test_integration_syntax_error_fails();
+extern void test_integration_hello_from_string_to_ir();
+extern void test_compliance_hello_full_pipeline();
+extern void test_compliance_simple_first_compiles();
+extern void test_compliance_semantic_restriction_pure_io();
+extern void test_compliance_error_messages_undefined_function();
 
 // Run a single test by name (e.g. "multimodule_end_to_end_linking").
 // Returns true if the test was found and run, false if unknown name.
@@ -181,6 +190,38 @@ static bool run_single_test(const char* name) {
     if (std::strcmp(name, "multimodule_end_to_end_linking") == 0) {
         std::cout << "Running single test: multimodule_end_to_end_linking\n";
         test_multimodule_end_to_end_linking();
+        return true;
+    }
+    if (std::strcmp(name, "integration_hello_compiles_to_ir") == 0) {
+        test_integration_hello_compiles_to_ir();
+        return true;
+    }
+    if (std::strcmp(name, "integration_stdlib_compiles_to_ir") == 0) {
+        test_integration_stdlib_compiles_to_ir();
+        return true;
+    }
+    if (std::strcmp(name, "integration_syntax_error_fails") == 0) {
+        test_integration_syntax_error_fails();
+        return true;
+    }
+    if (std::strcmp(name, "integration_hello_from_string_to_ir") == 0) {
+        test_integration_hello_from_string_to_ir();
+        return true;
+    }
+    if (std::strcmp(name, "compliance_hello_full_pipeline") == 0) {
+        test_compliance_hello_full_pipeline();
+        return true;
+    }
+    if (std::strcmp(name, "compliance_simple_first_compiles") == 0) {
+        test_compliance_simple_first_compiles();
+        return true;
+    }
+    if (std::strcmp(name, "compliance_semantic_restriction_pure_io") == 0) {
+        test_compliance_semantic_restriction_pure_io();
+        return true;
+    }
+    if (std::strcmp(name, "compliance_error_messages_undefined_function") == 0) {
+        test_compliance_error_messages_undefined_function();
         return true;
     }
     return false;
@@ -344,6 +385,7 @@ void run_all_tests() {
     test_record_literal();
     test_field_access();
     test_record_type();
+    test_record_pattern_match();
     
     std::cout << "Testing ADT IR Generation...\n";
     test_constructor_expr();
@@ -370,4 +412,16 @@ void run_all_tests() {
 
     std::cout << "Testing Multi-Module Compilation...\n";
     test_multimodule_end_to_end_linking();
+
+    std::cout << "Testing Integration (Phase 8.2)...\n";
+    test_integration_hello_compiles_to_ir();
+    test_integration_stdlib_compiles_to_ir();
+    test_integration_syntax_error_fails();
+    test_integration_hello_from_string_to_ir();
+
+    std::cout << "Testing Compliance (Phase 8.3)...\n";
+    test_compliance_hello_full_pipeline();
+    test_compliance_simple_first_compiles();
+    test_compliance_semantic_restriction_pure_io();
+    test_compliance_error_messages_undefined_function();
 }

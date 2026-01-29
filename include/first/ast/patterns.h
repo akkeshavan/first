@@ -57,6 +57,30 @@ private:
     std::unique_ptr<LiteralExpr> literal_;
 };
 
+// Record pattern (matches record fields)
+// Syntax: { field1: pat1, field2: pat2 }
+class RecordPattern : public Pattern {
+public:
+    struct FieldPattern {
+        std::string name;
+        std::unique_ptr<Pattern> pattern;
+    };
+
+    RecordPattern(const SourceLocation& location, std::vector<FieldPattern> fields)
+        : Pattern(location), fields_(std::move(fields)) {}
+
+    const std::vector<FieldPattern>& getFields() const { return fields_; }
+
+    void accept(ASTVisitor& visitor) override {
+        (void)visitor;
+    }
+
+    std::string getNodeType() const override { return "RecordPattern"; }
+
+private:
+    std::vector<FieldPattern> fields_;
+};
+
 // Constructor pattern (matches ADT constructor)
 class ConstructorPattern : public Pattern {
 public:
