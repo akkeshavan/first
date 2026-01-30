@@ -158,6 +158,23 @@ Or remove by hand: `rm -f /usr/local/bin/firstc /usr/local/lib/libfirst_runtime.
 
 The compiler and runtime require LLVM and ANTLR4 (and optionally Boehm GC) to be installed on the target system when building First programs.
 
+### Project manager (fir)
+
+**fir** is the First project manager (like npm/cargo). It initializes new projects and provides simple build/run commands.
+
+```bash
+# From repo: add tools to PATH, or use ./tools/fir
+fir init my-app && cd my-app
+fir build
+fir run
+```
+
+- **fir init [dirname]** – Create a new project (default: first-app) with `fir.json`, `src/main.first`, `.gitignore`.
+- **fir build** – Compile the project (uses installed firstc and runtime; no copy of stdlib into the project).
+- **fir run** – Build if needed, then run the executable.
+
+See `tools/README.md` for details.
+
 ## Project Structure
 
 ```

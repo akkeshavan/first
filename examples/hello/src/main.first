@@ -1,0 +1,5 @@
+// First app - run with: fir run
+
+interaction main() -> Unit {
+    print("Hello from First!\n");
+}

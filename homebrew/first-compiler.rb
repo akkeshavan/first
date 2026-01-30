@@ -27,6 +27,8 @@ class FirstCompiler < Formula
                     "-DFIRST_USE_GC=OFF"
     system "cmake", "--build", "build"
     system "cmake", "--install", "build"
+    # Install fir (First project manager) alongside firstc
+    bin.install "tools/fir" => "fir"
   end
 
   test do

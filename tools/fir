@@ -1,0 +1,162 @@
+#!/usr/bin/env bash
+# fir - First project manager (like npm/cargo for First)
+# Usage: fir init [dirname] | fir build | fir run
+# Requires firstc and libfirst_runtime on the system (e.g. brew install, or from build).
+
+set -e
+FIR_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+PROJECT_ROOT="$(cd "$(dirname "$FIR_DIR")" && pwd)"
+
+cmd="${1:-}"
+arg="${2:-}"
+
+# Find firstc (PATH or relative to this script's repo)
+find_firstc() {
+  if command -v firstc >/dev/null 2>&1; then
+    command -v firstc
+    return
+  fi
+  local build_bin="$PROJECT_ROOT/build/bin/firstc"
+  if [[ -x "$build_bin" ]]; then
+    echo "$build_bin"
+    return
+  fi
+  echo ""
+}
+
+# Prefix where libfirst_runtime.a lives (parent of bin/ or build/ when firstc is in build/bin)
+firstc_prefix() {
+  local fc="$(find_firstc)"
+  [[ -z "$fc" ]] && echo "" && return
+  local bindir="$(dirname "$fc")"
+  echo "$(cd "$bindir/.." && pwd)"
+}
+
+# Ensure LIBRARY_PATH includes runtime so firstc's linker finds libfirst_runtime.a
+export_library_path() {
+  local prefix="$(firstc_prefix)"
+  if [[ -n "$prefix" ]]; then
+    export LIBRARY_PATH="${prefix}/lib:${LIBRARY_PATH:-}"
+  fi
+}
+
+read_fir_json() {
+  local dir="${1:-.}"
+  if [[ -f "$dir/fir.json" ]]; then
+    cat "$dir/fir.json"
+  else
+    echo "{}"
+  fi
+}
+
+# Simple JSON value extraction (name or main)
+json_get() {
+  local json="$1"
+  local key="$2"
+  echo "$json" | sed -n "s/.*\"$key\"[[:space:]]*:[[:space:]]*\"\([^\"]*\)\".*/\1/p" | head -1
+}
+
+cmd_init() {
+  local dirname="${arg:-first-app}"
+  if [[ -e "$dirname" ]]; then
+    echo "fir: '$dirname' already exists"
+    exit 1
+  fi
+  mkdir -p "$dirname/src"
+  cat > "$dirname/fir.json" <<EOF
+{
+  "name": "$(echo "$dirname" | sed 's/[^a-zA-Z0-9_-]/-/g')",
+  "main": "src/main.first"
+}
+EOF
+  cat > "$dirname/src/main.first" <<'EOF'
+// First app - run with: fir run
+
+interaction main() -> Unit {
+    print("Hello from First!");
+}
+EOF
+  cat > "$dirname/.gitignore" <<'EOF'
+build/
+.fir/
+*.o
+EOF
+  echo "Created project: $dirname"
+  echo "  fir.json, src/main.first, .gitignore"
+  echo "Next: cd $dirname && fir build && fir run"
+}
+
+cmd_build() {
+  local dir="${FIR_DIR}"
+  # If we're inside a project (fir.json here or parent), use it
+  if [[ -f "$PWD/fir.json" ]]; then
+    dir="$PWD"
+  elif [[ -f "$(dirname "$PWD")/fir.json" ]] && [[ "$(basename "$PWD")" == "src" ]]; then
+    dir="$(dirname "$PWD")"
+  fi
+
+  local json="$(read_fir_json "$dir")"
+  local name="$(json_get "$json" "name")"
+  local main="$(json_get "$json" "main")"
+  [[ -z "$name" ]] && name="app"
+  [[ -z "$main" ]] && main="src/main.first"
+
+  if [[ ! -f "$dir/$main" ]]; then
+    echo "fir: main file not found: $dir/$main"
+    exit 1
+  fi
+
+  local firstc="$(find_firstc)"
+  if [[ -z "$firstc" ]]; then
+    echo "fir: firstc not found. Install the First compiler (e.g. brew install from repo, or build from source)."
+    exit 1
+  fi
+
+  mkdir -p "$dir/build"
+  # firstc finds libfirst_runtime.a relative to its cwd; run from prefix (build/ or install prefix)
+  local prefix="$(firstc_prefix)"
+  if [[ -z "$prefix" ]]; then
+    echo "fir: cannot find firstc runtime prefix"
+    exit 1
+  fi
+  export_library_path
+  echo "Building $name..."
+  if (cd "$prefix" && "$firstc" "$(cd "$dir" && pwd)/$main" -o "$(cd "$dir" && pwd)/build/$name"); then
+    echo "Built: $dir/build/$name"
+  else
+    exit 1
+  fi
+}
+
+cmd_run() {
+  local dir="${FIR_DIR}"
+  if [[ -f "$PWD/fir.json" ]]; then
+    dir="$PWD"
+  elif [[ -f "$(dirname "$PWD")/fir.json" ]] && [[ "$(basename "$PWD")" == "src" ]]; then
+    dir="$(dirname "$PWD")"
+  fi
+
+  local json="$(read_fir_json "$dir")"
+  local name="$(json_get "$json" "name")"
+  [[ -z "$name" ]] && name="app"
+
+  if [[ ! -x "$dir/build/$name" ]]; then
+    echo "fir: not built. Running fir build..."
+    (cd "$dir" && cmd_build)
+  fi
+  exec "$dir/build/$name"
+}
+
+case "$cmd" in
+  init)   cmd_init ;;
+  build)  cmd_build ;;
+  run)    cmd_run ;;
+  *)
+    echo "fir - First project manager"
+    echo "Usage: fir init [dirname] | fir build | fir run"
+    echo "  init [dirname]  Create a new First project (default: first-app)"
+    echo "  build           Compile the project (uses fir.json, main entry)"
+    echo "  run             Build if needed and run the executable"
+    exit 0
+    ;;
+esac

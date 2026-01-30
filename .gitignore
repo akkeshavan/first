@@ -11,6 +11,7 @@ bin/
 lib/
 generated/
 dist/
+test-fir-app/
 
 # IDE files
 .vscode/

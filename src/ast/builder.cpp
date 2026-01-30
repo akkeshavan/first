@@ -186,6 +186,24 @@ std::unique_ptr<LiteralExpr> ASTBuilder::buildLiteral(FirstParser::LiteralContex
         if (value.size() >= 2 && value[0] == '"' && value.back() == '"') {
             value = value.substr(1, value.size() - 2);
         }
+        // Unescape: \\ \n \t \r \"
+        std::string out;
+        out.reserve(value.size());
+        for (size_t i = 0; i < value.size(); ++i) {
+            if (value[i] == '\\' && i + 1 < value.size()) {
+                switch (value[i + 1]) {
+                    case 'n':  out += '\n'; ++i; break;
+                    case 't':  out += '\t'; ++i; break;
+                    case 'r':  out += '\r'; ++i; break;
+                    case '"':  out += '"';  ++i; break;
+                    case '\\': out += '\\'; ++i; break;
+                    default:   out += value[i + 1]; ++i; break;
+                }
+            } else {
+                out += value[i];
+            }
+        }
+        value = std::move(out);
         return std::make_unique<LiteralExpr>(loc, LiteralExpr::LiteralType::String, value);
     } else if (ctx->getToken(FirstParser::NULL_, 0)) {
         return std::make_unique<LiteralExpr>(loc, LiteralExpr::LiteralType::Null, "null");

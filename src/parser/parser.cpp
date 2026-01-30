@@ -1808,6 +1808,24 @@ std::unique_ptr<ast::Expr> FirstParser::parseDoBlockExpr() {
          if (v.size() >= 2 && v.front() == '"' && v.back() == '"') {
              v = v.substr(1, v.size() - 2);
          }
+         // Unescape: \\ \n \t \r \"
+         std::string out;
+         out.reserve(v.size());
+         for (size_t i = 0; i < v.size(); ++i) {
+             if (v[i] == '\\' && i + 1 < v.size()) {
+                 switch (v[i + 1]) {
+                     case 'n':  out += '\n'; ++i; break;
+                     case 't':  out += '\t'; ++i; break;
+                     case 'r':  out += '\r'; ++i; break;
+                     case '"':  out += '"';  ++i; break;
+                     case '\\': out += '\\'; ++i; break;
+                     default:   out += v[i + 1]; ++i; break;
+                 }
+             } else {
+                 out += v[i];
+             }
+         }
+         v = std::move(out);
          advance();
          return std::make_unique<ast::LiteralExpr>(
              loc, ast::LiteralExpr::LiteralType::String, v);
