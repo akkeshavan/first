@@ -114,12 +114,14 @@ set_target_properties(
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/runtime/tests
 )
 
-# Install rules (for linking with compiler)
+# Install rules (for linking with compiler); component "first" for macOS .pkg
 install(TARGETS first_runtime
     LIBRARY DESTINATION lib
     ARCHIVE DESTINATION lib
+    COMPONENT first
 )
 
 install(DIRECTORY include/first/runtime
     DESTINATION include/first
+    COMPONENT first
 )

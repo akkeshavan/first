@@ -168,8 +168,62 @@ if(BUILD_EXAMPLES)
     add_subdirectory(examples)
 endif()
 
-# Installation
-install(TARGETS firstc DESTINATION bin)
+# Installation (component "first" so productbuild .pkg has payload)
+install(TARGETS firstc DESTINATION bin COMPONENT first)
+
+# --- Packaging (installables for Apple and Linux, x86_64 and arm64) ---
+set(CPACK_PACKAGE_NAME "first-compiler")
+set(CPACK_PACKAGE_VERSION ${PROJECT_VERSION})
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "First programming language compiler and runtime")
+set(CPACK_PACKAGE_VENDOR "First")
+# Subdir under prefix for .pkg (empty = install directly to prefix)
+set(CPACK_PACKAGE_INSTALL_DIRECTORY "")
+if(APPLE)
+    if(CMAKE_OSX_ARCHITECTURES)
+        list(GET CMAKE_OSX_ARCHITECTURES 0 _cpack_arch)
+    elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "arm64|aarch64")
+        set(_cpack_arch "arm64")
+    else()
+        set(_cpack_arch "x86_64")
+    endif()
+    set(CPACK_SYSTEM_NAME "Darwin-${_cpack_arch}")
+else()
+    if(CMAKE_SYSTEM_PROCESSOR MATCHES "aarch64|arm64|ARM64")
+        set(_cpack_arch "aarch64")
+    elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64")
+        set(_cpack_arch "x86_64")
+    else()
+        set(_cpack_arch "${CMAKE_SYSTEM_PROCESSOR}")
+    endif()
+    set(CPACK_SYSTEM_NAME "${CMAKE_SYSTEM_NAME}-${_cpack_arch}")
+endif()
+set(CPACK_PACKAGE_FILE_NAME "${CPACK_PACKAGE_NAME}-${CPACK_PACKAGE_VERSION}-${CPACK_SYSTEM_NAME}")
+# Put all installables in project dist/ folder
+set(CPACK_OUTPUT_FILE_PREFIX "${CMAKE_SOURCE_DIR}/dist")
+# Ensure dist/ exists when cpack runs: bake absolute path into generated script
+set(_cpack_dist_abs "${CMAKE_SOURCE_DIR}/dist")
+string(REPLACE "\\" "/" _cpack_dist_abs "${_cpack_dist_abs}")
+set(_cpack_makedir "${CMAKE_BINARY_DIR}/cpack_makedir.cmake")
+file(WRITE "${_cpack_makedir}" "file(MAKE_DIRECTORY \"${_cpack_dist_abs}\")\n")
+set(CPACK_PRE_BUILD_SCRIPTS "${_cpack_makedir}")
+set(CPACK_GENERATOR "TGZ;ZIP")
+if(APPLE)
+  list(APPEND CPACK_GENERATOR "productbuild")
+  # .pkg installs to /usr/local (bin, lib, include) so firstc is on PATH when /usr/local/bin is
+  set(CPACK_PACKAGING_INSTALL_PREFIX "/usr/local")
+  set(CPACK_PRODUCTBUILD_IDENTIFIER "org.first.compiler")
+  # Include install payload in .pkg (required for productbuild to show files)
+  set(CPACK_COMPONENTS_ALL first)
+  include(CPackComponent)
+  cpack_add_component(first
+    DISPLAY_NAME "First compiler and runtime"
+    DESCRIPTION "firstc binary, libfirst_runtime.a, and runtime headers"
+  )
+endif()
+if(UNIX AND NOT APPLE)
+  list(APPEND CPACK_GENERATOR "DEB")
+endif()
+include(CPack)
 
 # Multi-module compilation support
 # This allows compiling multiple First modules and linking them together

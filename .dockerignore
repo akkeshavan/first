@@ -1,0 +1,8 @@
+# Avoid copying build artifacts and large dirs into Docker context
+build/
+build-*/
+dist/
+.git/
+*.tar.gz
+*.zip
+*.deb
