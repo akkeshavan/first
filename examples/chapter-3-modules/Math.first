@@ -1,0 +1,10 @@
+// Chapter 3: Math library module (exported functions)
+module Math;
+
+export function square(x: Int) -> Int {
+    return x * x;
+}
+
+export function add(x: Int, y: Int) -> Int {
+    return x + y;
+}

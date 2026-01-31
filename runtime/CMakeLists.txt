@@ -37,6 +37,7 @@ endif()
 set(RUNTIME_SOURCES
     src/runtime/refcount.cpp
     src/runtime/string.cpp
+    src/runtime/regex.cpp
     src/runtime/io.cpp
     src/runtime/gc_alloc.cpp
     src/runtime/stdlib.cpp

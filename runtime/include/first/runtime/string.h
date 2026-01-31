@@ -66,3 +66,9 @@ String makeString(double value);
 
 } // namespace runtime
 } // namespace first
+
+// C-linkage string comparison functions for compiler-generated code
+extern "C" {
+    bool first_string_equals(const char* a, const char* b);
+    int64_t first_string_compare(const char* a, const char* b);
+}

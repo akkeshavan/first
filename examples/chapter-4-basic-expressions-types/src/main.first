@@ -1,0 +1,141 @@
+// Chapter 4: Basic Types, Expressions, and Type Inference (first-book)
+// Run with: fir run
+// Individual functions for each expression kind; main prints all results.
+
+// -------- Arithmetic (Int) --------
+function addInt(a: Int, b: Int) -> Int {
+    return a + b;
+}
+function subInt(a: Int, b: Int) -> Int {
+    return a - b;
+}
+function mulInt(a: Int, b: Int) -> Int {
+    return a * b;
+}
+function divInt(a: Int, b: Int) -> Int {
+    return a / b;
+}
+function modInt(a: Int, b: Int) -> Int {
+    return a % b;
+}
+
+// -------- Arithmetic (Float) --------
+function addFloat(a: Float, b: Float) -> Float {
+    return a + b;
+}
+function mulFloat(a: Float, b: Float) -> Float {
+    return a * b;
+}
+
+// -------- String concatenation --------
+function concatStrings(a: String, b: String) -> String {
+    return a + b;
+}
+
+// -------- String comparison (result Bool) --------
+function eqString(a: String, b: String) -> Bool {
+    return a == b;
+}
+function neString(a: String, b: String) -> Bool {
+    return a != b;
+}
+function ltString(a: String, b: String) -> Bool {
+    return a < b;
+}
+function geString(a: String, b: String) -> Bool {
+    return a >= b;
+}
+
+// -------- Comparison (result Bool) --------
+function eqInt(a: Int, b: Int) -> Bool {
+    return a == b;
+}
+function neInt(a: Int, b: Int) -> Bool {
+    return a != b;
+}
+function ltInt(a: Int, b: Int) -> Bool {
+    return a < b;
+}
+function geInt(a: Int, b: Int) -> Bool {
+    return a >= b;
+}
+
+// -------- Logical (Bool -> Bool) --------
+function andBool(a: Bool, b: Bool) -> Bool {
+    return a && b;
+}
+function orBool(a: Bool, b: Bool) -> Bool {
+    return a || b;
+}
+
+// -------- Unary --------
+function negateInt(n: Int) -> Int {
+    return -n;
+}
+function negateFloat(n: Float) -> Float {
+    return -n;
+}
+function notBool(b: Bool) -> Bool {
+    return !b;
+}
+
+interaction main() -> Unit {
+    // Arithmetic Int
+    println("addInt(10, 3) = " + intToString(addInt(10, 3)));
+    println("subInt(10, 3) = " + intToString(subInt(10, 3)));
+    println("mulInt(10, 3) = " + intToString(mulInt(10, 3)));
+    println("divInt(10, 3) = " + intToString(divInt(10, 3)));
+    println("modInt(10, 3) = " + intToString(modInt(10, 3)));
+
+    // Arithmetic Float
+    println("addFloat(3.14, 0.86) = " + floatToString(addFloat(3.14, 0.86)));
+    println("mulFloat(2.5, 4.0) = " + floatToString(mulFloat(2.5, 4.0)));
+
+    // String concatenation
+    println("concatStrings(\"Hello, \", \"First!\") = " + concatStrings("Hello, ", "First!"));
+    
+    // String comparison
+    let strEq = eqString("hello", "hello");
+    println("eqString(\"hello\", \"hello\") called");
+    let strNe = neString("hello", "world");
+    println("neString(\"hello\", \"world\") called");
+    let strLt = ltString("apple", "banana");
+    println("ltString(\"apple\", \"banana\") called");
+    let strGe = geString("zebra", "apple");
+    println("geString(\"zebra\", \"apple\") called");
+    
+    println("--- Starting comparison tests ---");
+
+    // Comparison (Bool) – compute and call, results demonstrated
+    let eq = eqInt(5, 5);
+    println("eqInt(5, 5) called");
+    let ne = neInt(5, 3);
+    println("neInt(5, 3) called");
+    let lt = ltInt(2, 7);
+    println("ltInt(2, 7) called");
+    let ge = geInt(7, 7);
+    println("geInt(7, 7) called");
+
+    // Logical
+    let and = andBool(true, false);
+    println("andBool(true, false) called");
+    let or = orBool(true, false);
+    println("orBool(true, false) called");
+
+    // Unary
+    println("negateInt(42) = " + intToString(negateInt(42)));
+    println("negateFloat(3.14) = " + floatToString(negateFloat(3.14)));
+    let not = notBool(true);
+    println("notBool(true) called");
+    
+    println("\n--- String comparison and regex tests ---");
+    
+    // Test regex functions
+    let matches = regexMatches("hello123", "[a-z]+[0-9]+");
+    println("regexMatches result: " + intToString(matches));
+    
+    let searchIdx = regexSearch("The year is 2024", "[0-9]+");
+    println("regexSearch result: " + intToString(searchIdx));
+    
+    println("All expressions tested successfully!");
+}

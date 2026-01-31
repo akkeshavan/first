@@ -1,0 +1,9 @@
+// Chapter 3: Main module – imports compute from compute.first, runs interaction main
+// Use "module main" so the interaction main() is the program entry point.
+module main;
+
+import { compute } "compute";
+
+interaction main() -> Unit {
+    println("3² + 4² = " + intToString(compute()));
+}

@@ -934,6 +934,14 @@ llvm::Value* IRGenerator::evaluateBinary(ast::BinaryExpr* expr) {
                     right = builder_->CreateSIToFP(right, llvm::Type::getDoubleTy(context_));
                 }
                 return builder_->CreateFAdd(left, right, "addtmp");
+            } else if (leftType->isPointerTy() && rightType->isPointerTy()) {
+                // String concatenation via runtime first_string_concat
+                llvm::Type* i8ptr = llvm::PointerType::get(context_, 0);
+                llvm::FunctionType* concatType = llvm::FunctionType::get(i8ptr, {i8ptr, i8ptr}, false);
+                llvm::Function* concatFn = module_->getFunction("first_string_concat");
+                if (!concatFn)
+                    concatFn = llvm::Function::Create(concatType, llvm::Function::ExternalLinkage, "first_string_concat", module_.get());
+                return builder_->CreateCall(concatFn, {left, right}, "concat");
             }
             break;
         case ast::BinaryExpr::Op::Sub:
@@ -986,6 +994,15 @@ llvm::Value* IRGenerator::evaluateBinary(ast::BinaryExpr* expr) {
                     right = builder_->CreateSIToFP(right, llvm::Type::getDoubleTy(context_));
                 }
                 return builder_->CreateFCmpOEQ(left, right, "eqtmp");
+            } else if (leftType->isPointerTy() && rightType->isPointerTy()) {
+                // String equality via runtime first_string_equals
+                llvm::Type* i8ptr = llvm::PointerType::get(context_, 0);
+                llvm::Type* i1 = llvm::Type::getInt1Ty(context_);
+                llvm::FunctionType* eqType = llvm::FunctionType::get(i1, {i8ptr, i8ptr}, false);
+                llvm::Function* eqFn = module_->getFunction("first_string_equals");
+                if (!eqFn)
+                    eqFn = llvm::Function::Create(eqType, llvm::Function::ExternalLinkage, "first_string_equals", module_.get());
+                return builder_->CreateCall(eqFn, {left, right}, "streq");
             }
             break;
         case ast::BinaryExpr::Op::Ne:
@@ -998,7 +1015,17 @@ llvm::Value* IRGenerator::evaluateBinary(ast::BinaryExpr* expr) {
                 if (rightType->isIntegerTy()) {
                     right = builder_->CreateSIToFP(right, llvm::Type::getDoubleTy(context_));
                 }
-                return builder_->CreateFCmpONE(left, right, "netmp");
+                return builder_->CreateFCmpONE(right, right, "netmp");
+            } else if (leftType->isPointerTy() && rightType->isPointerTy()) {
+                // String inequality via runtime first_string_equals (then negate)
+                llvm::Type* i8ptr = llvm::PointerType::get(context_, 0);
+                llvm::Type* i1 = llvm::Type::getInt1Ty(context_);
+                llvm::FunctionType* eqType = llvm::FunctionType::get(i1, {i8ptr, i8ptr}, false);
+                llvm::Function* eqFn = module_->getFunction("first_string_equals");
+                if (!eqFn)
+                    eqFn = llvm::Function::Create(eqType, llvm::Function::ExternalLinkage, "first_string_equals", module_.get());
+                llvm::Value* eq = builder_->CreateCall(eqFn, {left, right}, "streq");
+                return builder_->CreateNot(eq, "strne");
             }
             break;
         case ast::BinaryExpr::Op::Lt:
@@ -1012,6 +1039,16 @@ llvm::Value* IRGenerator::evaluateBinary(ast::BinaryExpr* expr) {
                     right = builder_->CreateSIToFP(right, llvm::Type::getDoubleTy(context_));
                 }
                 return builder_->CreateFCmpOLT(left, right, "lttmp");
+            } else if (leftType->isPointerTy() && rightType->isPointerTy()) {
+                // String less-than via runtime first_string_compare
+                llvm::Type* i8ptr = llvm::PointerType::get(context_, 0);
+                llvm::Type* i64 = llvm::Type::getInt64Ty(context_);
+                llvm::FunctionType* cmpType = llvm::FunctionType::get(i64, {i8ptr, i8ptr}, false);
+                llvm::Function* cmpFn = module_->getFunction("first_string_compare");
+                if (!cmpFn)
+                    cmpFn = llvm::Function::Create(cmpType, llvm::Function::ExternalLinkage, "first_string_compare", module_.get());
+                llvm::Value* cmpResult = builder_->CreateCall(cmpFn, {left, right}, "strcmp");
+                return builder_->CreateICmpSLT(cmpResult, llvm::ConstantInt::get(i64, 0), "strlt");
             }
             break;
         case ast::BinaryExpr::Op::Le:
@@ -1025,6 +1062,16 @@ llvm::Value* IRGenerator::evaluateBinary(ast::BinaryExpr* expr) {
                     right = builder_->CreateSIToFP(right, llvm::Type::getDoubleTy(context_));
                 }
                 return builder_->CreateFCmpOLE(left, right, "letmp");
+            } else if (leftType->isPointerTy() && rightType->isPointerTy()) {
+                // String less-than-or-equal via runtime first_string_compare
+                llvm::Type* i8ptr = llvm::PointerType::get(context_, 0);
+                llvm::Type* i64 = llvm::Type::getInt64Ty(context_);
+                llvm::FunctionType* cmpType = llvm::FunctionType::get(i64, {i8ptr, i8ptr}, false);
+                llvm::Function* cmpFn = module_->getFunction("first_string_compare");
+                if (!cmpFn)
+                    cmpFn = llvm::Function::Create(cmpType, llvm::Function::ExternalLinkage, "first_string_compare", module_.get());
+                llvm::Value* cmpResult = builder_->CreateCall(cmpFn, {left, right}, "strcmp");
+                return builder_->CreateICmpSLE(cmpResult, llvm::ConstantInt::get(i64, 0), "strle");
             }
             break;
         case ast::BinaryExpr::Op::Gt:
@@ -1038,6 +1085,16 @@ llvm::Value* IRGenerator::evaluateBinary(ast::BinaryExpr* expr) {
                     right = builder_->CreateSIToFP(right, llvm::Type::getDoubleTy(context_));
                 }
                 return builder_->CreateFCmpOGT(left, right, "gttmp");
+            } else if (leftType->isPointerTy() && rightType->isPointerTy()) {
+                // String greater-than via runtime first_string_compare
+                llvm::Type* i8ptr = llvm::PointerType::get(context_, 0);
+                llvm::Type* i64 = llvm::Type::getInt64Ty(context_);
+                llvm::FunctionType* cmpType = llvm::FunctionType::get(i64, {i8ptr, i8ptr}, false);
+                llvm::Function* cmpFn = module_->getFunction("first_string_compare");
+                if (!cmpFn)
+                    cmpFn = llvm::Function::Create(cmpType, llvm::Function::ExternalLinkage, "first_string_compare", module_.get());
+                llvm::Value* cmpResult = builder_->CreateCall(cmpFn, {left, right}, "strcmp");
+                return builder_->CreateICmpSGT(cmpResult, llvm::ConstantInt::get(i64, 0), "strgt");
             }
             break;
         case ast::BinaryExpr::Op::Ge:
@@ -1051,6 +1108,16 @@ llvm::Value* IRGenerator::evaluateBinary(ast::BinaryExpr* expr) {
                     right = builder_->CreateSIToFP(right, llvm::Type::getDoubleTy(context_));
                 }
                 return builder_->CreateFCmpOGE(left, right, "getmp");
+            } else if (leftType->isPointerTy() && rightType->isPointerTy()) {
+                // String greater-than-or-equal via runtime first_string_compare
+                llvm::Type* i8ptr = llvm::PointerType::get(context_, 0);
+                llvm::Type* i64 = llvm::Type::getInt64Ty(context_);
+                llvm::FunctionType* cmpType = llvm::FunctionType::get(i64, {i8ptr, i8ptr}, false);
+                llvm::Function* cmpFn = module_->getFunction("first_string_compare");
+                if (!cmpFn)
+                    cmpFn = llvm::Function::Create(cmpType, llvm::Function::ExternalLinkage, "first_string_compare", module_.get());
+                llvm::Value* cmpResult = builder_->CreateCall(cmpFn, {left, right}, "strcmp");
+                return builder_->CreateICmpSGE(cmpResult, llvm::ConstantInt::get(i64, 0), "strge");
             }
             break;
         case ast::BinaryExpr::Op::Mod:

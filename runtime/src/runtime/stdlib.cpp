@@ -1,6 +1,7 @@
 #include "first/runtime/stdlib.h"
 #include "first/runtime/io.h"
 #include "first/runtime/string.h"
+#include "first/runtime/regex.h"
 #include "first/runtime/gc_alloc.h"
 #include <cmath>
 #include <cstring>
@@ -138,6 +139,49 @@ char* first_int_to_string(int64_t n) {
 char* first_float_to_string(double x) {
     std::string s = std::to_string(x);
     return strdup_heap(s.c_str());
+}
+
+// --- String Comparison (exposed to First) ---
+// Note: The low-level C functions are in string.cpp
+// These wrappers use the same signatures for consistency
+bool stringEquals(const char* a, const char* b) {
+    return first_string_equals(a, b);
+}
+
+int64_t stringCompare(const char* a, const char* b) {
+    return first_string_compare(a, b);
+}
+
+// --- Regular Expressions (exposed to First) ---
+// Returns 1 if matches, 0 if not, -1 on error
+int64_t regexMatches(const char* str, const char* pattern) {
+    return first_regex_matches(str, pattern);
+}
+
+// Returns index of first match, or -1 if not found
+int64_t regexSearch(const char* str, const char* pattern) {
+    return first_regex_search(str, pattern);
+}
+
+// Replace first occurrence
+char* regexReplace(const char* str, const char* pattern, const char* replacement) {
+    return first_regex_replace(str, pattern, replacement);
+}
+
+// Replace all occurrences
+char* regexReplaceAll(const char* str, const char* pattern, const char* replacement) {
+    return first_regex_replace_all(str, pattern, replacement);
+}
+
+// Split string by pattern
+// Returns count via count_out parameter
+char** regexSplit(const char* str, const char* pattern, int64_t* count_out) {
+    return first_regex_split(str, pattern, count_out);
+}
+
+// Extract capturing group (0 = whole match, 1+ = groups)
+char* regexExtract(const char* str, const char* pattern, int64_t group_index) {
+    return first_regex_extract(str, pattern, group_index);
 }
 
 // --- Array ---

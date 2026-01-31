@@ -539,6 +539,43 @@ ast::Type* TypeChecker::inferStdlibCall(ast::FunctionCallExpr* expr) {
         if (!arg(0)) return nullptr;
         return createStringType().release();
     }
+    // String comparison
+    if (name == "stringEquals") {
+        if (n != 2) return err("stringEquals(s1, s2) expects 2 arguments");
+        if (!arg(0) || !arg(1)) return nullptr;
+        return createBoolType().release();
+    }
+    if (name == "stringCompare") {
+        if (n != 2) return err("stringCompare(s1, s2) expects 2 arguments");
+        if (!arg(0) || !arg(1)) return nullptr;
+        return createIntType().release();
+    }
+    // Regular expressions
+    if (name == "regexMatches") {
+        if (n != 2) return err("regexMatches(str, pattern) expects 2 arguments");
+        if (!arg(0) || !arg(1)) return nullptr;
+        return createIntType().release(); // Returns 1, 0, or -1
+    }
+    if (name == "regexSearch") {
+        if (n != 2) return err("regexSearch(str, pattern) expects 2 arguments");
+        if (!arg(0) || !arg(1)) return nullptr;
+        return createIntType().release(); // Returns index or -1
+    }
+    if (name == "regexReplace") {
+        if (n != 3) return err("regexReplace(str, pattern, replacement) expects 3 arguments");
+        if (!arg(0) || !arg(1) || !arg(2)) return nullptr;
+        return createStringType().release();
+    }
+    if (name == "regexReplaceAll") {
+        if (n != 3) return err("regexReplaceAll(str, pattern, replacement) expects 3 arguments");
+        if (!arg(0) || !arg(1) || !arg(2)) return nullptr;
+        return createStringType().release();
+    }
+    if (name == "regexExtract") {
+        if (n != 3) return err("regexExtract(str, pattern, groupIndex) expects 3 arguments");
+        if (!arg(0) || !arg(1) || !arg(2)) return nullptr;
+        return createStringType().release();
+    }
     // Array
     if (name == "arrayLength") {
         if (n != 1) return err("arrayLength(arr) expects 1 argument");

@@ -143,3 +143,24 @@ String makeString(double value) {
 
 } // namespace runtime
 } // namespace first
+
+// C-linkage runtime functions for First language
+extern "C" {
+
+// String comparison functions
+bool first_string_equals(const char* a, const char* b) {
+    if (!a || !b) return false;
+    return std::strcmp(a, b) == 0;
+}
+
+int64_t first_string_compare(const char* a, const char* b) {
+    if (!a && !b) return 0;
+    if (!a) return -1;
+    if (!b) return 1;
+    int result = std::strcmp(a, b);
+    if (result < 0) return -1;
+    if (result > 0) return 1;
+    return 0;
+}
+
+} // extern "C"

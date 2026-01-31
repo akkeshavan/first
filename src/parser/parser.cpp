@@ -271,6 +271,14 @@
             advance();
         } else if (current().kind == TokenKind::EndOfFile) {
             break;
+        } else if (current().kind == TokenKind::KwModule ||
+                   current().kind == TokenKind::KwImport ||
+                   current().kind == TokenKind::KwExport ||
+                   current().kind == TokenKind::KwFunction ||
+                   current().kind == TokenKind::KwInterface ||
+                   current().kind == TokenKind::KwImplementation ||
+                   current().kind == TokenKind::KwInteraction) {
+            // Next top-level declaration; do not advance, loop will parse it.
         } else {
             // Try to recover by skipping unexpected tokens until a semicolon or EOF.
             advance();

@@ -1,0 +1,11 @@
+// Chapter 1: print and println (first-book)
+// Run with: fir run
+
+interaction main() -> Unit {
+    print("Hello, ");
+    print("World!");
+    println("");   // newline after the two prints
+    println("Line 1");
+    print("Line 2\n");
+    print("Col1\tCol2\n");
+}

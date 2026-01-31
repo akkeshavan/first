@@ -1,0 +1,19 @@
+// Chapter 2: Functions and Interactions (first-book)
+// Run with: fir run
+
+// Pure function: no I/O, same inputs -> same output
+function greet(name: String) -> String {
+    return "Hello, " + name + "!";
+}
+
+// Pure function: computation only
+function double(n: Int) -> Int {
+    return n * 2;
+}
+
+// Interaction: can call print/println and call pure functions
+interaction main() -> Unit {
+    let msg = greet("First");
+    println(msg);
+    println("double(7) = " + intToString(double(7)));
+}

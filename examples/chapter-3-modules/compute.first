@@ -1,0 +1,8 @@
+// Chapter 3: Compute module – imports from Math and exports compute
+module compute;
+
+import { square, add } "Math";
+
+export function compute() -> Int {
+    return add(square(3), square(4));
+}
