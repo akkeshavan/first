@@ -1,0 +1,67 @@
+// =============================================================================
+// Chapter 9: Interfaces — ToString, Eq, Ord; derive and custom implementations
+// =============================================================================
+// 1. Built-in ToString (Int, Float, Bool, String)
+// 2. Derive ToString for Point; custom Eq and Ord for Point
+// 3. Calling interface methods: toString(x) or x.toString(); eq and compare
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// Point: derive ToString; custom Eq and Ord
+// -----------------------------------------------------------------------------
+derive(ToString)
+type Point = { x: Float, y: Float };
+
+function pointEq(a: Point, b: Point) -> Bool {
+    return a.x == b.x && a.y == b.y;
+}
+
+function pointCompare(a: Point, b: Point) -> Int {
+    return if (a.x < b.x) {
+        -1
+    } else if (a.x > b.x) {
+        1
+    } else if (a.y < b.y) {
+        -1
+    } else if (a.y > b.y) {
+        1
+    } else {
+        0
+    };
+}
+
+implementation Eq<Point> {
+    eq = pointEq;
+}
+
+implementation Ord<Point> {
+    compare = pointCompare;
+}
+
+// -----------------------------------------------------------------------------
+// main — toString (both forms), eq and compare for Point
+// -----------------------------------------------------------------------------
+interaction main() {
+    // Built-in ToString — use toString(x); x.toString() is equivalent when supported
+    println("Built-in ToString:");
+    println(toString(42));
+    println(toString(3.14));
+    println(toString(true));
+    println(toString("hello"));
+
+    // Derived ToString<Point> — toString(p) or p.toString()
+    let p: Point = { x: 1.5, y: 2.5 };
+    let q: Point = { x: 1.5, y: 2.5 };
+    let r: Point = { x: 0.0, y: 0.0 };
+    println("Derived ToString<Point>:");
+    println(toString(p));
+
+    // Custom Eq<Point> and Ord<Point> — use ==, !=, <, <=, >, >= (they use our eq and compare)
+    println("Custom Eq and Ord for Point (using ==, !=, <, <=, >, >=):");
+    println(toString(p == q));   // true — same x,y
+    println(toString(p != r));   // true
+    println(toString(p == r));   // false
+    println(toString(p <= q));   // true  — equal
+    println(toString(p > r));    // true  — p > r (lexicographic)
+    println(toString(r < p));    // true  — r < p
+}

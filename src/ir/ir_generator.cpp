@@ -276,7 +276,8 @@ void IRGenerator::visitFunctionDecl(ast::FunctionDecl* node) {
             builder_->CreateAlignedStore(&arg, alloca, llvm::Align(8));
             setVariable(paramName, alloca, paramType);
             // Register record metadata for record-typed parameters (so match and field access work)
-            if (auto* recType = dynamic_cast<ast::RecordType*>(paramNode->getType())) {
+            ast::Type* paramAstType = paramNode->getType();
+            if (auto* recType = dynamic_cast<ast::RecordType*>(paramAstType)) {
                 RecordMetadata meta;
                 meta.structType = llvm::dyn_cast<llvm::StructType>(paramType);
                 meta.alloca = alloca;
@@ -286,6 +287,22 @@ void IRGenerator::visitFunctionDecl(ast::FunctionDecl* node) {
                 if (meta.structType) {
                     recordMetadata_[alloca] = meta;
                     recordMetadata_[builder_->CreateBitCast(alloca, llvm::PointerType::get(context_, 0))] = meta;
+                }
+            } else if (auto* genType = dynamic_cast<ast::GenericType*>(paramAstType)) {
+                auto it = typeDeclsMap_.find(genType->getName());
+                if (it != typeDeclsMap_.end() && it->second) {
+                    if (auto* recType = dynamic_cast<ast::RecordType*>(it->second)) {
+                        RecordMetadata meta;
+                        meta.structType = llvm::dyn_cast<llvm::StructType>(paramType);
+                        meta.alloca = alloca;
+                        for (const auto& f : recType->getFields()) {
+                            meta.fieldNames.push_back(f->getName());
+                        }
+                        if (meta.structType) {
+                            recordMetadata_[alloca] = meta;
+                            recordMetadata_[builder_->CreateBitCast(alloca, llvm::PointerType::get(context_, 0))] = meta;
+                        }
+                    }
                 }
             }
         }
@@ -418,8 +435,9 @@ void IRGenerator::visitInteractionDecl(ast::InteractionDecl* node) {
             llvm::AllocaInst* alloca = createAlloca(paramType, paramName);
             builder_->CreateAlignedStore(&arg, alloca, llvm::Align(8));
             setVariable(paramName, alloca, paramType);
-            // Register record metadata for record-typed parameters (so match and field access work)
-            if (auto* recType = dynamic_cast<ast::RecordType*>(paramNode->getType())) {
+            // Register record metadata for record-typed parameters
+            ast::Type* paramAstType = paramNode->getType();
+            if (auto* recType = dynamic_cast<ast::RecordType*>(paramAstType)) {
                 RecordMetadata meta;
                 meta.structType = llvm::dyn_cast<llvm::StructType>(paramType);
                 meta.alloca = alloca;
@@ -429,6 +447,22 @@ void IRGenerator::visitInteractionDecl(ast::InteractionDecl* node) {
                 if (meta.structType) {
                     recordMetadata_[alloca] = meta;
                     recordMetadata_[builder_->CreateBitCast(alloca, llvm::PointerType::get(context_, 0))] = meta;
+                }
+            } else if (auto* genType = dynamic_cast<ast::GenericType*>(paramAstType)) {
+                auto it = typeDeclsMap_.find(genType->getName());
+                if (it != typeDeclsMap_.end() && it->second) {
+                    if (auto* recType = dynamic_cast<ast::RecordType*>(it->second)) {
+                        RecordMetadata meta;
+                        meta.structType = llvm::dyn_cast<llvm::StructType>(paramType);
+                        meta.alloca = alloca;
+                        for (const auto& f : recType->getFields()) {
+                            meta.fieldNames.push_back(f->getName());
+                        }
+                        if (meta.structType) {
+                            recordMetadata_[alloca] = meta;
+                            recordMetadata_[builder_->CreateBitCast(alloca, llvm::PointerType::get(context_, 0))] = meta;
+                        }
+                    }
                 }
             }
         }
@@ -500,6 +534,24 @@ void IRGenerator::visitFunctionCallExpr(ast::FunctionCallExpr* node) {
     
     // TODO: Add closure detection - if the function name refers to a closure variable,
     // use invokeClosure instead
+}
+
+void IRGenerator::visitMethodCallExpr(ast::MethodCallExpr* node) {
+    llvm::Value* receiver = evaluateExpr(node->getReceiver());
+    if (!receiver) {
+        return;
+    }
+    std::vector<llvm::Value*> args;
+    args.push_back(receiver);
+    for (const auto& argExpr : node->getArgs()) {
+        llvm::Value* argVal = evaluateExpr(argExpr.get());
+        if (!argVal) {
+            return;
+        }
+        args.push_back(argVal);
+    }
+    currentValue_ = evaluateCallWithValues(node->getMethodName(), args,
+        &node->getInferredTypeArgs(), nullptr, node->getLocation(), false);
 }
 
 void IRGenerator::visitRangeExpr(ast::RangeExpr* node) {
@@ -824,10 +876,8 @@ llvm::Type* IRGenerator::convertParameterizedType(ast::ParameterizedType* type) 
 }
 
 llvm::Type* IRGenerator::convertRecordType(ast::RecordType* type) {
-    // Records are represented as LLVM struct types
-    // Convert each field type and create a struct
+    // Records are represented as LLVM struct types (caller passes by pointer; callee may load for by-value param)
     std::vector<llvm::Type*> fieldTypes;
-    
     for (const auto& field : type->getFields()) {
         llvm::Type* fieldType = convertType(field->getType());
         if (!fieldType) {
@@ -839,8 +889,6 @@ llvm::Type* IRGenerator::convertRecordType(ast::RecordType* type) {
         }
         fieldTypes.push_back(fieldType);
     }
-    
-    // Create struct type
     return createStructTypeSafe(context_, fieldTypes);
 }
 
@@ -1124,7 +1172,22 @@ llvm::Value* IRGenerator::evaluateBinary(ast::BinaryExpr* expr) {
                 return builder_->CreateFDiv(left, right, "divtmp");
             }
             break;
-        case ast::BinaryExpr::Op::Eq:
+        case ast::BinaryExpr::Op::Eq: {
+            const std::string& eqName = expr->getEqFunctionName();
+            if (!eqName.empty()) {
+                llvm::Function* eqFunc = module_->getFunction(eqName);
+                if (eqFunc && eqFunc->getFunctionType()->getNumParams() == 2) {
+                    llvm::Value* a = left;
+                    llvm::Value* b = right;
+                    llvm::Type* p0 = eqFunc->getFunctionType()->getParamType(0);
+                    if (p0->isStructTy() && leftType->isPointerTy()) {
+                        a = builder_->CreateLoad(p0, left, "loadrec");
+                        b = builder_->CreateLoad(p0, right, "loadrec");
+                    }
+                    llvm::Value* eqResult = builder_->CreateCall(eqFunc, {a, b}, "eqtmp");
+                    return eqResult;
+                }
+            }
             if (leftType->isIntegerTy() && rightType->isIntegerTy()) {
                 return builder_->CreateICmpEQ(left, right, "eqtmp");
             } else if (leftType->isFloatingPointTy() || rightType->isFloatingPointTy()) {
@@ -1146,7 +1209,23 @@ llvm::Value* IRGenerator::evaluateBinary(ast::BinaryExpr* expr) {
                 return builder_->CreateCall(eqFn, {left, right}, "streq");
             }
             break;
-        case ast::BinaryExpr::Op::Ne:
+        }
+        case ast::BinaryExpr::Op::Ne: {
+            const std::string& eqName = expr->getEqFunctionName();
+            if (!eqName.empty()) {
+                llvm::Function* eqFunc = module_->getFunction(eqName);
+                if (eqFunc && eqFunc->getFunctionType()->getNumParams() == 2) {
+                    llvm::Value* a = left;
+                    llvm::Value* b = right;
+                    llvm::Type* p0 = eqFunc->getFunctionType()->getParamType(0);
+                    if (p0->isStructTy() && leftType->isPointerTy()) {
+                        a = builder_->CreateLoad(p0, left, "loadrec");
+                        b = builder_->CreateLoad(p0, right, "loadrec");
+                    }
+                    llvm::Value* eqResult = builder_->CreateCall(eqFunc, {a, b}, "eqtmp");
+                    return builder_->CreateNot(eqResult, "netmp");
+                }
+            }
             if (leftType->isIntegerTy() && rightType->isIntegerTy()) {
                 return builder_->CreateICmpNE(left, right, "netmp");
             } else if (leftType->isFloatingPointTy() || rightType->isFloatingPointTy()) {
@@ -1156,9 +1235,8 @@ llvm::Value* IRGenerator::evaluateBinary(ast::BinaryExpr* expr) {
                 if (rightType->isIntegerTy()) {
                     right = builder_->CreateSIToFP(right, llvm::Type::getDoubleTy(context_));
                 }
-                return builder_->CreateFCmpONE(right, right, "netmp");
+                return builder_->CreateFCmpONE(left, right, "netmp");
             } else if (leftType->isPointerTy() && rightType->isPointerTy()) {
-                // String inequality via runtime first_string_equals (then negate)
                 llvm::Type* i8ptr = llvm::PointerType::get(context_, 0);
                 llvm::Type* i1 = llvm::Type::getInt1Ty(context_);
                 llvm::FunctionType* eqType = llvm::FunctionType::get(i1, {i8ptr, i8ptr}, false);
@@ -1169,7 +1247,26 @@ llvm::Value* IRGenerator::evaluateBinary(ast::BinaryExpr* expr) {
                 return builder_->CreateNot(eq, "strne");
             }
             break;
-        case ast::BinaryExpr::Op::Lt:
+        }
+        case ast::BinaryExpr::Op::Lt: {
+            const std::string& cmpName = expr->getCompareFunctionName();
+            if (!cmpName.empty()) {
+                llvm::Function* cmpFunc = module_->getFunction(cmpName);
+                if (cmpFunc && cmpFunc->getFunctionType()->getNumParams() == 2) {
+                    llvm::Value* a = left;
+                    llvm::Value* b = right;
+                    llvm::Type* p0 = cmpFunc->getFunctionType()->getParamType(0);
+                    if (p0->isStructTy() && leftType->isPointerTy()) {
+                        a = builder_->CreateLoad(p0, left, "loadrec");
+                        b = builder_->CreateLoad(p0, right, "loadrec");
+                    }
+                    llvm::Value* cmpResult = builder_->CreateCall(cmpFunc, {a, b}, "cmp");
+                    llvm::Type* i64 = llvm::Type::getInt64Ty(context_);
+                    if (cmpResult->getType() != i64)
+                        cmpResult = builder_->CreateIntCast(cmpResult, i64, true, "cmp.i64");
+                    return builder_->CreateICmpSLT(cmpResult, llvm::ConstantInt::get(i64, 0), "lttmp");
+                }
+            }
             if (leftType->isIntegerTy() && rightType->isIntegerTy()) {
                 return builder_->CreateICmpSLT(left, right, "lttmp");
             } else if (leftType->isFloatingPointTy() || rightType->isFloatingPointTy()) {
@@ -1192,7 +1289,26 @@ llvm::Value* IRGenerator::evaluateBinary(ast::BinaryExpr* expr) {
                 return builder_->CreateICmpSLT(cmpResult, llvm::ConstantInt::get(i64, 0), "strlt");
             }
             break;
-        case ast::BinaryExpr::Op::Le:
+        }
+        case ast::BinaryExpr::Op::Le: {
+            const std::string& cmpName = expr->getCompareFunctionName();
+            if (!cmpName.empty()) {
+                llvm::Function* cmpFunc = module_->getFunction(cmpName);
+                if (cmpFunc && cmpFunc->getFunctionType()->getNumParams() == 2) {
+                    llvm::Value* a = left;
+                    llvm::Value* b = right;
+                    llvm::Type* p0 = cmpFunc->getFunctionType()->getParamType(0);
+                    if (p0->isStructTy() && leftType->isPointerTy()) {
+                        a = builder_->CreateLoad(p0, left, "loadrec");
+                        b = builder_->CreateLoad(p0, right, "loadrec");
+                    }
+                    llvm::Value* cmpResult = builder_->CreateCall(cmpFunc, {a, b}, "cmp");
+                    llvm::Type* i64 = llvm::Type::getInt64Ty(context_);
+                    if (cmpResult->getType() != i64)
+                        cmpResult = builder_->CreateIntCast(cmpResult, i64, true, "cmp.i64");
+                    return builder_->CreateICmpSLE(cmpResult, llvm::ConstantInt::get(i64, 0), "letmp");
+                }
+            }
             if (leftType->isIntegerTy() && rightType->isIntegerTy()) {
                 return builder_->CreateICmpSLE(left, right, "letmp");
             } else if (leftType->isFloatingPointTy() || rightType->isFloatingPointTy()) {
@@ -1215,7 +1331,26 @@ llvm::Value* IRGenerator::evaluateBinary(ast::BinaryExpr* expr) {
                 return builder_->CreateICmpSLE(cmpResult, llvm::ConstantInt::get(i64, 0), "strle");
             }
             break;
-        case ast::BinaryExpr::Op::Gt:
+        }
+        case ast::BinaryExpr::Op::Gt: {
+            const std::string& cmpName = expr->getCompareFunctionName();
+            if (!cmpName.empty()) {
+                llvm::Function* cmpFunc = module_->getFunction(cmpName);
+                if (cmpFunc && cmpFunc->getFunctionType()->getNumParams() == 2) {
+                    llvm::Value* a = left;
+                    llvm::Value* b = right;
+                    llvm::Type* p0 = cmpFunc->getFunctionType()->getParamType(0);
+                    if (p0->isStructTy() && leftType->isPointerTy()) {
+                        a = builder_->CreateLoad(p0, left, "loadrec");
+                        b = builder_->CreateLoad(p0, right, "loadrec");
+                    }
+                    llvm::Value* cmpResult = builder_->CreateCall(cmpFunc, {a, b}, "cmp");
+                    llvm::Type* i64 = llvm::Type::getInt64Ty(context_);
+                    if (cmpResult->getType() != i64)
+                        cmpResult = builder_->CreateIntCast(cmpResult, i64, true, "cmp.i64");
+                    return builder_->CreateICmpSGT(cmpResult, llvm::ConstantInt::get(i64, 0), "gttmp");
+                }
+            }
             if (leftType->isIntegerTy() && rightType->isIntegerTy()) {
                 return builder_->CreateICmpSGT(left, right, "gttmp");
             } else if (leftType->isFloatingPointTy() || rightType->isFloatingPointTy()) {
@@ -1238,7 +1373,26 @@ llvm::Value* IRGenerator::evaluateBinary(ast::BinaryExpr* expr) {
                 return builder_->CreateICmpSGT(cmpResult, llvm::ConstantInt::get(i64, 0), "strgt");
             }
             break;
-        case ast::BinaryExpr::Op::Ge:
+        }
+        case ast::BinaryExpr::Op::Ge: {
+            const std::string& cmpName = expr->getCompareFunctionName();
+            if (!cmpName.empty()) {
+                llvm::Function* cmpFunc = module_->getFunction(cmpName);
+                if (cmpFunc && cmpFunc->getFunctionType()->getNumParams() == 2) {
+                    llvm::Value* a = left;
+                    llvm::Value* b = right;
+                    llvm::Type* p0 = cmpFunc->getFunctionType()->getParamType(0);
+                    if (p0->isStructTy() && leftType->isPointerTy()) {
+                        a = builder_->CreateLoad(p0, left, "loadrec");
+                        b = builder_->CreateLoad(p0, right, "loadrec");
+                    }
+                    llvm::Value* cmpResult = builder_->CreateCall(cmpFunc, {a, b}, "cmp");
+                    llvm::Type* i64 = llvm::Type::getInt64Ty(context_);
+                    if (cmpResult->getType() != i64)
+                        cmpResult = builder_->CreateIntCast(cmpResult, i64, true, "cmp.i64");
+                    return builder_->CreateICmpSGE(cmpResult, llvm::ConstantInt::get(i64, 0), "getmp");
+                }
+            }
             if (leftType->isIntegerTy() && rightType->isIntegerTy()) {
                 return builder_->CreateICmpSGE(left, right, "getmp");
             } else if (leftType->isFloatingPointTy() || rightType->isFloatingPointTy()) {
@@ -1261,6 +1415,7 @@ llvm::Value* IRGenerator::evaluateBinary(ast::BinaryExpr* expr) {
                 return builder_->CreateICmpSGE(cmpResult, llvm::ConstantInt::get(i64, 0), "strge");
             }
             break;
+        }
         case ast::BinaryExpr::Op::Mod:
             if (leftType->isIntegerTy() && rightType->isIntegerTy()) {
                 return builder_->CreateSRem(left, right, "modtmp");
@@ -1347,15 +1502,20 @@ llvm::Value* IRGenerator::evaluateVariable(ast::VariableExpr* expr) {
     // Check if this variable has record metadata
     auto recordIt = recordMetadata_.find(alloca);
     if (recordIt != recordMetadata_.end()) {
-        // This is a record variable - return the alloca cast to opaque ptr.
-        // Register the cast result in recordMetadata_ so pattern matching on this
-        // variable finds metadata when given the cast value.
+        // Return the alloca cast to opaque ptr (or load if alloca holds a pointer to record).
+        RecordMetadata meta = recordIt->second;
+        llvm::Type* allocTy = alloca->getAllocatedType();
+        if (allocTy->isPointerTy()) {
+            llvm::Value* loadedPtr = builder_->CreateLoad(llvm::PointerType::get(context_, 0), alloca, name + "_load");
+            recordMetadata_[loadedPtr] = meta;
+            recordMetadata_[builder_->CreateBitCast(loadedPtr, llvm::PointerType::get(context_, 0))] = meta;
+            return loadedPtr;
+        }
         llvm::Value* recordPtr = builder_->CreateBitCast(
             alloca,
             llvm::PointerType::get(context_, 0),
             name + "_ptr"
         );
-        RecordMetadata meta = recordIt->second;
         meta.alloca = alloca;
         recordMetadata_[recordPtr] = meta;
         return recordPtr;
@@ -1404,6 +1564,293 @@ static bool getConsFirstArgLiteral(ast::Expr* e, int64_t& out) {
 
 static bool isConsCall(const std::string& funcName) {
     return funcName == "cons" || (funcName.size() > 5 && funcName.compare(funcName.size() - 4, 4, "cons") == 0 && funcName[funcName.size() - 5] == '.');
+}
+
+llvm::Value* IRGenerator::evaluateCallWithValues(const std::string& funcName,
+                                                std::vector<llvm::Value*>& args,
+                                                const std::vector<std::unique_ptr<ast::Type>>* inferredTypeArgs,
+                                                const std::vector<std::unique_ptr<ast::Expr>>* argExprsForFallback,
+                                                const SourceLocation& loc,
+                                                bool tailCall) {
+    static const std::vector<std::unique_ptr<ast::Type>> kEmptyInferred;
+    const auto& inferred = (inferredTypeArgs && !inferredTypeArgs->empty()) ? *inferredTypeArgs : kEmptyInferred;
+    const auto* argExprs = argExprsForFallback;
+
+    // toString(x) dispatch: rewrite to type-specific function or identity (String)
+    std::string name = funcName;
+    if (name == "toString" && args.size() == 1) {
+        if (!inferred.empty() && inferred[0]) {
+            ast::Type* argType = inferred[0].get();
+            if (currentTypeSubst_) {
+                auto sub = substituteType(argType, *currentTypeSubst_);
+                if (sub) argType = sub.get();
+            }
+            if (auto* prim = dynamic_cast<ast::PrimitiveType*>(argType)) {
+                switch (prim->getKind()) {
+                    case ast::PrimitiveType::Kind::Int:    name = "intToString"; break;
+                    case ast::PrimitiveType::Kind::Float: name = "floatToString"; break;
+                    case ast::PrimitiveType::Kind::Bool:  name = "boolToString"; break;
+                    case ast::PrimitiveType::Kind::String: return args[0];  // identity
+                    case ast::PrimitiveType::Kind::Unit:  name = "unitToString"; break;
+                    default: break;
+                }
+            } else if (auto* gen = dynamic_cast<ast::GenericType*>(argType)) {
+                name = "toString_" + gen->getName();
+            } else if (auto* rec = dynamic_cast<ast::RecordType*>(argType)) {
+                for (const auto& [typeName, declType] : typeDeclsMap_) {
+                    auto* declRec = dynamic_cast<ast::RecordType*>(declType);
+                    if (!declRec || declRec->getFields().size() != rec->getFields().size()) continue;
+                    bool match = true;
+                    for (size_t i = 0; i < rec->getFields().size(); ++i) {
+                        if (rec->getFields()[i]->getName() != declRec->getFields()[i]->getName()) {
+                            match = false;
+                            break;
+                        }
+                    }
+                    if (match) {
+                        name = "toString_" + typeName;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    // Look up function in module
+    llvm::Function* func = module_->getFunction(name);
+
+    // Call monomorphized generic when we have inferred type args or can infer from context
+    ast::FunctionDecl* astFunc = nullptr;
+    if (currentProgram_) {
+        for (const auto& f : currentProgram_->getFunctions()) {
+            if (f && f->getName() == name) {
+                if (!astFunc)
+                    astFunc = f.get();
+                else if (astFunc->isSignature() && !f->isSignature())
+                    astFunc = f.get();
+                if (astFunc && !astFunc->isSignature())
+                    break;
+            }
+        }
+    }
+    if (astFunc && !astFunc->getGenericParams().empty()) {
+            std::vector<ast::Type*> typeArgs;
+            std::vector<std::unique_ptr<ast::Type>> typeArgsStorage;
+            if (!inferred.empty()) {
+                if (currentTypeSubst_) {
+                    for (const auto& t : inferred) {
+                        if (!t) continue;
+                        auto sub = substituteType(t.get(), *currentTypeSubst_);
+                        if (sub) {
+                            typeArgsStorage.push_back(std::move(sub));
+                            typeArgs.push_back(typeArgsStorage.back().get());
+                        } else {
+                            typeArgs.push_back(t.get());
+                        }
+                    }
+                } else {
+                    for (const auto& t : inferred)
+                        if (t) typeArgs.push_back(t.get());
+                }
+            } else if (currentTypeSubst_) {
+                for (const auto& gp : astFunc->getGenericParams()) {
+                    auto it = currentTypeSubst_->find(gp.name);
+                    if (it == currentTypeSubst_->end() || !it->second) break;
+                    typeArgs.push_back(it->second);
+                }
+            } else if (argExprs && argExprs->size() == astFunc->getParameters().size()) {
+                auto getDeclBody = [this]() -> const std::vector<std::unique_ptr<ast::Stmt>>* {
+                    if (currentFunctionDecl_) return &currentFunctionDecl_->getBody();
+                    if (currentInteractionDecl_) return &currentInteractionDecl_->getBody();
+                    return nullptr;
+                };
+                const auto* body = getDeclBody();
+                if (body) {
+                    std::map<std::string, ast::Type*> subst;
+                    for (size_t i = 0; i < argExprs->size(); ++i) {
+                        ast::Type* paramType = astFunc->getParameters()[i]->getType();
+                        ast::Type* argType = nullptr;
+                        if (auto* varExpr = dynamic_cast<ast::VariableExpr*>((*argExprs)[i].get())) {
+                            for (const auto& stmt : *body) {
+                                if (auto* vd = dynamic_cast<ast::VariableDecl*>(stmt.get())) {
+                                    if (vd->getName() == varExpr->getName() && vd->getType()) {
+                                        argType = vd->getType();
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        if (!argType) continue;
+                        auto* pParam = dynamic_cast<ast::ParameterizedType*>(paramType);
+                        auto* pArg = dynamic_cast<ast::ParameterizedType*>(argType);
+                        if (pParam && pArg && pParam->getBaseName() == pArg->getBaseName() &&
+                            pParam->getTypeArgs().size() == pArg->getTypeArgs().size()) {
+                            for (size_t j = 0; j < pParam->getTypeArgs().size(); ++j) {
+                                if (auto* g = dynamic_cast<ast::GenericType*>(pParam->getTypeArgs()[j].get())) {
+                                    if (pArg->getTypeArgs()[j]) subst[g->getName()] = pArg->getTypeArgs()[j].get();
+                                }
+                            }
+                        } else if (auto* gParam = dynamic_cast<ast::GenericType*>(paramType)) {
+                            subst[gParam->getName()] = argType;
+                        }
+                    }
+                    if (subst.size() == astFunc->getGenericParams().size()) {
+                        for (const auto& gp : astFunc->getGenericParams()) {
+                            auto it = subst.find(gp.name);
+                            if (it == subst.end() || !it->second) break;
+                            typeArgs.push_back(it->second);
+                        }
+                    }
+                }
+            }
+            if (typeArgs.size() == astFunc->getGenericParams().size()) {
+                bool allConcrete = true;
+                for (ast::Type* ta : typeArgs) {
+                    if (ta && dynamic_cast<ast::GenericType*>(ta)) {
+                        allConcrete = false;
+                        break;
+                    }
+                }
+                if (allConcrete) {
+                    llvm::Function* monoFunc = monomorphizeFunction(astFunc, typeArgs);
+                    if (monoFunc) {
+                        bool needBody = monoFunc->isDeclaration() && generatingMonomorphized_.count(monoFunc) == 0;
+                        if (needBody)
+                            generateMonomorphizedBody(astFunc, typeArgs, monoFunc);
+                        func = monoFunc;
+                    }
+                }
+            }
+    }
+
+    auto i8ptr = llvm::PointerType::get(context_, 0);
+    auto i64 = llvm::Type::getInt64Ty(context_);
+    auto f64 = llvm::Type::getDoubleTy(context_);
+    auto voidTy = llvm::Type::getVoidTy(context_);
+
+    // Stdlib (Phase 7.3): map First name -> C symbol and signature when not in module
+    auto getStdlibSig = [&](const std::string& n) -> std::pair<std::string, llvm::FunctionType*> {
+        if (n == "print" || n == "println")
+            return {n, llvm::FunctionType::get(voidTy, {i8ptr}, false)};
+        if (n == "readLine")
+            return {"readLine", llvm::FunctionType::get(i8ptr, false)};
+        if (n == "readFile")
+            return {"readFile", llvm::FunctionType::get(i8ptr, {i8ptr}, false)};
+        if (n == "writeFile")
+            return {"writeFile", llvm::FunctionType::get(voidTy, {i8ptr, i8ptr}, false)};
+        if (n == "sin" || n == "cos" || n == "sqrt" || n == "abs" || n == "floor" || n == "ceil")
+            return {"first_" + n, llvm::FunctionType::get(f64, {f64}, false)};
+        if (n == "min" || n == "max")
+            return {"first_" + n, llvm::FunctionType::get(f64, {f64, f64}, false)};
+        if (n == "minInt" || n == "maxInt")
+            return {"first_" + n, llvm::FunctionType::get(i64, {i64, i64}, false)};
+        if (n == "stringLength") return {"first_string_length", llvm::FunctionType::get(i64, {i8ptr}, false)};
+        if (n == "stringConcat") return {"first_string_concat", llvm::FunctionType::get(i8ptr, {i8ptr, i8ptr}, false)};
+        if (n == "stringSlice") return {"first_string_slice", llvm::FunctionType::get(i8ptr, {i8ptr, i64, i64}, false)};
+        if (n == "stringToInt") return {"first_string_to_int", llvm::FunctionType::get(i64, {i8ptr}, false)};
+        if (n == "stringToFloat") return {"first_string_to_float", llvm::FunctionType::get(f64, {i8ptr}, false)};
+        if (n == "intToString") return {"first_int_to_string", llvm::FunctionType::get(i8ptr, {i64}, false)};
+        if (n == "floatToString") return {"first_float_to_string", llvm::FunctionType::get(i8ptr, {f64}, false)};
+        if (n == "boolToString") return {"first_bool_to_string", llvm::FunctionType::get(i8ptr, {i64}, false)};
+        if (n == "unitToString") return {"first_unit_to_string", llvm::FunctionType::get(i8ptr, {i64}, false)};
+        if (n == "socketConnect") return {"first_socket_connect", llvm::FunctionType::get(i64, {i8ptr, i64}, false)};
+        if (n == "socketSend") return {"first_socket_send", llvm::FunctionType::get(i64, {i64, i8ptr}, false)};
+        if (n == "socketRecv") return {"first_socket_recv_str", llvm::FunctionType::get(i8ptr, {i64}, false)};
+        if (n == "socketClose") return {"first_socket_close", llvm::FunctionType::get(voidTy, {i64}, false)};
+        if (n == "httpGet") return {"first_http_get", llvm::FunctionType::get(i8ptr, {i8ptr}, false)};
+        if (n == "httpPost") return {"first_http_post", llvm::FunctionType::get(i8ptr, {i8ptr, i8ptr}, false)};
+        if (n == "httpRequest") return {"first_http_request", llvm::FunctionType::get(i64, {i8ptr, i8ptr, i8ptr, i8ptr, i8ptr, i8ptr}, false)};
+        if (n == "httpServerCreate") return {"first_http_server_create", llvm::FunctionType::get(i64, {i8ptr, i64}, false)};
+        if (n == "httpServerGet") return {"first_http_server_get", llvm::FunctionType::get(voidTy, {i64, i8ptr, i64}, false)};
+        if (n == "httpServerPost") return {"first_http_server_post", llvm::FunctionType::get(voidTy, {i64, i8ptr, i64}, false)};
+        if (n == "httpServerListen") return {"first_http_server_listen", llvm::FunctionType::get(voidTy, {i64}, false)};
+        if (n == "httpServerClose") return {"first_http_server_close", llvm::FunctionType::get(voidTy, {i64}, false)};
+        if (n == "httpReqMethod") return {"first_http_req_method", llvm::FunctionType::get(i8ptr, {i64}, false)};
+        if (n == "httpReqPath") return {"first_http_req_path", llvm::FunctionType::get(i8ptr, {i64}, false)};
+        if (n == "httpReqParamsJson") return {"first_http_req_params_json", llvm::FunctionType::get(i8ptr, {i64}, false)};
+        if (n == "httpReqQueryJson") return {"first_http_req_query_json", llvm::FunctionType::get(i8ptr, {i64}, false)};
+        if (n == "httpReqHeadersJson") return {"first_http_req_headers_json", llvm::FunctionType::get(i8ptr, {i64}, false)};
+        if (n == "httpReqBody") return {"first_http_req_body", llvm::FunctionType::get(i8ptr, {i64}, false)};
+        if (n == "httpResponseCreate") return {"first_http_response_create", llvm::FunctionType::get(i64, {i64, i8ptr, i8ptr}, false)};
+        if (n == "httpRespStatus") return {"first_http_resp_status", llvm::FunctionType::get(i64, {i64}, false)};
+        if (n == "httpRespHeadersJson") return {"first_http_resp_headers_json", llvm::FunctionType::get(i8ptr, {i64}, false)};
+        if (n == "httpRespBody") return {"first_http_resp_body", llvm::FunctionType::get(i8ptr, {i64}, false)};
+        if (n == "jsonPrettify") return {"first_json_prettify", llvm::FunctionType::get(i8ptr, {i8ptr}, false)};
+        if (n == "jsonStringifyString") return {"first_json_stringify_string", llvm::FunctionType::get(i8ptr, {i8ptr}, false)};
+        if (n == "jsonStringifyInt") return {"first_json_stringify_int", llvm::FunctionType::get(i8ptr, {i64}, false)};
+        if (n == "jsonStringifyFloat") return {"first_json_stringify_float", llvm::FunctionType::get(i8ptr, {f64}, false)};
+        return {"", nullptr};
+    };
+
+    if (!func) {
+        auto [cSymbol, funcType] = getStdlibSig(name);
+        if (funcType) {
+            func = module_->getFunction(cSymbol);
+            if (!func)
+                func = llvm::Function::Create(funcType, llvm::Function::ExternalLinkage, cSymbol, module_.get());
+        } else {
+            std::vector<llvm::Type*> paramTypes;
+            for (auto* v : args) paramTypes.push_back(v ? v->getType() : i64);
+            llvm::FunctionType* defaultType = llvm::FunctionType::get(i64, paramTypes, false);
+            func = llvm::Function::Create(defaultType, llvm::Function::ExternalLinkage, name, module_.get());
+        }
+    }
+
+    if (!func) {
+        errorReporter_.error(loc, "Undefined function: " + name);
+        return nullptr;
+    }
+
+    // Ensure first_bool_to_string and first_unit_to_string receive i64 (runtime ABI)
+    llvm::StringRef funcNameRef = func->getName();
+    if ((funcNameRef == "first_bool_to_string" || funcNameRef == "first_unit_to_string") &&
+        args.size() == 1 && args[0] && args[0]->getType()->isIntegerTy(1)) {
+        args[0] = builder_->CreateZExt(args[0], i64, "arg.bool.i64");
+    }
+
+    if (func->getFunctionType() && func->getFunctionType()->getNumParams() == args.size()) {
+        for (size_t i = 0; i < args.size(); ++i) {
+            llvm::Type* pt = func->getFunctionType()->getParamType(static_cast<unsigned>(i));
+            if (!args[i]) continue;
+            llvm::Type* at = args[i]->getType();
+            if (pt == at) continue;
+            if (pt->isIntegerTy(64) && at->isPointerTy()) {
+                args[i] = builder_->CreatePtrToInt(args[i], i64, "arg.i64");
+            } else if (pt->isIntegerTy(64) && at->isIntegerTy(1)) {
+                // Stdlib (e.g. first_bool_to_string) expects i64 for Bool; extend i1 to i64
+                args[i] = builder_->CreateZExt(args[i], i64, "arg.bool.i64");
+            } else if (pt->isDoubleTy() && at->isIntegerTy(64)) {
+                args[i] = builder_->CreateSIToFP(args[i], llvm::Type::getDoubleTy(context_), "arg.f64");
+            } else if (pt->isIntegerTy(64) && at->isDoubleTy()) {
+                args[i] = builder_->CreateFPToSI(args[i], i64, "arg.i64");
+            } else if (pt->isIntegerTy(1) && at->isIntegerTy(64)) {
+                args[i] = builder_->CreateICmpNE(args[i], llvm::ConstantInt::get(i64, 0), "arg.bool");
+            } else if (pt->isPointerTy() && at->isIntegerTy(64)) {
+                llvm::AllocaInst* slot = builder_->CreateAlloca(llvm::Type::getInt64Ty(context_), nullptr, "scalar.arg");
+                builder_->CreateAlignedStore(args[i], slot, llvm::Align(8));
+                args[i] = builder_->CreateBitCast(slot, i8ptr, "scalar.arg.ptr");
+            } else if (pt->isPointerTy() && at->isDoubleTy()) {
+                llvm::AllocaInst* slot = builder_->CreateAlloca(llvm::Type::getDoubleTy(context_), nullptr, "scalar.arg");
+                builder_->CreateAlignedStore(args[i], slot, llvm::Align(8));
+                args[i] = builder_->CreateBitCast(slot, i8ptr, "scalar.arg.ptr");
+            } else if (pt->isPointerTy() && at->isIntegerTy(1)) {
+                llvm::AllocaInst* slot = builder_->CreateAlloca(llvm::Type::getInt1Ty(context_), nullptr, "scalar.arg");
+                builder_->CreateAlignedStore(args[i], slot, llvm::Align(1));
+                args[i] = builder_->CreateBitCast(slot, i8ptr, "scalar.arg.ptr");
+            } else if (pt->isStructTy() && at->isPointerTy()) {
+                args[i] = builder_->CreateLoad(pt, args[i], "loadrec");
+            }
+        }
+    }
+
+    llvm::Value* callValue = builder_->CreateCall(func, args,
+        func->getReturnType()->isVoidTy() ? "" : "calltmp");
+    if (tailCall) {
+        if (auto* callInst = llvm::dyn_cast<llvm::CallInst>(callValue)) {
+            callInst->setTailCall(true);
+        }
+    }
+    return callValue;
 }
 
 llvm::Value* IRGenerator::evaluateFunctionCall(ast::FunctionCallExpr* expr, bool tailCall) {
@@ -1652,235 +2099,48 @@ llvm::Value* IRGenerator::evaluateFunctionCall(ast::FunctionCallExpr* expr, bool
         return phi;
     }
 
-    // Look up function in module
-    llvm::Function* func = module_->getFunction(funcName);
-
-    // Call monomorphized generic when we have inferred type args or can infer from context
-    // Prefer a function that has a body (implementation) over a signature-only decl so monomorphized body is generated
-    ast::FunctionDecl* astFunc = nullptr;
-    if (currentProgram_) {
-        for (const auto& f : currentProgram_->getFunctions()) {
-            if (f && f->getName() == funcName) {
-                if (!astFunc)
-                    astFunc = f.get();
-                else if (astFunc->isSignature() && !f->isSignature())
-                    astFunc = f.get();
-                if (astFunc && !astFunc->isSignature())
-                    break;
+    // toString(x) dispatch: rewrite to type-specific function or identity (String)
+    if (funcName == "toString" && args.size() == 1) {
+        const auto& inferred = expr->getInferredTypeArgs();
+        if (!inferred.empty() && inferred[0]) {
+            ast::Type* argType = inferred[0].get();
+            if (currentTypeSubst_) {
+                auto sub = substituteType(argType, *currentTypeSubst_);
+                if (sub) argType = sub.get();
             }
-        }
-    }
-    if (astFunc && !astFunc->getGenericParams().empty()) {
-            std::vector<ast::Type*> typeArgs;
-            std::vector<std::unique_ptr<ast::Type>> typeArgsStorage;
-            const auto& inferred = expr->getInferredTypeArgs();
-            if (!inferred.empty()) {
-                if (currentTypeSubst_) {
-                    for (const auto& t : inferred) {
-                        if (!t) continue;
-                        auto sub = substituteType(t.get(), *currentTypeSubst_);
-                        if (sub) {
-                            typeArgsStorage.push_back(std::move(sub));
-                            typeArgs.push_back(typeArgsStorage.back().get());
-                        } else {
-                            typeArgs.push_back(t.get());
+            if (auto* prim = dynamic_cast<ast::PrimitiveType*>(argType)) {
+                switch (prim->getKind()) {
+                    case ast::PrimitiveType::Kind::Int:    funcName = "intToString"; break;
+                    case ast::PrimitiveType::Kind::Float: funcName = "floatToString"; break;
+                    case ast::PrimitiveType::Kind::Bool:  funcName = "boolToString"; break;
+                    case ast::PrimitiveType::Kind::String: return args[0];  // identity
+                    case ast::PrimitiveType::Kind::Unit:  funcName = "unitToString"; break;
+                    default: break;
+                }
+            } else if (auto* gen = dynamic_cast<ast::GenericType*>(argType)) {
+                funcName = "toString_" + gen->getName();
+            } else if (auto* rec = dynamic_cast<ast::RecordType*>(argType)) {
+                // Inferred type may be RecordType (e.g. for let p: Point = {...}); find nominal type name
+                for (const auto& [name, declType] : typeDeclsMap_) {
+                    auto* declRec = dynamic_cast<ast::RecordType*>(declType);
+                    if (!declRec || declRec->getFields().size() != rec->getFields().size()) continue;
+                    bool match = true;
+                    for (size_t i = 0; i < rec->getFields().size(); ++i) {
+                        if (rec->getFields()[i]->getName() != declRec->getFields()[i]->getName()) {
+                            match = false;
+                            break;
                         }
                     }
-                } else {
-                    for (const auto& t : inferred)
-                        if (t) typeArgs.push_back(t.get());
-                }
-            } else if (currentTypeSubst_) {
-                // Recursive call inside monomorphized body: no inferred args on expr; use current substitution
-                for (const auto& gp : astFunc->getGenericParams()) {
-                    auto it = currentTypeSubst_->find(gp.name);
-                    if (it == currentTypeSubst_->end() || !it->second) break;
-                    typeArgs.push_back(it->second);
-                }
-            } else {
-                // Fallback: infer type args from variable declarations (e.g. isEmpty(xs) with xs: List<Int>)
-                auto getDeclBody = [this]() -> const std::vector<std::unique_ptr<ast::Stmt>>* {
-                    if (currentFunctionDecl_) return &currentFunctionDecl_->getBody();
-                    if (currentInteractionDecl_) return &currentInteractionDecl_->getBody();
-                    return nullptr;
-                };
-                const auto* body = getDeclBody();
-                if (body && argExprs.size() == astFunc->getParameters().size()) {
-                    std::map<std::string, ast::Type*> subst;
-                    for (size_t i = 0; i < argExprs.size(); ++i) {
-                        ast::Type* paramType = astFunc->getParameters()[i]->getType();
-                        ast::Type* argType = nullptr;
-                        if (auto* varExpr = dynamic_cast<ast::VariableExpr*>(argExprs[i].get())) {
-                            for (const auto& stmt : *body) {
-                                if (auto* vd = dynamic_cast<ast::VariableDecl*>(stmt.get())) {
-                                    if (vd->getName() == varExpr->getName() && vd->getType()) {
-                                        argType = vd->getType();
-                                        break;
-                                    }
-                                }
-                            }
-                        }
-                        if (!argType) continue;
-                        // Match ParameterizedType: List<T> vs List<Int> -> T = Int
-                        auto* pParam = dynamic_cast<ast::ParameterizedType*>(paramType);
-                        auto* pArg = dynamic_cast<ast::ParameterizedType*>(argType);
-                        if (pParam && pArg && pParam->getBaseName() == pArg->getBaseName() &&
-                            pParam->getTypeArgs().size() == pArg->getTypeArgs().size()) {
-                            for (size_t j = 0; j < pParam->getTypeArgs().size(); ++j) {
-                                if (auto* g = dynamic_cast<ast::GenericType*>(pParam->getTypeArgs()[j].get())) {
-                                    if (pArg->getTypeArgs()[j]) subst[g->getName()] = pArg->getTypeArgs()[j].get();
-                                }
-                            }
-                        } else if (auto* gParam = dynamic_cast<ast::GenericType*>(paramType)) {
-                            subst[gParam->getName()] = argType;
-                        }
-                    }
-                    if (subst.size() == astFunc->getGenericParams().size()) {
-                        for (const auto& gp : astFunc->getGenericParams()) {
-                            auto it = subst.find(gp.name);
-                            if (it == subst.end() || !it->second) break;
-                            typeArgs.push_back(it->second);
-                        }
-                    }
-                }
-            }
-            if (typeArgs.size() == astFunc->getGenericParams().size()) {
-                // Only monomorphize when all type args are concrete (no GenericType)
-                bool allConcrete = true;
-                for (ast::Type* ta : typeArgs) {
-                    if (ta && dynamic_cast<ast::GenericType*>(ta)) {
-                        allConcrete = false;
+                    if (match) {
+                        funcName = "toString_" + name;
                         break;
                     }
                 }
-                if (allConcrete) {
-                    llvm::Function* monoFunc = monomorphizeFunction(astFunc, typeArgs);
-                    if (monoFunc) {
-                        bool needBody = monoFunc->isDeclaration() && generatingMonomorphized_.count(monoFunc) == 0;
-                        // Generate body only if not already generating it (avoid infinite recursion for recursive calls)
-                        if (needBody)
-                            generateMonomorphizedBody(astFunc, typeArgs, monoFunc);
-                        func = monoFunc;
-                    }
-                }
-            }
-    }
-
-    // Stdlib (Phase 7.3): map First name -> C symbol and signature when not in module
-    auto getStdlibSig = [&](const std::string& name) -> std::pair<std::string, llvm::FunctionType*> {
-        if (name == "print" || name == "println")
-            return {name, llvm::FunctionType::get(voidTy, {i8ptr}, false)};
-        if (name == "readLine")
-            return {"readLine", llvm::FunctionType::get(i8ptr, false)};
-        if (name == "readFile")
-            return {"readFile", llvm::FunctionType::get(i8ptr, {i8ptr}, false)};
-        if (name == "writeFile")
-            return {"writeFile", llvm::FunctionType::get(voidTy, {i8ptr, i8ptr}, false)};
-        if (name == "sin" || name == "cos" || name == "sqrt" || name == "abs" || name == "floor" || name == "ceil")
-            return {"first_" + name, llvm::FunctionType::get(f64, {f64}, false)};
-        if (name == "min" || name == "max")
-            return {"first_" + name, llvm::FunctionType::get(f64, {f64, f64}, false)};
-        if (name == "minInt" || name == "maxInt")
-            return {"first_" + name, llvm::FunctionType::get(i64, {i64, i64}, false)};
-        if (name == "stringLength") return {"first_string_length", llvm::FunctionType::get(i64, {i8ptr}, false)};
-        if (name == "stringConcat") return {"first_string_concat", llvm::FunctionType::get(i8ptr, {i8ptr, i8ptr}, false)};
-        if (name == "stringSlice") return {"first_string_slice", llvm::FunctionType::get(i8ptr, {i8ptr, i64, i64}, false)};
-        if (name == "stringToInt") return {"first_string_to_int", llvm::FunctionType::get(i64, {i8ptr}, false)};
-        if (name == "stringToFloat") return {"first_string_to_float", llvm::FunctionType::get(f64, {i8ptr}, false)};
-        if (name == "intToString") return {"first_int_to_string", llvm::FunctionType::get(i8ptr, {i64}, false)};
-        if (name == "floatToString") return {"first_float_to_string", llvm::FunctionType::get(i8ptr, {f64}, false)};
-        if (name == "socketConnect") return {"first_socket_connect", llvm::FunctionType::get(i64, {i8ptr, i64}, false)};
-        if (name == "socketSend") return {"first_socket_send", llvm::FunctionType::get(i64, {i64, i8ptr}, false)};
-        if (name == "socketRecv") return {"first_socket_recv_str", llvm::FunctionType::get(i8ptr, {i64}, false)};
-        if (name == "socketClose") return {"first_socket_close", llvm::FunctionType::get(voidTy, {i64}, false)};
-        if (name == "httpGet") return {"first_http_get", llvm::FunctionType::get(i8ptr, {i8ptr}, false)};
-        if (name == "httpPost") return {"first_http_post", llvm::FunctionType::get(i8ptr, {i8ptr, i8ptr}, false)};
-        // HTTP client/server handles (i64)
-        if (name == "httpRequest") return {"first_http_request", llvm::FunctionType::get(i64, {i8ptr, i8ptr, i8ptr, i8ptr, i8ptr, i8ptr}, false)};
-        if (name == "httpServerCreate") return {"first_http_server_create", llvm::FunctionType::get(i64, {i8ptr, i64}, false)};
-        if (name == "httpServerGet") return {"first_http_server_get", llvm::FunctionType::get(voidTy, {i64, i8ptr, i64}, false)};
-        if (name == "httpServerPost") return {"first_http_server_post", llvm::FunctionType::get(voidTy, {i64, i8ptr, i64}, false)};
-        if (name == "httpServerListen") return {"first_http_server_listen", llvm::FunctionType::get(voidTy, {i64}, false)};
-        if (name == "httpServerClose") return {"first_http_server_close", llvm::FunctionType::get(voidTy, {i64}, false)};
-        if (name == "httpReqMethod") return {"first_http_req_method", llvm::FunctionType::get(i8ptr, {i64}, false)};
-        if (name == "httpReqPath") return {"first_http_req_path", llvm::FunctionType::get(i8ptr, {i64}, false)};
-        if (name == "httpReqParamsJson") return {"first_http_req_params_json", llvm::FunctionType::get(i8ptr, {i64}, false)};
-        if (name == "httpReqQueryJson") return {"first_http_req_query_json", llvm::FunctionType::get(i8ptr, {i64}, false)};
-        if (name == "httpReqHeadersJson") return {"first_http_req_headers_json", llvm::FunctionType::get(i8ptr, {i64}, false)};
-        if (name == "httpReqBody") return {"first_http_req_body", llvm::FunctionType::get(i8ptr, {i64}, false)};
-        if (name == "httpResponseCreate") return {"first_http_response_create", llvm::FunctionType::get(i64, {i64, i8ptr, i8ptr}, false)};
-        if (name == "httpRespStatus") return {"first_http_resp_status", llvm::FunctionType::get(i64, {i64}, false)};
-        if (name == "httpRespHeadersJson") return {"first_http_resp_headers_json", llvm::FunctionType::get(i8ptr, {i64}, false)};
-        if (name == "httpRespBody") return {"first_http_resp_body", llvm::FunctionType::get(i8ptr, {i64}, false)};
-        if (name == "jsonPrettify") return {"first_json_prettify", llvm::FunctionType::get(i8ptr, {i8ptr}, false)};
-        if (name == "jsonStringifyString") return {"first_json_stringify_string", llvm::FunctionType::get(i8ptr, {i8ptr}, false)};
-        if (name == "jsonStringifyInt") return {"first_json_stringify_int", llvm::FunctionType::get(i8ptr, {i64}, false)};
-        if (name == "jsonStringifyFloat") return {"first_json_stringify_float", llvm::FunctionType::get(i8ptr, {f64}, false)};
-        return {"", nullptr};
-    };
-
-    if (!func) {
-        auto [cSymbol, funcType] = getStdlibSig(funcName);
-        if (funcType) {
-            func = module_->getFunction(cSymbol);
-            if (!func)
-                func = llvm::Function::Create(funcType, llvm::Function::ExternalLinkage, cSymbol, module_.get());
-        } else {
-            // Unknown: default external declaration from args
-            std::vector<llvm::Type*> paramTypes;
-            for (auto* v : args) paramTypes.push_back(v ? v->getType() : i64);
-            llvm::FunctionType* defaultType = llvm::FunctionType::get(i64, paramTypes, false);
-            func = llvm::Function::Create(defaultType, llvm::Function::ExternalLinkage, funcName, module_.get());
-        }
-    }
-
-    if (!func) {
-        errorReporter_.error(
-            expr->getLocation(),
-            "Undefined function: " + funcName
-        );
-        return nullptr;
-    }
-
-    // (First-arg literal fix for cons is applied when building args above.)
-
-    // If the callee has a known function type, cast arguments as needed (opaque ptr -> i64, record ptr -> struct by value, etc.).
-    if (func->getFunctionType() && func->getFunctionType()->getNumParams() == args.size()) {
-        for (size_t i = 0; i < args.size(); ++i) {
-            llvm::Type* pt = func->getFunctionType()->getParamType(static_cast<unsigned>(i));
-            if (!args[i]) continue;
-            llvm::Type* at = args[i]->getType();
-            if (pt->isIntegerTy(64) && at->isPointerTy()) {
-                args[i] = builder_->CreatePtrToInt(args[i], llvm::Type::getInt64Ty(context_), "ptrtoint");
-            } else if (pt->isPointerTy() && at->isIntegerTy(64)) {
-                // Erased generic param: pass by pointer so callee/optimizer never dereference invalid addr (e.g. 0x1)
-                llvm::AllocaInst* slot = builder_->CreateAlloca(llvm::Type::getInt64Ty(context_), nullptr, "scalar.arg");
-                builder_->CreateAlignedStore(args[i], slot, llvm::Align(8));
-                args[i] = builder_->CreateBitCast(slot, i8ptr, "scalar.arg.ptr");
-            } else if (pt->isPointerTy() && at->isDoubleTy()) {
-                llvm::AllocaInst* slot = builder_->CreateAlloca(llvm::Type::getDoubleTy(context_), nullptr, "scalar.arg");
-                builder_->CreateAlignedStore(args[i], slot, llvm::Align(8));
-                args[i] = builder_->CreateBitCast(slot, i8ptr, "scalar.arg.ptr");
-            } else if (pt->isPointerTy() && at->isIntegerTy(1)) {
-                llvm::AllocaInst* slot = builder_->CreateAlloca(llvm::Type::getInt1Ty(context_), nullptr, "scalar.arg");
-                builder_->CreateAlignedStore(args[i], slot, llvm::Align(1));
-                args[i] = builder_->CreateBitCast(slot, i8ptr, "scalar.arg.ptr");
-            } else if (pt->isStructTy() && at->isPointerTy()) {
-                // Record literal/arg is a pointer; param expects struct by value - load the struct
-                args[i] = builder_->CreateLoad(pt, args[i], "loadrec");
             }
         }
     }
 
-    // Create call instruction (Phase 6.2: tail call when requested for TCO)
-    llvm::Value* callValue = builder_->CreateCall(func, args,
-        func->getReturnType()->isVoidTy() ? "" : "calltmp");
-    if (tailCall) {
-        if (auto* callInst = llvm::dyn_cast<llvm::CallInst>(callValue)) {
-            callInst->setTailCall(true);
-        }
-    }
-    return callValue;
+    return evaluateCallWithValues(funcName, args, &expr->getInferredTypeArgs(), &expr->getArgs(), expr->getLocation(), tailCall);
 }
 
 void IRGenerator::generateStatement(ast::Stmt* stmt) {

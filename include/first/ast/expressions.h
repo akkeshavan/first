@@ -66,6 +66,12 @@ public:
     Op getOp() const { return op_; }
     Expr* getLeft() const { return left_.get(); }
     Expr* getRight() const { return right_.get(); }
+
+    // When set by type checker: use this function for ==/!= (Eq) or for </<=/>/>= (Ord) instead of built-in
+    const std::string& getEqFunctionName() const { return eqFunctionName_; }
+    void setEqFunctionName(std::string name) { eqFunctionName_ = std::move(name); }
+    const std::string& getCompareFunctionName() const { return compareFunctionName_; }
+    void setCompareFunctionName(std::string name) { compareFunctionName_ = std::move(name); }
     
     void accept(ASTVisitor& visitor) override {
         visitor.visitBinaryExpr(this);
@@ -77,6 +83,8 @@ private:
     Op op_;
     std::unique_ptr<Expr> left_;
     std::unique_ptr<Expr> right_;
+    std::string eqFunctionName_;       // non-empty => use this for == and !=
+    std::string compareFunctionName_; // non-empty => use this for <, <=, >, >=
 };
 
 // Unary operator expression
@@ -313,6 +321,39 @@ public:
 private:
     std::unique_ptr<Expr> record_;
     std::string fieldName_;
+};
+
+// Method call expression (interface only): receiver.methodName(args) -> methodName(receiver, args...)
+class MethodCallExpr : public Expr {
+public:
+    MethodCallExpr(const SourceLocation& location,
+                  std::unique_ptr<Expr> receiver,
+                  const std::string& methodName,
+                  std::vector<std::unique_ptr<Expr>> args)
+        : Expr(location), receiver_(std::move(receiver)), methodName_(methodName), args_(std::move(args)) {}
+
+    Expr* getReceiver() const { return receiver_.get(); }
+    const std::string& getMethodName() const { return methodName_; }
+    const std::vector<std::unique_ptr<Expr>>& getArgs() const { return args_; }
+
+    /** Inferred type of receiver (set by type checker) for IR dispatch. */
+    const std::vector<std::unique_ptr<Type>>& getInferredTypeArgs() const { return inferredTypeArgs_; }
+    void setInferredTypeArgs(std::vector<std::unique_ptr<Type>> args) {
+        inferredTypeArgs_ = std::move(args);
+    }
+    bool hasInferredTypeArgs() const { return !inferredTypeArgs_.empty(); }
+
+    void accept(ASTVisitor& visitor) override {
+        visitor.visitMethodCallExpr(this);
+    }
+
+    std::string getNodeType() const override { return "MethodCallExpr"; }
+
+private:
+    std::unique_ptr<Expr> receiver_;
+    std::string methodName_;
+    std::vector<std::unique_ptr<Expr>> args_;
+    std::vector<std::unique_ptr<Type>> inferredTypeArgs_;
 };
 
 // Lambda expression (closure): (params) => body or function(params) body

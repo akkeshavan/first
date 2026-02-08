@@ -429,7 +429,7 @@
         break;
     }
     case TokenKind::KwType:
-        parseTypeDecl(program);
+        parseTypeDecl(program, {});
         break;
     case TokenKind::KwLet:
     case TokenKind::KwVar: {
@@ -439,11 +439,32 @@
         (void)decl;
         break;
     }
-     default:
-         // Skip unknown top-level for now.
-         advance();
-         break;
-     }
+    default: {
+        // Optional: derive(ToString, Eq, Ord) followed by type declaration
+        if (current().kind == TokenKind::Identifier && current().lexeme == "derive") {
+            const Token& next = tokens_.lookahead(1);
+            if (next.kind == TokenKind::LParen) {
+                std::vector<std::string> derived;
+                advance(); // consume "derive"
+                if (expect(TokenKind::LParen, "expected '(' after 'derive'")) {
+                    while (current().kind == TokenKind::Identifier) {
+                        derived.push_back(current().lexeme);
+                        advance();
+                        if (!match(TokenKind::Comma)) break;
+                    }
+                    if (expect(TokenKind::RParen, "expected ')' after derive list") &&
+                        current().kind == TokenKind::KwType) {
+                        parseTypeDecl(program, derived);
+                        break;
+                    }
+                }
+            }
+        }
+        // Skip unknown top-level
+        advance();
+        break;
+    }
+    }
  }
 
  void FirstParser::parseModuleDecl(ast::Program& program) {
@@ -808,7 +829,7 @@ void FirstParser::parseImplementationDecl(ast::Program& program) {
         loc, interfaceName, std::move(typeArgs), std::move(members)));
 }
 
-void FirstParser::parseTypeDecl(ast::Program& program) {
+void FirstParser::parseTypeDecl(ast::Program& program, const std::vector<std::string>& derivedInterfaces) {
     SourceLocation loc = current().loc;
     if (!expect(TokenKind::KwType, "expected 'type'")) return;
     if (current().kind != TokenKind::Identifier) {
@@ -849,14 +870,14 @@ void FirstParser::parseTypeDecl(ast::Program& program) {
         constructors.push_back(std::make_unique<ast::Constructor>(cLoc, typeName, std::move(argTypes)));
         auto type = std::make_unique<ast::ADTType>(cLoc, typeName, std::move(constructors));
         if (current().kind == TokenKind::Semicolon) advance();
-        program.addTypeDecl(std::make_unique<ast::TypeDecl>(loc, typeName, std::move(type), false, std::move(typeParams)));
+        program.addTypeDecl(std::make_unique<ast::TypeDecl>(loc, typeName, std::move(type), false, std::move(typeParams), derivedInterfaces));
         return;
     }
     if (!expect(TokenKind::OpAssign, "expected '=' in type declaration")) return;
     auto type = parseTypeRhs(typeName);
     if (!type) return;
     if (current().kind == TokenKind::Semicolon) advance();
-    program.addTypeDecl(std::make_unique<ast::TypeDecl>(loc, typeName, std::move(type), false, std::move(typeParams)));
+    program.addTypeDecl(std::make_unique<ast::TypeDecl>(loc, typeName, std::move(type), false, std::move(typeParams), derivedInterfaces));
 }
 
 std::unique_ptr<ast::Type> FirstParser::parseTypeRhs(const std::string& typeName) {
@@ -1950,8 +1971,26 @@ std::unique_ptr<ast::Expr> FirstParser::parseDoBlockExpr() {
             std::string fieldName = current().lexeme;
             SourceLocation loc = base->getLocation();
             advance();
-            base = std::make_unique<ast::FieldAccessExpr>(
-                loc, std::move(base), fieldName);
+            // Method call (interface only): receiver.name( args )
+            if (current().kind == TokenKind::LParen) {
+                advance();
+                std::vector<std::unique_ptr<ast::Expr>> args;
+                if (current().kind != TokenKind::RParen) {
+                    while (true) {
+                        auto arg = parseExpression();
+                        if (!arg) break;
+                        args.push_back(std::move(arg));
+                        if (match(TokenKind::Comma)) continue;
+                        break;
+                    }
+                }
+                if (!expect(TokenKind::RParen, "expected ')' after method arguments")) break;
+                base = std::make_unique<ast::MethodCallExpr>(
+                    loc, std::move(base), fieldName, std::move(args));
+            } else {
+                base = std::make_unique<ast::FieldAccessExpr>(
+                    loc, std::move(base), fieldName);
+            }
         } else if (match(TokenKind::LBracket)) {
             // Array indexing: base [ index ]
             auto indexExpr = parseExpression();

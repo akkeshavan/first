@@ -141,6 +141,14 @@ char* first_float_to_string(double x) {
     return strdup_heap(s.c_str());
 }
 
+char* first_bool_to_string(int64_t b) {
+    return strdup_heap(b ? "true" : "false");
+}
+
+char* first_unit_to_string(int64_t) {
+    return strdup_heap("()");
+}
+
 // --- String Comparison (exposed to First) ---
 // Note: The low-level C functions are in string.cpp
 // These wrappers use the same signatures for consistency

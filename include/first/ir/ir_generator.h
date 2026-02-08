@@ -66,6 +66,7 @@ public:
     void visitUnaryExpr(ast::UnaryExpr* node) override;
     void visitVariableExpr(ast::VariableExpr* node) override;
     void visitFunctionCallExpr(ast::FunctionCallExpr* node) override;
+    void visitMethodCallExpr(ast::MethodCallExpr* node) override;
     void visitRangeExpr(ast::RangeExpr* node) override;
     void visitArrayLiteralExpr(ast::ArrayLiteralExpr* node) override;
     void visitArrayIndexExpr(ast::ArrayIndexExpr* node) override;
@@ -173,6 +174,12 @@ private:
     llvm::Value* evaluateUnary(ast::UnaryExpr* expr);
     llvm::Value* evaluateVariable(ast::VariableExpr* expr);
     llvm::Value* evaluateFunctionCall(ast::FunctionCallExpr* expr, bool tailCall = false);
+    llvm::Value* evaluateCallWithValues(const std::string& funcName,
+                                        std::vector<llvm::Value*>& args,
+                                        const std::vector<std::unique_ptr<ast::Type>>* inferredTypeArgs,
+                                        const std::vector<std::unique_ptr<ast::Expr>>* argExprsForFallback,
+                                        const SourceLocation& loc,
+                                        bool tailCall);
     llvm::Value* evaluateArrayLiteral(ast::ArrayLiteralExpr* expr);
     llvm::Value* evaluateArrayIndex(ast::ArrayIndexExpr* expr);
     llvm::Value* evaluateRecordLiteral(ast::RecordLiteralExpr* expr);

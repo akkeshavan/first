@@ -73,6 +73,8 @@ private:
 
     // Eq, Ord, Iterator: check if a type has an implementation of the given interface
     bool typeImplementsInterface(ast::Type* type, const std::string& interfaceName);
+    // Return the function name bound to interface member (e.g. "eq" for Eq, "compare" for Ord), or empty if none
+    std::string getImplementationMemberFunctionName(ast::Type* type, const std::string& interfaceName, const std::string& memberName);
 
     // Resolve ParameterizedType to expanded type by substituting type decl body (for user-defined generics)
     std::unique_ptr<ast::Type> resolveParameterizedType(ast::ParameterizedType* type);
@@ -98,6 +100,7 @@ private:
     ast::Type* inferArrayIndex(ast::ArrayIndexExpr* expr);
     ast::Type* inferRecordLiteral(ast::RecordLiteralExpr* expr);
     ast::Type* inferFieldAccess(ast::FieldAccessExpr* expr);
+    ast::Type* inferMethodCall(ast::MethodCallExpr* expr);
     ast::Type* inferBlockExpr(ast::BlockExpr* expr);
     ast::Type* inferIfExpr(ast::IfExpr* expr);
     ast::Type* inferRangeExpr(ast::RangeExpr* expr);

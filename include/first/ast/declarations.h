@@ -129,20 +129,29 @@ private:
 };
 
 // Type declaration: type Name = Type; or type Name<T,...> = Type; (alias or sum type)
+// May have #derive(ToString, Eq, Ord) to generate implementations.
 class TypeDecl : public ASTNode {
 public:
     TypeDecl(const SourceLocation& location,
              const std::string& typeName,
              std::unique_ptr<Type> type,
              bool isExported = false,
-             std::vector<std::string> typeParams = {})
+             std::vector<std::string> typeParams = {},
+             std::vector<std::string> derivedInterfaces = {})
         : ASTNode(location), typeName_(typeName), type_(std::move(type)),
-          isExported_(isExported), typeParams_(std::move(typeParams)) {}
+          isExported_(isExported), typeParams_(std::move(typeParams)),
+          derivedInterfaces_(std::move(derivedInterfaces)) {}
 
     const std::string& getTypeName() const { return typeName_; }
     Type* getType() const { return type_.get(); }
     const std::vector<std::string>& getTypeParams() const { return typeParams_; }
     bool isGeneric() const { return !typeParams_.empty(); }
+    const std::vector<std::string>& getDerivedInterfaces() const { return derivedInterfaces_; }
+    void setDerivedInterfaces(std::vector<std::string> v) { derivedInterfaces_ = std::move(v); }
+    bool derives(const std::string& iface) const {
+        for (const auto& d : derivedInterfaces_) if (d == iface) return true;
+        return false;
+    }
 
     bool isExported() const { return isExported_; }
 
@@ -157,6 +166,7 @@ private:
     std::unique_ptr<Type> type_;
     bool isExported_;
     std::vector<std::string> typeParams_;
+    std::vector<std::string> derivedInterfaces_;
 };
 
 // Interface member: name and type (e.g. show: function(T) -> String)

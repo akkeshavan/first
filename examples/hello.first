@@ -1,5 +1,9 @@
-// Hello World example for First programming language
+// Minimal test: derive(ToString) and println(toString(x))
+derive(ToString) type Point = { x: Float, y: Float };
 
-interaction main() -> Unit {
-    print("Hello, World!");
+interaction main() {
+    let p: Point = { x: 1.5, y: 2.5 };
+    println(toString(p));
+    println(toString(42));
+    println(toString(true));
 }

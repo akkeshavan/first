@@ -14,6 +14,7 @@ namespace ast {
     class ArrayIndexExpr;
     class RecordLiteralExpr;
     class FieldAccessExpr;
+    class MethodCallExpr;
     class ConstructorExpr;
     class MatchExpr;
     class LambdaExpr;
@@ -60,6 +61,7 @@ public:
     virtual void visitArrayIndexExpr(ArrayIndexExpr* node) {}
     virtual void visitRecordLiteralExpr(RecordLiteralExpr* node) {}
     virtual void visitFieldAccessExpr(FieldAccessExpr* node) {}
+    virtual void visitMethodCallExpr(MethodCallExpr* node) {}
     virtual void visitConstructorExpr(ConstructorExpr* node) {}
     virtual void visitMatchExpr(MatchExpr* node) {}
     virtual void visitLambdaExpr(LambdaExpr* node) {}

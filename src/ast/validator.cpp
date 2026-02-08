@@ -100,6 +100,22 @@ void ASTValidator::validateExpr(Expr* expr, const std::string& context) {
                 reportError(call->getLocation(), "Null argument in function call in " + context);
             }
         }
+    } else if (auto* methodCall = dynamic_cast<MethodCallExpr*>(expr)) {
+        if (!methodCall->getReceiver()) {
+            reportError(methodCall->getLocation(), "Method call missing receiver in " + context);
+        } else {
+            validateExpr(methodCall->getReceiver(), context + " (method receiver)");
+        }
+        if (methodCall->getMethodName().empty()) {
+            reportError(methodCall->getLocation(), "Method call missing method name in " + context);
+        }
+        for (const auto& arg : methodCall->getArgs()) {
+            if (arg) {
+                validateExpr(arg.get(), context + " (method argument)");
+            } else {
+                reportError(methodCall->getLocation(), "Null argument in method call in " + context);
+            }
+        }
     } else if (auto* var = dynamic_cast<VariableExpr*>(expr)) {
         if (var->getName().empty()) {
             reportError(var->getLocation(), "Variable expression missing name in " + context);

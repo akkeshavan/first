@@ -281,6 +281,20 @@ bool TypeChecker::typeImplementsInterface(ast::Type* type, const std::string& in
             }
         }
     }
+    // Built-in ToString for Int, Float, Bool, String — no user implementation required
+    if (interfaceName == "ToString") {
+        if (auto* prim = dynamic_cast<ast::PrimitiveType*>(type)) {
+            switch (prim->getKind()) {
+                case ast::PrimitiveType::Kind::Int:
+                case ast::PrimitiveType::Kind::Float:
+                case ast::PrimitiveType::Kind::Bool:
+                case ast::PrimitiveType::Kind::String:
+                case ast::PrimitiveType::Kind::Unit:
+                    return true;
+                default: break;
+            }
+        }
+    }
     // Built-in Eq and Ord for Int, Float, Bool, String — no user implementation required
     if (interfaceName == "Eq" || interfaceName == "Ord") {
         if (auto* prim = dynamic_cast<ast::PrimitiveType*>(type)) {
@@ -334,6 +348,35 @@ bool TypeChecker::typeImplementsInterface(ast::Type* type, const std::string& in
         }
     }
     return false;
+}
+
+std::string TypeChecker::getImplementationMemberFunctionName(ast::Type* type, const std::string& interfaceName, const std::string& memberName) {
+    if (!type) return {};
+    type = getEffectiveType(type);
+    auto findIn = [this, type, &interfaceName, &memberName](ast::Program* program) -> std::string {
+        if (!program) return {};
+        for (const auto& impl : program->getImplementations()) {
+            if (!impl || impl->getInterfaceName() != interfaceName) continue;
+            const auto& typeArgs = impl->getTypeArgs();
+            if (typeArgs.size() != 1) continue;
+            if (!typesEqual(typeArgs[0].get(), type)) continue;
+            ast::ImplementationMember* member = impl->getMember(memberName);
+            if (!member || !member->getValue()) return {};
+            if (auto* varExpr = dynamic_cast<ast::VariableExpr*>(member->getValue()))
+                return varExpr->getName();
+            return {};
+        }
+        return {};
+    };
+    std::string name = findIn(currentProgram_);
+    if (!name.empty()) return name;
+    if (moduleResolver_) {
+        for (const std::string& modName : moduleResolver_->getLoadedModuleNames()) {
+            name = findIn(moduleResolver_->getModule(modName));
+            if (!name.empty()) return name;
+        }
+    }
+    return {};
 }
 
 void TypeChecker::checkStatement(ast::Stmt* stmt) {
@@ -503,6 +546,8 @@ ast::Type* TypeChecker::inferExpression(ast::Expr* expr) {
         return inferRecordLiteral(recordLit);
     } else if (auto* fieldAccess = dynamic_cast<ast::FieldAccessExpr*>(expr)) {
         return inferFieldAccess(fieldAccess);
+    } else if (auto* methodCall = dynamic_cast<ast::MethodCallExpr*>(expr)) {
+        return inferMethodCall(methodCall);
     } else if (auto* blockExpr = dynamic_cast<ast::BlockExpr*>(expr)) {
         return inferBlockExpr(blockExpr);
     } else if (auto* ifExpr = dynamic_cast<ast::IfExpr*>(expr)) {
@@ -620,6 +665,18 @@ ast::Type* TypeChecker::inferBinary(ast::BinaryExpr* expr) {
         
         // Comparisons return Bool
         if (isAssignable(leftType, rightType) || isAssignable(rightType, leftType)) {
+            ast::Type* opType = getEffectiveType(leftType);
+            if (isEquality && typeImplementsInterface(opType, "Eq")) {
+                std::string eqFn = getImplementationMemberFunctionName(opType, "Eq", "eq");
+                if (!eqFn.empty()) expr->setEqFunctionName(eqFn);
+            }
+            if (expr->getOp() == ast::BinaryExpr::Op::Lt || expr->getOp() == ast::BinaryExpr::Op::Le ||
+                expr->getOp() == ast::BinaryExpr::Op::Gt || expr->getOp() == ast::BinaryExpr::Op::Ge) {
+                if (typeImplementsInterface(opType, "Ord")) {
+                    std::string cmpFn = getImplementationMemberFunctionName(opType, "Ord", "compare");
+                    if (!cmpFn.empty()) expr->setCompareFunctionName(cmpFn);
+                }
+            }
             return createBoolType().release();
         }
         
@@ -776,6 +833,12 @@ ast::Type* TypeChecker::inferRecordLiteral(ast::RecordLiteralExpr* expr) {
 ast::Type* TypeChecker::inferFieldAccess(ast::FieldAccessExpr* expr) {
     ast::Type* baseType = inferType(expr->getRecord());
     if (!baseType) return nullptr;
+    // Resolve GenericType(typeName) to the type decl's type (e.g. for derived toString param x: Point)
+    if (auto* gen = dynamic_cast<ast::GenericType*>(baseType)) {
+        auto it = typeDecls_.find(gen->getName());
+        if (it != typeDecls_.end() && it->second)
+            baseType = it->second;
+    }
     auto* recType = dynamic_cast<ast::RecordType*>(baseType);
     if (recType) {
         ast::RecordField* field = recType->getField(expr->getFieldName());
@@ -784,6 +847,99 @@ ast::Type* TypeChecker::inferFieldAccess(ast::FieldAccessExpr* expr) {
         }
     }
     // Base might be ParameterizedType for a type alias - would need type alias resolution.
+    return nullptr;
+}
+
+ast::Type* TypeChecker::inferMethodCall(ast::MethodCallExpr* expr) {
+    ast::Type* receiverType = inferType(expr->getReceiver());
+    if (!receiverType) return nullptr;
+    receiverType = getEffectiveType(receiverType);
+
+    const std::string& methodName = expr->getMethodName();
+    const size_t nArgs = expr->getArgs().size();
+    // Full argument list: receiver + explicit args (so methodName(receiver, arg1, arg2))
+    const size_t totalArgs = 1 + nArgs;
+
+    auto collectInterfaces = [this]() -> std::vector<ast::InterfaceDecl*> {
+        std::vector<ast::InterfaceDecl*> out;
+        if (currentProgram_) {
+            for (const auto& iface : currentProgram_->getInterfaces()) {
+                if (iface) out.push_back(iface.get());
+            }
+        }
+        if (moduleResolver_) {
+            for (const std::string& modName : moduleResolver_->getLoadedModuleNames()) {
+                ast::Program* mod = moduleResolver_->getModule(modName);
+                if (mod) {
+                    for (const auto& iface : mod->getInterfaces()) {
+                        if (iface) out.push_back(iface.get());
+                    }
+                }
+            }
+        }
+        return out;
+    };
+
+    for (ast::InterfaceDecl* iface : collectInterfaces()) {
+        if (!typeImplementsInterface(receiverType, iface->getName()))
+            continue;
+        ast::InterfaceMember* member = iface->getMember(methodName);
+        if (!member || !member->getType()) continue;
+        ast::Type* memberType = member->getType();
+        auto* funcType = dynamic_cast<ast::FunctionType*>(memberType);
+        if (!funcType) continue;
+        const auto& params = funcType->getParamTypes();
+        if (params.size() != totalArgs) continue;
+
+        // Substitute interface type param (e.g. T) with receiver type
+        std::map<std::string, ast::Type*> subst;
+        const auto& gp = iface->getGenericParams();
+        if (gp.size() == 1) subst[gp[0]] = receiverType;
+
+        std::vector<std::unique_ptr<ast::Type>> expectedStorage;
+        std::vector<ast::Type*> expectedTypes;
+        for (const auto& p : params) {
+            if (!p) continue;
+            std::unique_ptr<ast::Type> sub = subst.empty() ? copyType(p.get()) : substituteType(p.get(), subst);
+            if (!sub) continue;
+            expectedTypes.push_back(sub.get());
+            expectedStorage.push_back(std::move(sub));
+        }
+        if (expectedTypes.size() != totalArgs) continue;
+
+        // Check receiver type
+        if (!typesEqual(receiverType, expectedTypes[0])) continue;
+        // Check explicit args
+        bool argsOk = true;
+        for (size_t i = 0; i < nArgs; ++i) {
+            ast::Type* argType = inferType(expr->getArgs()[i].get());
+            if (!argType || !typesEqual(argType, expectedTypes[1 + i])) {
+                argsOk = false;
+                break;
+            }
+        }
+        if (!argsOk) continue;
+
+        // Match: set inferred type args for IR (receiver type only; IR builds [receiver, ...args])
+        std::unique_ptr<ast::Type> recCopy = copyType(receiverType);
+        if (recCopy) {
+            std::vector<std::unique_ptr<ast::Type>> typeArgs;
+            typeArgs.push_back(std::move(recCopy));
+            expr->setInferredTypeArgs(std::move(typeArgs));
+        }
+        ast::Type* returnType = funcType->getReturnType();
+        if (!returnType) return nullptr;
+        if (!subst.empty()) {
+            std::unique_ptr<ast::Type> subRet = substituteType(returnType, subst);
+            return subRet ? subRet.release() : copyType(returnType).release();
+        }
+        return copyType(returnType).release();
+    }
+
+    errorReporter_.error(
+        expr->getLocation(),
+        "No interface method '" + methodName + "' for type (method call only resolves interface methods)"
+    );
     return nullptr;
 }
 
@@ -997,6 +1153,21 @@ ast::Type* TypeChecker::inferStdlibCall(ast::FunctionCallExpr* expr) {
     if (name == "intToString" || name == "floatToString") {
         if (n != 1) return err(name + " expects 1 argument");
         if (!arg(0)) return nullptr;
+        return createStringType().release();
+    }
+    // toString(x) — interface method; valid when type of x implements ToString
+    if (name == "toString") {
+        if (n != 1) return err("toString(x) expects 1 argument");
+        ast::Type* arg0Type = arg(0);
+        if (!arg0Type) return nullptr;
+        if (!typeImplementsInterface(arg0Type, "ToString"))
+            return err("type does not implement ToString");
+        std::unique_ptr<ast::Type> argCopy = copyType(arg0Type);
+        if (argCopy) {
+            std::vector<std::unique_ptr<ast::Type>> typeArgs;
+            typeArgs.push_back(std::move(argCopy));
+            expr->setInferredTypeArgs(std::move(typeArgs));
+        }
         return createStringType().release();
     }
     // String comparison

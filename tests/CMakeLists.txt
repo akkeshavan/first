@@ -51,6 +51,7 @@ target_sources(test_compiler PRIVATE
     ${CMAKE_SOURCE_DIR}/src/ast/lambda_expr.cpp
     ${CMAKE_SOURCE_DIR}/src/ast/select_branch.cpp
     ${CMAKE_SOURCE_DIR}/src/semantic/symbol_table.cpp
+    ${CMAKE_SOURCE_DIR}/src/semantic/derive_pass.cpp
     ${CMAKE_SOURCE_DIR}/src/semantic/type_checker.cpp
     ${CMAKE_SOURCE_DIR}/src/semantic/semantic_checker.cpp
     ${CMAKE_SOURCE_DIR}/src/semantic/module_resolver.cpp

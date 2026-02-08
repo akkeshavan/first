@@ -33,6 +33,8 @@ int64_t first_string_to_int(const char* s);
 double first_string_to_float(const char* s);
 char* first_int_to_string(int64_t n);   // caller must free
 char* first_float_to_string(double x);  // caller must free
+char* first_bool_to_string(int64_t b);  // 0 -> "false", non-zero -> "true"; caller must free
+char* first_unit_to_string(int64_t);    // ignores arg, returns "()"; caller must free
 
 // --- Array (length: compiler intrinsic; map/reduce/filter for Int arrays) ---
 int64_t first_array_length(const void* arr, int64_t known_len);  // identity: returns known_len for ABI

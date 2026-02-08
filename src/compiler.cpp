@@ -6,6 +6,7 @@
 #include "first/semantic/type_checker.h"
 #include "first/semantic/semantic_checker.h"
 #include "first/semantic/module_resolver.h"
+#include "first/semantic/derive_pass.h"
 #include "first/ir/ir_generator.h"
 #include <fstream>
 #include <sstream>
@@ -255,6 +256,9 @@ bool Compiler::compileFromStringNoModules(const std::string& source, const std::
                 return false;
             }
         }
+
+        // 3.0: Generate implementations for #derive(ToString, Eq, Ord)
+        semantic::runDerivePass(ast_.get());
 
         // 3.1/3.2: Type checking and semantic restrictions (including multi-module:
         // TypeChecker resolves imported symbols via moduleResolver when set).

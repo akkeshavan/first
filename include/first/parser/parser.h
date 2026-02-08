@@ -79,7 +79,7 @@
      void parseFunctionDecl(ast::Program& program, bool exported);
     void parseInterfaceDecl(ast::Program& program);
     void parseImplementationDecl(ast::Program& program);
-    void parseTypeDecl(ast::Program& program);
+    void parseTypeDecl(ast::Program& program, const std::vector<std::string>& derivedInterfaces = {});
 
      // Types
      std::unique_ptr<ast::Type> parseType();

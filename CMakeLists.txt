@@ -148,6 +148,7 @@ set(COMPILER_SOURCES
     src/semantic/type_checker.cpp
     src/semantic/semantic_checker.cpp
     src/semantic/module_resolver.cpp
+    src/semantic/derive_pass.cpp
     src/ir/ir_generator.cpp
 )
 
