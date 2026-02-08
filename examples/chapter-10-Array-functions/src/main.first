@@ -1,0 +1,84 @@
+// =============================================================================
+// Chapter 10: Array functions — immutability, creating arrays, and the array API
+// =============================================================================
+// Arrays are immutable: insertAt, deleteAt, filter return new arrays; the
+// original is never changed. We create arrays with literals, recursively with
+// insertAt, and by using filter/reduce. We use for-in to iterate over arrays
+// (or ranges), not to mutate an array in place.
+// =============================================================================
+
+import * "Prelude";
+
+// -----------------------------------------------------------------------------
+// Building an array recursively: [lo, lo+1, ..., hi] (only for lo <= hi)
+// Uses insertAt to add each new element at the end; original array is unchanged.
+// -----------------------------------------------------------------------------
+function rangeToArray(lo: Int, hi: Int) -> Array<Int> {
+    return if (lo > hi) {
+        let sentinel: Array<Int> = [0];
+        sentinel
+    } else if (lo == hi) {
+        let single: Array<Int> = [lo];
+        single
+    } else {
+        let rest = rangeToArray(lo, hi - 1);
+        let len = arrayLength(rest);
+        let out: Array<Int> = match insertAt(rest, hi, len) {
+            Some(a) => a,
+            None => rest
+        };
+        out
+    };
+}
+
+// -----------------------------------------------------------------------------
+// main — examples of all array functions and immutability
+// -----------------------------------------------------------------------------
+interaction main() -> Unit {
+    // ----- Literals (immutable: we never modify these) -----
+    let a: Array<Int> = [1, 2, 3];
+    println("arrayLength([1,2,3]) = " + intToString(arrayLength(a)));
+
+    // ----- reduce: fold left — e.g. sum -----
+    let sum: Int = reduce(a, 0, function(acc: Int, cur: Int) -> Int { return acc + cur; });
+    println("reduce(a, 0, +) sum = " + intToString(sum));
+
+    // ----- reduceRight: fold right — e.g. "last" element (cur when acc unused) -----
+    let last: Int = reduceRight(a, 0, function(cur: Int, acc: Int) -> Int { return cur; });
+    println("reduceRight last element = " + intToString(last));
+
+    // ----- filter: new array of elements where predicate is true -----
+    let evens: Array<Int> = filter(a, function(x: Int) -> Bool { return x % 2 == 0; });
+    println("filter(even) length = " + intToString(arrayLength(evens)));
+    println("evens[0] = " + intToString(evens[0]));
+
+    // ----- Creating an array recursively with insertAt -----
+    let oneToFive: Array<Int> = rangeToArray(1, 5);
+    println("rangeToArray(1,5) length = " + intToString(arrayLength(oneToFive)));
+
+    // ----- for-in over an array (iterate; we do not mutate the array) -----
+    // Use a literal here: for-in requires array metadata; arrays returned from functions
+    // (e.g. rangeToArray) are heap-backed and do not have metadata in the current IR.
+    println("for-in over [1, 2, 3, 4, 5]:");
+    for x in [1, 2, 3, 4, 5] {
+        println("  " + intToString(x));
+    }
+
+    // ----- insertAt: returns Option<Array<T>>; original unchanged -----
+    match insertAt(a, 10, 1) {
+        Some(b) => {
+            println("insertAt(a, 10, 1) ok; b[1] = " + intToString(b[1]));
+        },
+        None => println("insertAt failed (bad index)")
+    }
+
+    // ----- deleteAt: returns Option<Array<T>>; original unchanged -----
+    match deleteAt(a, 1) {
+        Some(c) => {
+            println("deleteAt(a, 1) ok; c[0] = " + intToString(c[0]) + ", c[1] = " + intToString(c[1]));
+        },
+        None => println("deleteAt failed (bad index)")
+    }
+
+    println("Original a unchanged: a[0] = " + intToString(a[0]) + ", a[1] = " + intToString(a[1]));
+}

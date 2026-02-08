@@ -225,6 +225,35 @@ int64_t* first_array_filter_int_positive(const int64_t* arr, int64_t len, int64_
     return out;
 }
 
+void* first_array_insert_at(const void* arr, int64_t len, int64_t pos, const void* value, size_t elem_size) {
+    if (!arr || !value || elem_size == 0) return nullptr;
+    if (pos < 0 || pos > len) return nullptr;
+    const char* src = static_cast<const char*>(arr);
+    size_t new_len = static_cast<size_t>(len) + 1;
+    char* out = static_cast<char*>(first_alloc(new_len * elem_size));
+    if (!out) return nullptr;
+    for (int64_t i = 0; i < pos; ++i)
+        std::memcpy(out + i * elem_size, src + i * elem_size, elem_size);
+    std::memcpy(out + pos * elem_size, value, elem_size);
+    for (int64_t i = pos; i < len; ++i)
+        std::memcpy(out + (i + 1) * elem_size, src + i * elem_size, elem_size);
+    return out;
+}
+
+void* first_array_delete_at(const void* arr, int64_t len, int64_t pos, size_t elem_size) {
+    if (!arr || elem_size == 0 || len <= 0) return nullptr;
+    if (pos < 0 || pos >= len) return nullptr;
+    const char* src = static_cast<const char*>(arr);
+    size_t new_len = static_cast<size_t>(len) - 1;
+    char* out = static_cast<char*>(first_alloc(new_len * elem_size));
+    if (!out) return nullptr;
+    for (int64_t i = 0; i < pos; ++i)
+        std::memcpy(out + i * elem_size, src + i * elem_size, elem_size);
+    for (int64_t i = pos + 1; i < len; ++i)
+        std::memcpy(out + (i - 1) * elem_size, src + i * elem_size, elem_size);
+    return out;
+}
+
 // --- Socket (TCP client) ---
 int64_t first_socket_connect(const char* host, int64_t port) {
 #ifndef _WIN32

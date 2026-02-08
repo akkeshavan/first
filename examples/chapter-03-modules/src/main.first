@@ -2,7 +2,7 @@
 // Use "module main" so the interaction main() is the program entry point.
 module main;
 
-import { compute } "compute";
+import { compute } "./compute";
 
 interaction main() -> Unit {
     println("3² + 4² = " + intToString(compute()));

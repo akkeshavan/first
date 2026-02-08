@@ -554,6 +554,16 @@ ast::Type* TypeChecker::inferExpression(ast::Expr* expr) {
         return inferIfExpr(ifExpr);
     } else if (auto* rangeExpr = dynamic_cast<ast::RangeExpr*>(expr)) {
         return inferRangeExpr(rangeExpr);
+    } else if (auto* lambdaExpr = dynamic_cast<ast::LambdaExpr*>(expr)) {
+        std::vector<std::unique_ptr<ast::Type>> paramTypes;
+        for (const auto& p : lambdaExpr->getParameters()) {
+            if (!p || !p->getType()) return nullptr;
+            paramTypes.push_back(copyType(p->getType()));
+        }
+        if (!lambdaExpr->getReturnType()) return nullptr;
+        std::unique_ptr<ast::Type> retType = copyType(lambdaExpr->getReturnType());
+        if (!retType) return nullptr;
+        return createFunctionType(std::move(paramTypes), std::move(retType), false).release();
     }
     
     return nullptr;
@@ -948,14 +958,16 @@ ast::Type* TypeChecker::inferBlockExpr(ast::BlockExpr* expr) {
     for (const auto& stmt : expr->getStatements()) {
         checkStatement(stmt.get());
     }
-    ast::Type* resultType = nullptr;
+    std::unique_ptr<ast::Type> resultCopy;
     if (expr->hasValueExpr()) {
-        resultType = inferType(expr->getValueExpr());
+        ast::Type* resultType = inferType(expr->getValueExpr());
+        // Copy before exitScope: resultType may point into the symbol table (e.g. variable type).
+        resultCopy = resultType ? copyType(resultType) : nullptr;
     } else {
-        resultType = createUnitType().release();
+        resultCopy = createUnitType();
     }
     symbolTable_.exitScope();
-    return resultType;
+    return resultCopy ? resultCopy.release() : nullptr;
 }
 
 ast::Type* TypeChecker::inferIfExpr(ast::IfExpr* expr) {
@@ -972,16 +984,22 @@ ast::Type* TypeChecker::inferIfExpr(ast::IfExpr* expr) {
     if (!condType) return nullptr;
     ast::Type* thenType = thenBranch ? inferType(thenBranch) : nullptr;
     if (!thenType) return nullptr;
+    // Copy then type before inferring else: inferType(elseBranch) can be a nested IfExpr
+    // and may invalidate thenType (e.g. scope/type state changed).
+    std::unique_ptr<ast::Type> thenCopy = copyType(thenType);
+    if (!thenCopy) return nullptr;
     ast::Type* elseType = inferType(elseBranch);
     if (!elseType) return nullptr;
-    if (!typesEqual(thenType, elseType)) {
+    std::unique_ptr<ast::Type> elseCopy = copyType(elseType);
+    if (!elseCopy) return nullptr;
+    if (!typesEqual(thenCopy.get(), elseCopy.get())) {
         errorReporter_.error(
             expr->getLocation(),
             "if expression branches must have the same type"
         );
         return nullptr;
     }
-    return copyType(thenType).release();
+    return thenCopy.release();
 }
 
 ast::Type* TypeChecker::inferRangeExpr(ast::RangeExpr* expr) {
@@ -1207,7 +1225,7 @@ ast::Type* TypeChecker::inferStdlibCall(ast::FunctionCallExpr* expr) {
         if (!arg(0) || !arg(1) || !arg(2)) return nullptr;
         return createStringType().release();
     }
-    // Array
+    // Array (Int-specific intrinsics; generic append/insertAt/map are in Arrays module + runtime)
     if (name == "arrayLength") {
         if (n != 1) return err("arrayLength(arr) expects 1 argument");
         if (!arg(0)) return nullptr;
@@ -1241,6 +1259,139 @@ ast::Type* TypeChecker::inferStdlibCall(ast::FunctionCallExpr* expr) {
         if (!arg(0)) return nullptr;
         if (!isArrayOfInt(arg(0))) return err("arrayFilterIntPositive expects Array<Int>");
         return createArrayType(createIntType()).release();
+    }
+    // Array element type helper (ArrayType or ParameterizedType "Array")
+    auto getArrayElementType = [this](ast::Type* t) -> ast::Type* {
+        if (!t) return nullptr;
+        if (auto* arr = dynamic_cast<ast::ArrayType*>(t)) return arr->getElementType();
+        if (auto* p = dynamic_cast<ast::ParameterizedType*>(t))
+            if (p->getBaseName() == "Array" && p->getTypeArgs().size() == 1)
+                return p->getTypeArgs()[0].get();
+        return nullptr;
+    };
+    // insertAt<T>(a: Array<T>, value: T, position: Int) -> Option<Array<T>>
+    if (name == "insertAt") {
+        if (n != 3) return err("insertAt(a, value, position) expects 3 arguments");
+        ast::Type* arrType = arg(0);
+        ast::Type* valueType = arg(1);
+        ast::Type* posType = arg(2);
+        if (!arrType || !valueType || !posType) return nullptr;
+        ast::Type* elemT = getArrayElementType(arrType);
+        if (!elemT) return err("insertAt first argument must be Array<T>");
+        if (!typesEqual(createIntType().get(), posType)) return err("insertAt position must be Int");
+        if (!isAssignable(valueType, elemT)) return err("insertAt value type must match array element type");
+        std::unique_ptr<ast::Type> elemCopy = copyType(elemT);
+        if (elemCopy) {
+            std::vector<std::unique_ptr<ast::Type>> typeArgs;
+            typeArgs.push_back(std::move(elemCopy));
+            expr->setInferredTypeArgs(std::move(typeArgs));
+        }
+        std::unique_ptr<ast::Type> arrCopy = copyType(arrType);
+        if (!arrCopy) return nullptr;
+        std::vector<std::unique_ptr<ast::Type>> optionArg;
+        optionArg.push_back(std::move(arrCopy));
+        return new ast::ParameterizedType(expr->getLocation(), "Option", std::move(optionArg));
+    }
+    // deleteAt<T>(a: Array<T>, position: Int) -> Option<Array<T>>
+    if (name == "deleteAt") {
+        if (n != 2) return err("deleteAt(a, position) expects 2 arguments");
+        ast::Type* arrType = arg(0);
+        ast::Type* posType = arg(1);
+        if (!arrType || !posType) return nullptr;
+        ast::Type* elemT = getArrayElementType(arrType);
+        if (!elemT) return err("deleteAt first argument must be Array<T>");
+        if (!typesEqual(createIntType().get(), posType)) return err("deleteAt position must be Int");
+        std::unique_ptr<ast::Type> elemCopy = copyType(elemT);
+        if (elemCopy) {
+            std::vector<std::unique_ptr<ast::Type>> typeArgs;
+            typeArgs.push_back(std::move(elemCopy));
+            expr->setInferredTypeArgs(std::move(typeArgs));
+        }
+        std::unique_ptr<ast::Type> arrCopy = copyType(arrType);
+        if (!arrCopy) return nullptr;
+        std::vector<std::unique_ptr<ast::Type>> optionArg;
+        optionArg.push_back(std::move(arrCopy));
+        return new ast::ParameterizedType(expr->getLocation(), "Option", std::move(optionArg));
+    }
+    // reduce<T,U>(a: Array<T>, init: U, f: (acc: U, cur: T) -> U) -> U  (foldLeft)
+    if (name == "reduce") {
+        if (n != 3) return err("reduce(a, init, f) expects 3 arguments");
+        ast::Type* arrType = arg(0);
+        ast::Type* initType = arg(1);
+        ast::Type* fType = arg(2);
+        if (!arrType || !initType || !fType) return nullptr;
+        ast::Type* elemT = getArrayElementType(arrType);
+        if (!elemT) return err("reduce first argument must be Array<T>");
+        ast::FunctionType* func = dynamic_cast<ast::FunctionType*>(fType);
+        if (!func || func->getParamTypes().size() != 2) return err("reduce third argument must be function (acc, cur) -> result");
+        ast::Type* p0 = func->getParamTypes()[0].get();
+        ast::Type* p1 = func->getParamTypes()[1].get();
+        ast::Type* ret = func->getReturnType();
+        if (!isAssignable(initType, p0) || !isAssignable(elemT, p1) || !isAssignable(ret, initType))
+            return err("reduce: f must be (acc: U, cur: T) -> U with init: U and array: Array<T>");
+        std::unique_ptr<ast::Type> elemCopy = copyType(elemT);
+        std::unique_ptr<ast::Type> retCopy = copyType(ret);
+        if (elemCopy && retCopy) {
+            std::vector<std::unique_ptr<ast::Type>> typeArgs;
+            typeArgs.push_back(std::move(elemCopy));
+            typeArgs.push_back(std::move(retCopy));
+            expr->setInferredTypeArgs(std::move(typeArgs));
+        }
+        return copyType(ret).release();
+    }
+    // reduceRight<T,U>(a: Array<T>, init: U, f: (cur: T, acc: U) -> U) -> U  (foldRight)
+    if (name == "reduceRight") {
+        if (n != 3) return err("reduceRight(a, init, f) expects 3 arguments");
+        ast::Type* arrType = arg(0);
+        ast::Type* initType = arg(1);
+        ast::Type* fType = arg(2);
+        if (!arrType || !initType || !fType) return nullptr;
+        ast::Type* elemT = getArrayElementType(arrType);
+        if (!elemT) return err("reduceRight first argument must be Array<T>");
+        ast::FunctionType* func = dynamic_cast<ast::FunctionType*>(fType);
+        if (!func || func->getParamTypes().size() != 2) return err("reduceRight third argument must be function (cur, acc) -> result");
+        ast::Type* p0 = func->getParamTypes()[0].get();
+        ast::Type* p1 = func->getParamTypes()[1].get();
+        ast::Type* ret = func->getReturnType();
+        if (!isAssignable(elemT, p0) || !isAssignable(initType, p1) || !isAssignable(ret, initType))
+            return err("reduceRight: f must be (cur: T, acc: U) -> U with init: U and array: Array<T>");
+        std::unique_ptr<ast::Type> elemCopy = copyType(elemT);
+        std::unique_ptr<ast::Type> retCopy = copyType(ret);
+        if (elemCopy && retCopy) {
+            std::vector<std::unique_ptr<ast::Type>> typeArgs;
+            typeArgs.push_back(std::move(elemCopy));
+            typeArgs.push_back(std::move(retCopy));
+            expr->setInferredTypeArgs(std::move(typeArgs));
+        }
+        return copyType(ret).release();
+    }
+    // filter<T>(a: Array<T>, p: (item: T) -> Bool) -> Array<T>
+    if (name == "filter") {
+        if (n != 2) return err("filter(a, p) expects 2 arguments");
+        ast::Type* arrType = arg(0);
+        ast::Type* pType = arg(1);
+        if (!arrType || !pType) return nullptr;
+        ast::Type* elemT = getArrayElementType(arrType);
+        if (!elemT) return err("filter first argument must be Array<T>");
+        ast::FunctionType* func = dynamic_cast<ast::FunctionType*>(pType);
+        if (!func || func->getParamTypes().size() != 1) return err("filter second argument must be function (item: T) -> Bool");
+        ast::Type* paramT = func->getParamTypes()[0].get();
+        ast::Type* retT = func->getReturnType();
+        if (!retT || !isAssignable(elemT, paramT)) return err("filter: p must be (item: T) -> Bool with array: Array<T>");
+        ast::PrimitiveType* boolType = dynamic_cast<ast::PrimitiveType*>(retT);
+        if (!boolType || boolType->getKind() != ast::PrimitiveType::Kind::Bool)
+            return err("filter: predicate must return Bool");
+        std::unique_ptr<ast::Type> elemCopy = copyType(elemT);
+        if (elemCopy) {
+            std::vector<std::unique_ptr<ast::Type>> typeArgs;
+            typeArgs.push_back(std::move(elemCopy));
+            expr->setInferredTypeArgs(std::move(typeArgs));
+        }
+        std::unique_ptr<ast::Type> elemCopyRet = copyType(elemT);
+        if (!elemCopyRet) return nullptr;
+        std::vector<std::unique_ptr<ast::Type>> arrArg;
+        arrArg.push_back(std::move(elemCopyRet));
+        return new ast::ParameterizedType(expr->getLocation(), "Array", std::move(arrArg));
     }
     // Socket
     if (name == "socketConnect") {
@@ -2661,46 +2812,57 @@ void TypeChecker::bindPatternVariables(ast::Pattern* pattern, ast::Type* matched
         ast::Type* typeForCtor = matchedType;
         if (auto* param = dynamic_cast<ast::ParameterizedType*>(matchedType)) {
             // Use AST ADT for constructor lookup; substitute each arg type into local copies
-            // so we never hold a pointer to a temporary resolved ADT (avoids use-after-free in dynamic_cast).
             const std::string& baseName = param->getBaseName();
             const auto& typeArgs = param->getTypeArgs();
+            ast::ADTType* astADT = nullptr;
+            std::vector<std::string> typeParamNames;
             auto it = typeDecls_.find(baseName);
             auto pit = typeDeclParams_.find(baseName);
-            if (it != typeDecls_.end() && it->second && pit != typeDeclParams_.end() &&
-                !pit->second.empty() && pit->second.size() == typeArgs.size()) {
+            if (it != typeDecls_.end() && it->second && pit != typeDeclParams_.end()) {
                 ast::Type* baseType = it->second;
-                if (!baseType) { typeForCtor = matchedType; }
-                else {
-                    auto* astADT = dynamic_cast<ast::ADTType*>(baseType);
-                    if (astADT) {
-                        std::map<std::string, ast::Type*> subs;
-                        for (size_t i = 0; i < pit->second.size(); ++i)
-                            if (typeArgs[i]) subs[pit->second[i]] = typeArgs[i].get();
-                        ast::Constructor* ctor = nullptr;
-                        for (const auto& c : astADT->getConstructors()) {
-                            if (c && c->getName() == cp->getConstructorName()) {
-                                ctor = c.get();
-                                break;
-                            }
+                astADT = dynamic_cast<ast::ADTType*>(baseType);
+                if (pit->second.size() == typeArgs.size()) typeParamNames = pit->second;
+            }
+            // Resolve from loaded modules (e.g. Option from Prelude) when not in current program
+            if (!astADT && moduleResolver_) {
+                for (const std::string& modName : moduleResolver_->getLoadedModuleNames()) {
+                    ast::Program* mod = moduleResolver_->getModule(modName);
+                    if (!mod) continue;
+                    for (const auto& typeDecl : mod->getTypeDecls()) {
+                        if (!typeDecl || typeDecl->getTypeName() != baseName) continue;
+                        ast::Type* ty = typeDecl->getType();
+                        astADT = dynamic_cast<ast::ADTType*>(ty);
+                        if (astADT) {
+                            if (typeDecl->isGeneric()) typeParamNames = typeDecl->getTypeParams();
+                            break;
                         }
-                        if (ctor) {
-                            const auto& argTypes = ctor->getArgumentTypes();
-                            const auto& argPatterns = cp->getArguments();
-                            std::vector<std::unique_ptr<ast::Type>> substitutedArgTypes;
-                            for (size_t i = 0; i < argTypes.size() && i < argPatterns.size(); ++i) {
-                                if (!argPatterns[i] || !argTypes[i]) continue;
-                                ast::Type* argTy = argTypes[i].get();
-                                if (!argTy) continue;
-                                auto sub = substituteType(argTy, subs);
-                                if (sub)
-                                    substitutedArgTypes.push_back(std::move(sub));
-                            }
-                            if (substitutedArgTypes.size() == argPatterns.size()) {
-                                for (size_t i = 0; i < substitutedArgTypes.size(); ++i)
-                                    bindPatternVariables(argPatterns[i].get(), substitutedArgTypes[i].get());
-                                return;
-                            }
-                        }
+                    }
+                    if (astADT) break;
+                }
+            }
+            if (astADT && typeParamNames.size() == typeArgs.size()) {
+                std::map<std::string, ast::Type*> subs;
+                for (size_t i = 0; i < typeParamNames.size(); ++i)
+                    if (typeArgs[i]) subs[typeParamNames[i]] = typeArgs[i].get();
+                ast::Constructor* ctor = nullptr;
+                for (const auto& c : astADT->getConstructors()) {
+                    if (c && c->getName() == cp->getConstructorName()) { ctor = c.get(); break; }
+                }
+                if (ctor) {
+                    const auto& argTypes = ctor->getArgumentTypes();
+                    const auto& argPatterns = cp->getArguments();
+                    std::vector<std::unique_ptr<ast::Type>> substitutedArgTypes;
+                    for (size_t i = 0; i < argTypes.size() && i < argPatterns.size(); ++i) {
+                        if (!argPatterns[i] || !argTypes[i]) continue;
+                        ast::Type* argTy = argTypes[i].get();
+                        if (!argTy) continue;
+                        auto sub = substituteType(argTy, subs);
+                        if (sub) substitutedArgTypes.push_back(std::move(sub));
+                    }
+                    if (substitutedArgTypes.size() == argPatterns.size()) {
+                        for (size_t i = 0; i < substitutedArgTypes.size(); ++i)
+                            bindPatternVariables(argPatterns[i].get(), substitutedArgTypes[i].get());
+                        return;
                     }
                 }
             }

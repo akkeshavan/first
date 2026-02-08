@@ -139,6 +139,7 @@ private:
         llvm::Type* elementType;
         size_t size;
         llvm::AllocaInst* alloca; // Original alloca for stack arrays
+        llvm::AllocaInst* lengthAlloca = nullptr; // When set, length is dynamic (load from this i64)
     };
     std::unordered_map<llvm::Value*, ArrayMetadata> arrayMetadata_;
     

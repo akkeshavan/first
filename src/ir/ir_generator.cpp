@@ -1921,7 +1921,7 @@ llvm::Value* IRGenerator::evaluateFunctionCall(ast::FunctionCallExpr* expr, bool
                 {llvm::ConstantInt::get(llvm::Type::getInt64Ty(context_), fullSize)},
                 "adtheap"
             );
-            llvm::Value* structPtr = builder_->CreateBitCast(rawPtr, llvm::PointerType::get(fullType, 0), "adtstruct");
+            llvm::Value* structPtr = builder_->CreateBitCast(rawPtr, llvm::PointerType::get(context_, 0), "adtstruct");
             llvm::Value* tagGep = builder_->CreateStructGEP(fullType, structPtr, 0, "tagptr");
             builder_->CreateAlignedStore(
                 llvm::ConstantInt::get(context_, llvm::APInt(64, static_cast<uint64_t>(tagIndex))),
@@ -1940,7 +1940,7 @@ llvm::Value* IRGenerator::evaluateFunctionCall(ast::FunctionCallExpr* expr, bool
                 {llvm::ConstantInt::get(llvm::Type::getInt64Ty(context_), fullSize)},
                 "adtheap"
             );
-            llvm::Value* structPtr = builder_->CreateBitCast(rawPtr, llvm::PointerType::get(fullType, 0), "adtstruct");
+            llvm::Value* structPtr = builder_->CreateBitCast(rawPtr, llvm::PointerType::get(context_, 0), "adtstruct");
             builder_->CreateAlignedStore(
                 llvm::ConstantInt::get(context_, llvm::APInt(64, static_cast<uint64_t>(tagIndex))),
                 builder_->CreateStructGEP(fullType, structPtr, 0, "tagptr"), llvm::Align(8));
@@ -1948,7 +1948,7 @@ llvm::Value* IRGenerator::evaluateFunctionCall(ast::FunctionCallExpr* expr, bool
         return builder_->CreateBitCast(rawPtr, payloadPtrType, "adtptr");
     }
 
-    // Phase 7.3: arrayLength is compiler intrinsic (metadata lookup)
+    // Phase 7.3: arrayLength and Array<Int> intrinsics; generic append/insertAt/map via runtime
     llvm::Type* i8ptr = llvm::PointerType::get(context_, 0);
     llvm::Type* i64 = llvm::Type::getInt64Ty(context_);
     llvm::Type* f64 = llvm::Type::getDoubleTy(context_);
@@ -1972,62 +1972,101 @@ llvm::Value* IRGenerator::evaluateFunctionCall(ast::FunctionCallExpr* expr, bool
     // Helper to resolve array metadata from an array value (e.g. args[0])
     auto resolveArrayMetadata = [this](llvm::Value* arrayVal) -> std::pair<llvm::AllocaInst*, int64_t> {
         auto it = arrayMetadata_.find(arrayVal);
-        if (it != arrayMetadata_.end())
-            return {it->second.alloca, static_cast<int64_t>(it->second.size)};
+        if (it != arrayMetadata_.end()) {
+            int64_t len = it->second.lengthAlloca ? -1 : static_cast<int64_t>(it->second.size);
+            return {it->second.alloca, len};
+        }
         if (llvm::LoadInst* loadInst = llvm::dyn_cast<llvm::LoadInst>(arrayVal)) {
             it = arrayMetadata_.find(loadInst->getPointerOperand());
-            if (it != arrayMetadata_.end())
-                return {it->second.alloca, static_cast<int64_t>(it->second.size)};
+            if (it != arrayMetadata_.end()) {
+                int64_t len = it->second.lengthAlloca ? -1 : static_cast<int64_t>(it->second.size);
+                return {it->second.alloca, len};
+            }
         }
         for (const auto& varPair : localVars_) {
             it = arrayMetadata_.find(varPair.second);
-            if (it != arrayMetadata_.end())
-                return {it->second.alloca, static_cast<int64_t>(it->second.size)};
+            if (it != arrayMetadata_.end()) {
+                int64_t len = it->second.lengthAlloca ? -1 : static_cast<int64_t>(it->second.size);
+                return {it->second.alloca, len};
+            }
         }
         return {nullptr, 0};
     };
 
+    // Get (basePtr, lenVal) for Array ops: from metadata or via first_array_length(ptr, 0)
+    auto getArrayBaseAndLength = [this, i8ptr, i64, resolveArrayMetadata](llvm::Value* arrayArg) -> std::pair<llvm::Value*, llvm::Value*> {
+        llvm::Type* i64ptr = llvm::PointerType::get(context_, 0);
+        auto [baseAlloca, len] = resolveArrayMetadata(arrayArg);
+        if (baseAlloca) {
+            llvm::Value* lenVal = nullptr;
+            if (len >= 0) {
+                lenVal = builder_->getInt64(len);
+            } else {
+                // Dynamic length: find metadata by alloca and load from lengthAlloca
+                for (const auto& [val, meta] : arrayMetadata_) {
+                    if (meta.alloca == baseAlloca && meta.lengthAlloca) {
+                        lenVal = builder_->CreateLoad(i64, meta.lengthAlloca, "dynlen");
+                        break;
+                    }
+                }
+            }
+            if (lenVal) {
+                llvm::Value* basePtr = builder_->CreateBitCast(baseAlloca, i64ptr, "arrbase");
+                return {basePtr, lenVal};
+            }
+        }
+        llvm::Function* flen = module_->getFunction("first_array_length");
+        if (!flen) flen = llvm::Function::Create(
+            llvm::FunctionType::get(i64, {i8ptr, i64}, false),
+            llvm::Function::ExternalLinkage, "first_array_length", module_.get());
+        llvm::Value* lenVal = builder_->CreateCall(flen, {arrayArg, builder_->getInt64(0)}, "arrlen");
+        llvm::Value* basePtr = builder_->CreateBitCast(arrayArg, i64ptr, "arrbase");
+        return {basePtr, lenVal};
+    };
+
     // arrayReduceIntSum(arr: Array<Int>) -> Int
     if (funcName == "arrayReduceIntSum" && args.size() == 1) {
-        auto [baseAlloca, len] = resolveArrayMetadata(args[0]);
-        if (!baseAlloca) {
-            errorReporter_.error(expr->getLocation(), "arrayReduceIntSum: array metadata not available");
-            return nullptr;
-        }
-        llvm::Type* i64ptr = llvm::PointerType::get(i64, 0);
-        llvm::Value* basePtr = builder_->CreateBitCast(baseAlloca, i64ptr, "arrbase");
+        auto [basePtr, lenVal] = getArrayBaseAndLength(args[0]);
+        llvm::Type* i64ptr = llvm::PointerType::get(context_, 0);
         llvm::Function* fn = module_->getFunction("first_array_reduce_int_sum");
         if (!fn) fn = llvm::Function::Create(
             llvm::FunctionType::get(i64, {i64ptr, i64}, false),
             llvm::Function::ExternalLinkage, "first_array_reduce_int_sum", module_.get());
-        return builder_->CreateCall(fn, {basePtr, builder_->getInt64(len)}, "reduce_sum");
+        return builder_->CreateCall(fn, {basePtr, lenVal}, "reduce_sum");
     }
 
     // arrayMapIntDouble(arr: Array<Int>) -> Array<Int>
     if (funcName == "arrayMapIntDouble" && args.size() == 1) {
-        auto [baseAlloca, len] = resolveArrayMetadata(args[0]);
-        if (!baseAlloca || len <= 0) {
-            errorReporter_.error(expr->getLocation(), "arrayMapIntDouble: array metadata not available");
-            return nullptr;
-        }
-        llvm::Type* i64ptr = llvm::PointerType::get(i64, 0);
-        llvm::Value* basePtr = builder_->CreateBitCast(baseAlloca, i64ptr, "arrbase");
+        auto [basePtr, lenVal] = getArrayBaseAndLength(args[0]);
+        llvm::Type* i64ptr = llvm::PointerType::get(context_, 0);
         llvm::Function* fn = module_->getFunction("first_array_map_int_double");
         if (!fn) fn = llvm::Function::Create(
             llvm::FunctionType::get(i64ptr, {i64ptr, i64}, false),
             llvm::Function::ExternalLinkage, "first_array_map_int_double", module_.get());
-        llvm::Value* outPtr = builder_->CreateCall(fn, {basePtr, builder_->getInt64(len)}, "map_out");
+        llvm::Value* outPtr = builder_->CreateCall(fn, {basePtr, lenVal}, "map_out");
         if (!outPtr) return nullptr;
-        llvm::ArrayType* arrTy = llvm::ArrayType::get(i64, static_cast<unsigned>(len));
-        llvm::AllocaInst* resultAlloca = builder_->CreateAlloca(arrTy, nullptr, "map_result");
-        for (int64_t i = 0; i < len; ++i) {
-            llvm::Value* srcElem = builder_->CreateLoad(i64, builder_->CreateGEP(i64, outPtr, builder_->getInt64(i)), "mapelem");
-            llvm::Value* dstGep = builder_->CreateGEP(arrTy, resultAlloca, {builder_->getInt64(0), builder_->getInt64(i)}, "dst");
-            builder_->CreateStore(srcElem, dstGep);
-        }
+        llvm::AllocaInst* resultAlloca = builder_->CreateAlloca(i64, lenVal, "map_result");
+        llvm::BasicBlock* mapEntry = builder_->GetInsertBlock();
+        llvm::BasicBlock* loopCond = llvm::BasicBlock::Create(context_, "map_loop_cond", currentFunction_);
+        llvm::BasicBlock* loopBody = llvm::BasicBlock::Create(context_, "map_loop_body", currentFunction_);
+        llvm::BasicBlock* loopEnd = llvm::BasicBlock::Create(context_, "map_loop_end", currentFunction_);
+        builder_->CreateBr(loopCond);
+        builder_->SetInsertPoint(loopCond);
+        llvm::PHINode* iPhi = builder_->CreatePHI(i64, 2, "i");
+        iPhi->addIncoming(builder_->getInt64(0), mapEntry);
+        llvm::Value* cmp = builder_->CreateICmpSLT(iPhi, lenVal, "cmp");
+        builder_->CreateCondBr(cmp, loopBody, loopEnd);
+        builder_->SetInsertPoint(loopBody);
+        llvm::Value* srcElem = builder_->CreateLoad(i64, builder_->CreateGEP(i64, outPtr, iPhi), "mapelem");
+        llvm::Value* dstGep = builder_->CreateGEP(i64, resultAlloca, iPhi, "dst");
+        builder_->CreateStore(srcElem, dstGep);
+        llvm::Value* iNext = builder_->CreateAdd(iPhi, builder_->getInt64(1), "i_next");
+        iPhi->addIncoming(iNext, loopBody);
+        builder_->CreateBr(loopCond);
+        builder_->SetInsertPoint(loopEnd);
         ArrayMetadata meta;
         meta.elementType = i64;
-        meta.size = static_cast<size_t>(len);
+        meta.size = 0;
         meta.alloca = resultAlloca;
         arrayMetadata_[resultAlloca] = meta;
         arrayMetadata_[builder_->CreateBitCast(resultAlloca, i8ptr)] = meta;
@@ -2036,19 +2075,14 @@ llvm::Value* IRGenerator::evaluateFunctionCall(ast::FunctionCallExpr* expr, bool
 
     // arrayFilterIntPositive(arr: Array<Int>) -> Array<Int>
     if (funcName == "arrayFilterIntPositive" && args.size() == 1) {
-        auto [baseAlloca, len] = resolveArrayMetadata(args[0]);
-        if (!baseAlloca) {
-            errorReporter_.error(expr->getLocation(), "arrayFilterIntPositive: array metadata not available");
-            return nullptr;
-        }
-        llvm::Type* i64ptr = llvm::PointerType::get(i64, 0);
-        llvm::Value* basePtr = builder_->CreateBitCast(baseAlloca, i64ptr, "arrbase");
+        auto [basePtr, lenVal] = getArrayBaseAndLength(args[0]);
+        llvm::Type* i64ptr = llvm::PointerType::get(context_, 0);
         llvm::AllocaInst* outLenAlloca = builder_->CreateAlloca(i64, nullptr, "out_len");
         llvm::Function* fn = module_->getFunction("first_array_filter_int_positive");
         if (!fn) fn = llvm::Function::Create(
-            llvm::FunctionType::get(i64ptr, {i64ptr, i64, llvm::PointerType::get(i64, 0)}, false),
+            llvm::FunctionType::get(i64ptr, {i64ptr, i64, llvm::PointerType::get(context_, 0)}, false),
             llvm::Function::ExternalLinkage, "first_array_filter_int_positive", module_.get());
-        llvm::Value* outPtr = builder_->CreateCall(fn, {basePtr, builder_->getInt64(len), outLenAlloca}, "filter_out");
+        llvm::Value* outPtr = builder_->CreateCall(fn, {basePtr, lenVal, outLenAlloca}, "filter_out");
         llvm::Value* outLenVal = builder_->CreateLoad(i64, outLenAlloca, "out_len_val");
         llvm::Value* outLenZero = builder_->CreateICmpEQ(outLenVal, builder_->getInt64(0), "is_zero");
         llvm::BasicBlock* hasResult = llvm::BasicBlock::Create(context_, "filter_has", currentFunction_);
@@ -2097,6 +2131,316 @@ llvm::Value* IRGenerator::evaluateFunctionCall(ast::FunctionCallExpr* expr, bool
         phi->addIncoming(resultPtr, loopEnd);
         phi->addIncoming(emptyPtr, emptyResult);
         return phi;
+    }
+
+    // insertAt<T>(a, value, position) -> Option<Array<T>>; deleteAt<T>(a, position) -> Option<Array<T>>
+    const llvm::DataLayout& DL = module_->getDataLayout();
+    auto buildOptionFromPtr = [this, i8ptr, i64, &DL](llvm::Value* ptr, bool isNone) -> llvm::Value* {
+        auto [optAdt, noneTag] = getConstructorIndex("None");
+        auto [optAdtSome, someTag] = getConstructorIndex("Some");
+        (void)optAdt;
+        (void)optAdtSome;
+        llvm::Type* tagType = llvm::Type::getInt64Ty(context_);
+        if (isNone || !ptr) {
+            llvm::StructType* noneType = createStructTypeSafe(context_, {tagType});
+            uint64_t sz = DL.getTypeAllocSize(noneType);
+            llvm::Value* rawPtr = builder_->CreateCall(
+                getOrCreateFirstAlloc(),
+                {llvm::ConstantInt::get(i64, static_cast<uint64_t>(sz))},
+                "option_none");
+            llvm::Value* structPtr = builder_->CreateBitCast(rawPtr, llvm::PointerType::get(context_, 0), "noneptr");
+            llvm::Value* tagGep = builder_->CreateStructGEP(noneType, builder_->CreateBitCast(structPtr, llvm::PointerType::get(context_, 0)), 0, "tag");
+            builder_->CreateAlignedStore(llvm::ConstantInt::get(context_, llvm::APInt(64, noneTag)), tagGep, llvm::Align(8));
+            return builder_->CreateBitCast(structPtr, i8ptr, "option_none_val");
+        }
+        llvm::StructType* somePayload = createStructTypeSafe(context_, {llvm::PointerType::get(context_, 0)});
+        llvm::StructType* someType = createStructTypeSafe(context_, {tagType, somePayload});
+        uint64_t fullSz = DL.getTypeAllocSize(someType);
+        llvm::Value* rawPtr = builder_->CreateCall(
+            getOrCreateFirstAlloc(),
+            {llvm::ConstantInt::get(i64, static_cast<uint64_t>(fullSz))},
+            "option_some");
+        llvm::StructType* someTypeCast = createStructTypeSafe(context_, {tagType, somePayload});
+        llvm::Value* structPtr = builder_->CreateBitCast(rawPtr, llvm::PointerType::get(context_, 0), "someptr");
+        llvm::Value* typedPtr = builder_->CreateBitCast(structPtr, llvm::PointerType::get(context_, 0), "sometyped");
+        llvm::Value* tagGep = builder_->CreateStructGEP(someTypeCast, typedPtr, 0, "tag");
+        builder_->CreateAlignedStore(llvm::ConstantInt::get(context_, llvm::APInt(64, someTag)), tagGep, llvm::Align(8));
+        llvm::Value* payloadGep = builder_->CreateStructGEP(someTypeCast, typedPtr, 1, "payload");
+        llvm::Value* elemGep = builder_->CreateStructGEP(somePayload, payloadGep, 0, "elem");
+        builder_->CreateStore(ptr, elemGep);
+        return builder_->CreateBitCast(structPtr, i8ptr, "option_some_val");
+    };
+    if (funcName == "insertAt" && args.size() == 3) {
+        const auto& insertInferred = expr->getInferredTypeArgs();
+        if (insertInferred.empty() || !insertInferred[0]) return nullptr;
+        ast::Type* elemType = insertInferred[0].get();
+        if (currentTypeSubst_) {
+            auto sub = substituteType(elemType, *currentTypeSubst_);
+            if (sub) elemType = sub.get();
+        }
+        llvm::Type* elemLlvm = convertType(elemType);
+        if (!elemLlvm) return nullptr;
+        uint64_t elemSize = DL.getTypeAllocSize(elemLlvm);
+        llvm::Value* arrPtr = args[0];
+        llvm::Value* lenVal = nullptr;
+        auto [baseAlloca, lenConst] = resolveArrayMetadata(arrPtr);
+        if (baseAlloca && lenConst >= 0) lenVal = builder_->getInt64(lenConst);
+        else {
+            llvm::Function* flen = module_->getFunction("first_array_length");
+            if (!flen) flen = llvm::Function::Create(llvm::FunctionType::get(i64, {i8ptr, i64}, false), llvm::Function::ExternalLinkage, "first_array_length", module_.get());
+            lenVal = builder_->CreateCall(flen, {arrPtr, builder_->getInt64(0)}, "arrlen");
+        }
+        llvm::Value* posVal = args[2];
+        llvm::AllocaInst* valueSlot = builder_->CreateAlloca(elemLlvm, nullptr, "insert_value");
+        builder_->CreateStore(args[1], valueSlot);
+        llvm::Function* fn = module_->getFunction("first_array_insert_at");
+        if (!fn) fn = llvm::Function::Create(
+            llvm::FunctionType::get(i8ptr, {i8ptr, i64, i64, i8ptr, llvm::Type::getInt64Ty(context_)}, false),
+            llvm::Function::ExternalLinkage, "first_array_insert_at", module_.get());
+        llvm::Value* result = builder_->CreateCall(fn, {
+            arrPtr, lenVal, posVal,
+            builder_->CreateBitCast(valueSlot, i8ptr, "valueptr"),
+            builder_->getInt64(static_cast<int64_t>(elemSize))
+        }, "insert_at_result");
+        llvm::Value* isNull = builder_->CreateICmpEQ(result, llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(i8ptr)), "is_none");
+        llvm::BasicBlock* someBB = llvm::BasicBlock::Create(context_, "insert_some", currentFunction_);
+        llvm::BasicBlock* noneBB = llvm::BasicBlock::Create(context_, "insert_none", currentFunction_);
+        llvm::BasicBlock* mergeBB = llvm::BasicBlock::Create(context_, "insert_merge", currentFunction_);
+        builder_->CreateCondBr(isNull, noneBB, someBB);
+        builder_->SetInsertPoint(noneBB);
+        llvm::Value* noneVal = buildOptionFromPtr(nullptr, true);
+        builder_->CreateBr(mergeBB);
+        builder_->SetInsertPoint(someBB);
+        llvm::Value* someVal = buildOptionFromPtr(result, false);
+        builder_->CreateBr(mergeBB);
+        builder_->SetInsertPoint(mergeBB);
+        llvm::PHINode* phi = builder_->CreatePHI(i8ptr, 2, "option_result");
+        phi->addIncoming(noneVal, noneBB);
+        phi->addIncoming(someVal, someBB);
+        return phi;
+    }
+    if (funcName == "deleteAt" && args.size() == 2) {
+        const auto& deleteInferred = expr->getInferredTypeArgs();
+        if (deleteInferred.empty() || !deleteInferred[0]) return nullptr;
+        ast::Type* elemType = deleteInferred[0].get();
+        if (currentTypeSubst_) {
+            auto sub = substituteType(elemType, *currentTypeSubst_);
+            if (sub) elemType = sub.get();
+        }
+        llvm::Type* elemLlvm = convertType(elemType);
+        if (!elemLlvm) return nullptr;
+        uint64_t elemSize = DL.getTypeAllocSize(elemLlvm);
+        llvm::Value* arrPtr = args[0];
+        llvm::Value* lenVal = nullptr;
+        auto [baseAlloca, lenConst] = resolveArrayMetadata(arrPtr);
+        if (baseAlloca && lenConst >= 0) lenVal = builder_->getInt64(lenConst);
+        else {
+            llvm::Function* flen = module_->getFunction("first_array_length");
+            if (!flen) flen = llvm::Function::Create(llvm::FunctionType::get(i64, {i8ptr, i64}, false), llvm::Function::ExternalLinkage, "first_array_length", module_.get());
+            lenVal = builder_->CreateCall(flen, {arrPtr, builder_->getInt64(0)}, "arrlen");
+        }
+        llvm::Function* fn = module_->getFunction("first_array_delete_at");
+        if (!fn) fn = llvm::Function::Create(
+            llvm::FunctionType::get(i8ptr, {i8ptr, i64, i64, llvm::Type::getInt64Ty(context_)}, false),
+            llvm::Function::ExternalLinkage, "first_array_delete_at", module_.get());
+        llvm::Value* result = builder_->CreateCall(fn, {arrPtr, lenVal, args[1], builder_->getInt64(static_cast<int64_t>(elemSize))}, "delete_at_result");
+        llvm::Value* isNull = builder_->CreateICmpEQ(result, llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(i8ptr)), "is_none");
+        llvm::BasicBlock* someBB = llvm::BasicBlock::Create(context_, "del_some", currentFunction_);
+        llvm::BasicBlock* noneBB = llvm::BasicBlock::Create(context_, "del_none", currentFunction_);
+        llvm::BasicBlock* mergeBB = llvm::BasicBlock::Create(context_, "del_merge", currentFunction_);
+        builder_->CreateCondBr(isNull, noneBB, someBB);
+        builder_->SetInsertPoint(noneBB);
+        llvm::Value* noneVal = buildOptionFromPtr(nullptr, true);
+        builder_->CreateBr(mergeBB);
+        builder_->SetInsertPoint(someBB);
+        llvm::Value* someVal = buildOptionFromPtr(result, false);
+        builder_->CreateBr(mergeBB);
+        builder_->SetInsertPoint(mergeBB);
+        llvm::PHINode* phi = builder_->CreatePHI(i8ptr, 2, "option_result");
+        phi->addIncoming(noneVal, noneBB);
+        phi->addIncoming(someVal, someBB);
+        return phi;
+    }
+
+    // reduce<T,U>(a, init, f: (acc:U, cur:T)->U) -> U  (foldLeft)
+    if (funcName == "reduce" && args.size() == 3) {
+        const auto& redInferred = expr->getInferredTypeArgs();
+        if (redInferred.size() < 2 || !redInferred[0] || !redInferred[1]) return nullptr;
+        ast::Type* elemType = redInferred[0].get();
+        ast::Type* retType = redInferred[1].get();
+        if (currentTypeSubst_) {
+            auto sub = substituteType(elemType, *currentTypeSubst_);
+            if (sub) elemType = sub.get();
+            sub = substituteType(retType, *currentTypeSubst_);
+            if (sub) retType = sub.get();
+        }
+        llvm::Type* elemLlvm = convertType(elemType);
+        llvm::Type* retLlvm = convertType(retType);
+        if (!elemLlvm || !retLlvm) return nullptr;
+        auto [basePtr, lenVal] = getArrayBaseAndLength(args[0]);
+        llvm::Value* acc = args[1];
+        llvm::Value* closure = args[2];
+        llvm::BasicBlock* loopCond = llvm::BasicBlock::Create(context_, "reduce_cond", currentFunction_);
+        llvm::BasicBlock* loopBody = llvm::BasicBlock::Create(context_, "reduce_body", currentFunction_);
+        llvm::BasicBlock* loopEnd = llvm::BasicBlock::Create(context_, "reduce_end", currentFunction_);
+        llvm::Value* baseTyped = builder_->CreateBitCast(basePtr, llvm::PointerType::get(context_, 0), "base");
+        llvm::BasicBlock* reduceEntry = builder_->GetInsertBlock();
+        builder_->CreateBr(loopCond);
+        builder_->SetInsertPoint(loopCond);
+        llvm::PHINode* iPhi = builder_->CreatePHI(i64, 2, "i");
+        llvm::PHINode* accPhi = builder_->CreatePHI(retLlvm, 2, "acc");
+        iPhi->addIncoming(builder_->getInt64(0), reduceEntry);
+        accPhi->addIncoming(acc, reduceEntry);
+        llvm::Value* cmp = builder_->CreateICmpSLT(iPhi, lenVal, "cmp");
+        builder_->CreateCondBr(cmp, loopBody, loopEnd);
+        builder_->SetInsertPoint(loopBody);
+        llvm::Value* elemPtr = builder_->CreateGEP(elemLlvm, baseTyped, iPhi, "elem_ptr");
+        llvm::Value* cur = builder_->CreateLoad(elemLlvm, elemPtr, "cur");
+        std::vector<llvm::Value*> closureArgs = {accPhi, cur};
+        llvm::Value* newAcc = invokeClosure(closure, closureArgs, retLlvm);
+        if (!newAcc) return nullptr;
+        llvm::Value* iNext = builder_->CreateAdd(iPhi, builder_->getInt64(1), "i_next");
+        llvm::BasicBlock* loopBack = builder_->GetInsertBlock();
+        iPhi->addIncoming(iNext, loopBack);
+        accPhi->addIncoming(newAcc, loopBack);
+        builder_->CreateBr(loopCond);
+        builder_->SetInsertPoint(loopEnd);
+        return accPhi;
+    }
+
+    // reduceRight<T,U>(a, init, f: (cur:T, acc:U)->U) -> U  (foldRight)
+    if (funcName == "reduceRight" && args.size() == 3) {
+        const auto& redInferred = expr->getInferredTypeArgs();
+        if (redInferred.size() < 2 || !redInferred[0] || !redInferred[1]) return nullptr;
+        ast::Type* elemType = redInferred[0].get();
+        ast::Type* retType = redInferred[1].get();
+        if (currentTypeSubst_) {
+            auto sub = substituteType(elemType, *currentTypeSubst_);
+            if (sub) elemType = sub.get();
+            sub = substituteType(retType, *currentTypeSubst_);
+            if (sub) retType = sub.get();
+        }
+        llvm::Type* elemLlvm = convertType(elemType);
+        llvm::Type* retLlvm = convertType(retType);
+        if (!elemLlvm || !retLlvm) return nullptr;
+        auto [basePtr, lenVal] = getArrayBaseAndLength(args[0]);
+        llvm::Value* acc = args[1];
+        llvm::Value* closure = args[2];
+        llvm::BasicBlock* loopCond = llvm::BasicBlock::Create(context_, "reduceR_cond", currentFunction_);
+        llvm::BasicBlock* loopBody = llvm::BasicBlock::Create(context_, "reduceR_body", currentFunction_);
+        llvm::BasicBlock* loopEnd = llvm::BasicBlock::Create(context_, "reduceR_end", currentFunction_);
+        llvm::Value* baseTyped = builder_->CreateBitCast(basePtr, llvm::PointerType::get(context_, 0), "base");
+        llvm::Value* startIndex = builder_->CreateSub(lenVal, builder_->getInt64(1), "start");
+        llvm::BasicBlock* reduceREntry = builder_->GetInsertBlock();
+        builder_->CreateBr(loopCond);
+        builder_->SetInsertPoint(loopCond);
+        llvm::PHINode* iPhi = builder_->CreatePHI(i64, 2, "i");
+        llvm::PHINode* accPhi = builder_->CreatePHI(retLlvm, 2, "acc");
+        iPhi->addIncoming(startIndex, reduceREntry);
+        accPhi->addIncoming(acc, reduceREntry);
+        llvm::Value* cmp = builder_->CreateICmpSGE(iPhi, builder_->getInt64(0), "cmp");
+        builder_->CreateCondBr(cmp, loopBody, loopEnd);
+        builder_->SetInsertPoint(loopBody);
+        llvm::Value* elemPtr = builder_->CreateGEP(elemLlvm, baseTyped, iPhi, "elem_ptr");
+        llvm::Value* cur = builder_->CreateLoad(elemLlvm, elemPtr, "cur");
+        std::vector<llvm::Value*> closureArgs = {cur, accPhi};
+        llvm::Value* newAcc = invokeClosure(closure, closureArgs, retLlvm);
+        if (!newAcc) return nullptr;
+        llvm::Value* iNext = builder_->CreateSub(iPhi, builder_->getInt64(1), "i_prev");
+        llvm::BasicBlock* loopBack = builder_->GetInsertBlock();
+        iPhi->addIncoming(iNext, loopBack);
+        accPhi->addIncoming(newAcc, loopBack);
+        builder_->CreateBr(loopCond);
+        builder_->SetInsertPoint(loopEnd);
+        return accPhi;
+    }
+
+    // filter<T>(a: Array<T>, p: (item: T) -> Bool) -> Array<T>
+    if (funcName == "filter" && args.size() == 2) {
+        const auto& filterInferred = expr->getInferredTypeArgs();
+        if (filterInferred.empty() || !filterInferred[0]) return nullptr;
+        ast::Type* elemType = filterInferred[0].get();
+        if (currentTypeSubst_) {
+            auto sub = substituteType(elemType, *currentTypeSubst_);
+            if (sub) elemType = sub.get();
+        }
+        llvm::Type* elemLlvm = convertType(elemType);
+        llvm::Type* i1 = llvm::Type::getInt1Ty(context_);
+        if (!elemLlvm) return nullptr;
+        auto [basePtr, lenVal] = getArrayBaseAndLength(args[0]);
+        llvm::Value* closure = args[1];
+        llvm::Value* baseTyped = builder_->CreateBitCast(basePtr, llvm::PointerType::get(context_, 0), "base");
+        // Pass 1: count elements where p(item) is true
+        llvm::AllocaInst* countAlloca = builder_->CreateAlloca(i64, nullptr, "filter_count");
+        builder_->CreateStore(builder_->getInt64(0), countAlloca);
+        llvm::BasicBlock* countCond = llvm::BasicBlock::Create(context_, "filter_count_cond", currentFunction_);
+        llvm::BasicBlock* countBody = llvm::BasicBlock::Create(context_, "filter_count_body", currentFunction_);
+        llvm::BasicBlock* countEnd = llvm::BasicBlock::Create(context_, "filter_count_end", currentFunction_);
+        llvm::BasicBlock* countEntry = builder_->GetInsertBlock();
+        builder_->CreateBr(countCond);
+        builder_->SetInsertPoint(countCond);
+        llvm::PHINode* iCountPhi = builder_->CreatePHI(i64, 2, "i_count");
+        llvm::PHINode* countPhi = builder_->CreatePHI(i64, 2, "count");
+        iCountPhi->addIncoming(builder_->getInt64(0), countEntry);
+        countPhi->addIncoming(builder_->getInt64(0), countEntry);
+        llvm::Value* cmpCount = builder_->CreateICmpSLT(iCountPhi, lenVal, "cmp_count");
+        builder_->CreateCondBr(cmpCount, countBody, countEnd);
+        builder_->SetInsertPoint(countBody);
+        llvm::Value* itemPtr = builder_->CreateGEP(elemLlvm, baseTyped, iCountPhi, "item_ptr");
+        llvm::Value* item = builder_->CreateLoad(elemLlvm, itemPtr, "item");
+        llvm::Value* pred = invokeClosure(closure, {item}, i1);
+        if (!pred) return nullptr;
+        llvm::Value* predExt = builder_->CreateZExt(pred, i64, "pred_ext");
+        llvm::Value* newCount = builder_->CreateAdd(countPhi, predExt, "new_count");
+        llvm::Value* iCountNext = builder_->CreateAdd(iCountPhi, builder_->getInt64(1), "i_count_next");
+        llvm::BasicBlock* countBack = builder_->GetInsertBlock();
+        iCountPhi->addIncoming(iCountNext, countBack);
+        countPhi->addIncoming(newCount, countBack);
+        builder_->CreateBr(countCond);
+        builder_->SetInsertPoint(countEnd);
+        builder_->CreateStore(countPhi, countAlloca);
+        // Allocate result array of size countPhi
+        llvm::AllocaInst* resultAlloca = builder_->CreateAlloca(elemLlvm, countPhi, "filter_result");
+        // Pass 2: fill result with elements where p(item) is true
+        llvm::AllocaInst* nextAlloca = builder_->CreateAlloca(i64, nullptr, "filter_next");
+        builder_->CreateStore(builder_->getInt64(0), nextAlloca);
+        llvm::BasicBlock* fillCond = llvm::BasicBlock::Create(context_, "filter_fill_cond", currentFunction_);
+        llvm::BasicBlock* fillBody = llvm::BasicBlock::Create(context_, "filter_fill_body", currentFunction_);
+        llvm::BasicBlock* fillEnd = llvm::BasicBlock::Create(context_, "filter_fill_end", currentFunction_);
+        llvm::BasicBlock* fillEntry = builder_->GetInsertBlock();
+        builder_->CreateBr(fillCond);
+        builder_->SetInsertPoint(fillCond);
+        llvm::PHINode* iFillPhi = builder_->CreatePHI(i64, 2, "i_fill");
+        iFillPhi->addIncoming(builder_->getInt64(0), fillEntry);
+        llvm::Value* cmpFill = builder_->CreateICmpSLT(iFillPhi, lenVal, "cmp_fill");
+        builder_->CreateCondBr(cmpFill, fillBody, fillEnd);
+        builder_->SetInsertPoint(fillBody);
+        llvm::Value* itemPtr2 = builder_->CreateGEP(elemLlvm, baseTyped, iFillPhi, "item_ptr2");
+        llvm::Value* item2 = builder_->CreateLoad(elemLlvm, itemPtr2, "item2");
+        llvm::Value* pred2 = invokeClosure(closure, {item2}, i1);
+        if (!pred2) return nullptr;
+        llvm::BasicBlock* storeBB = llvm::BasicBlock::Create(context_, "filter_store", currentFunction_);
+        llvm::BasicBlock* skipBB = llvm::BasicBlock::Create(context_, "filter_skip", currentFunction_);
+        builder_->CreateCondBr(pred2, storeBB, skipBB);
+        builder_->SetInsertPoint(storeBB);
+        llvm::Value* nextVal = builder_->CreateLoad(i64, nextAlloca, "next");
+        llvm::Value* dstPtr = builder_->CreateGEP(elemLlvm, resultAlloca, nextVal, "dst_ptr");
+        builder_->CreateStore(item2, dstPtr);
+        builder_->CreateStore(builder_->CreateAdd(nextVal, builder_->getInt64(1), "next_inc"), nextAlloca);
+        builder_->CreateBr(skipBB);
+        builder_->SetInsertPoint(skipBB);
+        llvm::Value* iFillNext = builder_->CreateAdd(iFillPhi, builder_->getInt64(1), "i_fill_next");
+        iFillPhi->addIncoming(iFillNext, skipBB);
+        builder_->CreateBr(fillCond);
+        builder_->SetInsertPoint(fillEnd);
+        ArrayMetadata meta;
+        meta.elementType = elemLlvm;
+        meta.size = 0;
+        meta.alloca = resultAlloca;
+        meta.lengthAlloca = countAlloca;
+        arrayMetadata_[resultAlloca] = meta;
+        arrayMetadata_[builder_->CreateBitCast(resultAlloca, i8ptr)] = meta;
+        return builder_->CreateBitCast(resultAlloca, i8ptr, "filter_arr");
     }
 
     // toString(x) dispatch: rewrite to type-specific function or identity (String)
@@ -2669,7 +3013,7 @@ llvm::Value* IRGenerator::evaluateFieldAccess(ast::FieldAccessExpr* expr) {
     // In LLVM opaque-pointer mode, use recordAlloca or the loaded recordValue as base.
     // When recordIsIndirect, the variable holds a pointer to the record (e.g. ADT payload).
     llvm::Value* typedPtr = recordIsIndirect
-        ? builder_->CreateBitCast(recordValue, llvm::PointerType::get(structType, 0), "recbase")
+        ? builder_->CreateBitCast(recordValue, llvm::PointerType::get(context_, 0), "recbase")
         : recordAlloca;
     
     llvm::Value* fieldPtr = builder_->CreateStructGEP(structType, typedPtr, static_cast<unsigned>(fieldIndex), "recfield");
@@ -2715,7 +3059,7 @@ llvm::Value* IRGenerator::evaluateConstructor(ast::ConstructorExpr* expr) {
             {llvm::ConstantInt::get(llvm::Type::getInt64Ty(context_), fullSize)},
             "adtheap"
         );
-        llvm::Value* structPtr = builder_->CreateBitCast(rawPtr, llvm::PointerType::get(fullType, 0), "adtstruct");
+        llvm::Value* structPtr = builder_->CreateBitCast(rawPtr, llvm::PointerType::get(context_, 0), "adtstruct");
         llvm::Value* tagGep = builder_->CreateStructGEP(fullType, structPtr, 0, "tagptr");
         builder_->CreateAlignedStore(
             llvm::ConstantInt::get(context_, llvm::APInt(64, tagIndex)),
@@ -2734,7 +3078,7 @@ llvm::Value* IRGenerator::evaluateConstructor(ast::ConstructorExpr* expr) {
             {llvm::ConstantInt::get(llvm::Type::getInt64Ty(context_), fullSize)},
             "adtheap"
         );
-        llvm::Value* structPtr = builder_->CreateBitCast(rawPtr, llvm::PointerType::get(fullType, 0), "adtstruct");
+        llvm::Value* structPtr = builder_->CreateBitCast(rawPtr, llvm::PointerType::get(context_, 0), "adtstruct");
         builder_->CreateAlignedStore(
             llvm::ConstantInt::get(context_, llvm::APInt(64, tagIndex)),
             builder_->CreateStructGEP(fullType, structPtr, 0, "tagptr"), llvm::Align(8));
@@ -2930,10 +3274,12 @@ llvm::Value* IRGenerator::evaluateMatch(ast::MatchExpr* expr) {
     builder_->CreateBr(mergeBB);
     
     // Merge block: PHI node selects result
-    // Normalize optional (T | null): null ptr -> i64 0 when result type is i64 so PHI type is consistent
+    // Normalize so all incomings match resultType: ptr (e.g. Unit) or null -> i64 0 when result is i64
     auto normalizeForPhi = [&](llvm::Value* val) -> llvm::Value* {
-        if (resultType->isIntegerTy(64) && val->getType()->isPointerTy() &&
-            llvm::isa<llvm::ConstantPointerNull>(val))
+        if (!val) return llvm::ConstantInt::get(context_, llvm::APInt(64, 0, true));
+        if (resultType->isIntegerTy(64) && val->getType()->isPointerTy())
+            return llvm::ConstantInt::get(context_, llvm::APInt(64, 0, true));
+        if (resultType->isIntegerTy(64) && val->getType() != resultType)
             return llvm::ConstantInt::get(context_, llvm::APInt(64, 0, true));
         return val;
     };
@@ -2943,7 +3289,8 @@ llvm::Value* IRGenerator::evaluateMatch(ast::MatchExpr* expr) {
 
     // Add incoming values from result blocks (match blocks or guard pass blocks)
     for (size_t i = 0; i < resultBlocks.size(); ++i) {
-        llvm::Value* val = (caseResults[i]->getType() != resultType) ? normalizeForPhi(caseResults[i]) : caseResults[i];
+        llvm::Value* val = caseResults[i];
+        if (!val || (val->getType() != resultType)) val = normalizeForPhi(caseResults[i]);
         phi->addIncoming(val, resultBlocks[i]);
     }
     // Add default result
@@ -3360,7 +3707,7 @@ void IRGenerator::bindPatternVariables(ast::Pattern* pattern, llvm::Value* value
         }
         llvm::StructType* payloadStructType = createStructTypeSafe(context_, fieldTypes);
         llvm::StructType* fullType = createStructTypeSafe(context_, {tagType, payloadStructType});
-        llvm::Value* structPtr = builder_->CreateBitCast(adtPtr, llvm::PointerType::get(fullType, 0), "adtstruct");
+        llvm::Value* structPtr = builder_->CreateBitCast(adtPtr, llvm::PointerType::get(context_, 0), "adtstruct");
         llvm::Value* payloadPtr = builder_->CreateStructGEP(fullType, structPtr, 1, "payloadptr");
 
         if (!constructor || constructor->getArgumentTypes().size() != argPatterns.size()) {
@@ -3609,6 +3956,9 @@ llvm::Function* IRGenerator::generateClosureFunction(ast::LambdaExpr* expr,
         module_.get()
     );
     
+    // Save caller's insert point so we can restore after generating the closure body
+    llvm::BasicBlock* savedInsertBlock = builder_->GetInsertBlock();
+    
     // Set up function body
     llvm::BasicBlock* entryBB = llvm::BasicBlock::Create(context_, "entry", func);
     builder_->SetInsertPoint(entryBB);
@@ -3661,8 +4011,10 @@ llvm::Function* IRGenerator::generateClosureFunction(ast::LambdaExpr* expr,
         }
     }
     
-    // Restore function context
+    // Restore function context and builder insert point (so caller continues in its block)
     currentFunction_ = oldFunction;
+    if (savedInsertBlock)
+        builder_->SetInsertPoint(savedInsertBlock);
     
     return func;
 }

@@ -36,11 +36,14 @@ char* first_float_to_string(double x);  // caller must free
 char* first_bool_to_string(int64_t b);  // 0 -> "false", non-zero -> "true"; caller must free
 char* first_unit_to_string(int64_t);    // ignores arg, returns "()"; caller must free
 
-// --- Array (length: compiler intrinsic; map/reduce/filter for Int arrays) ---
+// --- Array (length: compiler intrinsic; map/reduce/filter for Int arrays; generic insert/delete) ---
 int64_t first_array_length(const void* arr, int64_t known_len);  // identity: returns known_len for ABI
 int64_t first_array_reduce_int_sum(const int64_t* arr, int64_t len);  // sum of elements
 int64_t* first_array_map_int_double(const int64_t* arr, int64_t len);  // new array: each element * 2; caller/GC frees
 int64_t* first_array_filter_int_positive(const int64_t* arr, int64_t len, int64_t* out_len);  // new array: elements > 0; out_len set to result length
+// Generic insertAt/deleteAt (type-erased; elem_size in bytes). Return NULL for invalid index → Option None.
+void* first_array_insert_at(const void* arr, int64_t len, int64_t pos, const void* value, size_t elem_size);
+void* first_array_delete_at(const void* arr, int64_t len, int64_t pos, size_t elem_size);
 
 // --- Socket (minimal TCP) ---
 int64_t first_socket_connect(const char* host, int64_t port);  // returns fd or -1
