@@ -28,7 +28,7 @@ TEST(semantic_checker_mutable_var_in_pure_function) {
     body.push_back(std::move(mutableVar));
     
     auto func = std::make_unique<ast::FunctionDecl>(
-        loc, "test", std::vector<std::string>(), std::move(params),
+        loc, "test", std::vector<ast::GenericParam>(), std::move(params),
         std::move(returnType), std::move(body)
     );
     
@@ -50,7 +50,7 @@ TEST(semantic_checker_mutable_var_in_interaction) {
     std::vector<std::unique_ptr<ast::Stmt>> body;
     
     auto interaction = std::make_unique<ast::InteractionDecl>(
-        loc, "test", std::vector<std::string>(), std::move(params),
+        loc, "test", std::vector<ast::GenericParam>(), std::move(params),
         std::move(returnType), std::move(body)
     );
     
@@ -79,7 +79,7 @@ TEST(semantic_checker_io_in_pure_function) {
     body.push_back(std::make_unique<ast::ExprStmt>(loc, std::move(printCall)));
     
     auto func = std::make_unique<ast::FunctionDecl>(
-        loc, "test", std::vector<std::string>(), std::move(params),
+        loc, "test", std::vector<ast::GenericParam>(), std::move(params),
         std::move(returnType), std::move(body)
     );
     
@@ -108,7 +108,7 @@ TEST(semantic_checker_io_in_interaction) {
     body.push_back(std::make_unique<ast::ExprStmt>(loc, std::move(printCall)));
     
     auto interaction = std::make_unique<ast::InteractionDecl>(
-        loc, "test", std::vector<std::string>(), std::move(params),
+        loc, "test", std::vector<ast::GenericParam>(), std::move(params),
         std::move(returnType), std::move(body)
     );
     
@@ -130,7 +130,7 @@ TEST(semantic_checker_immutable_var_in_pure_function) {
     std::vector<std::unique_ptr<ast::Stmt>> body;
     
     auto func = std::make_unique<ast::FunctionDecl>(
-        loc, "test", std::vector<std::string>(), std::move(params),
+        loc, "test", std::vector<ast::GenericParam>(), std::move(params),
         std::move(returnType), std::move(body)
     );
     

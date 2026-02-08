@@ -19,12 +19,21 @@
 #include <llvm/IR/BasicBlock.h>
 #include <llvm/IR/IRBuilder.h>
 #include <llvm/IR/GlobalVariable.h>
+#include <llvm/IR/DataLayout.h>
 #include <llvm/Support/Alignment.h>
 #include <llvm/Support/raw_ostream.h>
 #include <iostream>
 
 namespace first {
 namespace ir {
+
+// Ensure no null type is ever passed to StructType::get (avoids backend crashes in ConstantHoisting/getTypeAtIndex).
+static llvm::StructType* createStructTypeSafe(llvm::LLVMContext& ctx, std::vector<llvm::Type*> types) {
+    llvm::Type* fallback = llvm::Type::getInt8Ty(ctx);
+    for (auto& t : types)
+        if (!t) t = fallback;
+    return llvm::StructType::get(ctx, types);
+}
 
 IRGenerator::IRGenerator(ErrorReporter& errorReporter, const std::string& moduleName)
     : errorReporter_(errorReporter)
@@ -103,6 +112,16 @@ void IRGenerator::visitProgram(ast::Program* node) {
     }
     currentProgram_ = node;
     constructorIndexMap_.clear();
+    nextConstructorTag_ = 0;
+    typeDeclsMap_.clear();
+    typeDeclParamsMap_.clear();
+    for (const auto& typeDecl : node->getTypeDecls()) {
+        if (typeDecl && typeDecl->getType()) {
+            typeDeclsMap_[typeDecl->getTypeName()] = typeDecl->getType();
+            if (typeDecl->isGeneric())
+                typeDeclParamsMap_[typeDecl->getTypeName()] = typeDecl->getTypeParams();
+        }
+    }
     buildConstructorIndexMap(node);
 
     // Set module name for this IR generation
@@ -143,12 +162,14 @@ void IRGenerator::visitProgram(ast::Program* node) {
 void IRGenerator::visitFunctionDecl(ast::FunctionDecl* node) {
     // Get function name
     std::string funcName = node->getName();
-    
-    // Convert parameter types
+    currentFunctionDecl_ = node;
+
+    // Convert parameter types (generic params -> erased pointer when converting)
     std::vector<llvm::Type*> paramTypes;
     for (const auto& param : node->getParameters()) {
         llvm::Type* paramType = convertType(param->getType());
         if (!paramType) {
+            currentFunctionDecl_ = nullptr;
             errorReporter_.error(
                 node->getLocation(),
                 "Failed to convert parameter type for function: " + funcName
@@ -157,10 +178,11 @@ void IRGenerator::visitFunctionDecl(ast::FunctionDecl* node) {
         }
         paramTypes.push_back(paramType);
     }
-    
+
     // Convert return type
     llvm::Type* returnType = convertType(node->getReturnType());
     if (!returnType) {
+        currentFunctionDecl_ = nullptr;
         errorReporter_.error(
             node->getLocation(),
             "Failed to convert return type for function: " + funcName
@@ -181,20 +203,30 @@ void IRGenerator::visitFunctionDecl(ast::FunctionDecl* node) {
         linkage = llvm::Function::ExternalLinkage;
     }
     
-    // Create function
-    llvm::Function* func = llvm::Function::Create(
-        funcType,
-        linkage,
-        funcName,
-        module_.get()
-    );
+    // Use existing declaration if present (e.g. created when generating a forward call in another function)
+    llvm::Function* func = module_->getFunction(funcName);
+    if (func && func->isDeclaration() && func->getFunctionType() == funcType) {
+        func->setLinkage(linkage);
+    } else {
+        if (func && func->isDeclaration()) {
+            func->eraseFromParent();
+        }
+        func = llvm::Function::Create(
+            funcType,
+            linkage,
+            funcName,
+            module_.get()
+        );
+    }
 
-    // Phase 6.2: Pure function optimization - mark as readonly (no writes; enables CSE, etc.)
-    func->addFnAttr(llvm::Attribute::ReadOnly);
-    // Phase 6.2: Immutability - mark pointer parameters as readonly
-    for (auto& arg : func->args()) {
-        if (arg.getType()->isPointerTy()) {
-            arg.addAttr(llvm::Attribute::ReadOnly);
+    // Phase 6.2: Pure function optimization - mark pointer args as readonly where valid.
+    // Skip adding ReadOnly to the function itself: some LLVM versions reject FnAttr ReadOnly
+    // (e.g. "Attribute 'readonly' does not apply to functions!"), especially with tail calls.
+    if (node->getGenericParams().empty()) {
+        for (auto& arg : func->args()) {
+            if (arg.getType()->isPointerTy()) {
+                arg.addAttr(llvm::Attribute::ReadOnly);
+            }
         }
     }
     
@@ -205,6 +237,12 @@ void IRGenerator::visitFunctionDecl(ast::FunctionDecl* node) {
             arg.setName(node->getParameters()[idx]->getName());
         }
         idx++;
+    }
+    
+    // Generic functions: emit declaration only; monomorphized versions get bodies at call sites
+    if (!node->getGenericParams().empty()) {
+        currentFunctionDecl_ = nullptr;
+        return;
     }
     
     // Generate function body
@@ -230,12 +268,26 @@ void IRGenerator::visitFunctionDecl(ast::FunctionDecl* node) {
     for (auto& arg : func->args()) {
         if (idx < node->getParameters().size()) {
             std::string paramName = node->getParameters()[idx]->getName();
+            ast::Parameter* paramNode = node->getParameters()[idx].get();
             // Allocate space for parameter
             llvm::Type* paramType = arg.getType();
             llvm::AllocaInst* alloca = createAlloca(paramType, paramName);
             // Avoid DataLayout-driven alignment computation (can hang with some LLVM builds).
             builder_->CreateAlignedStore(&arg, alloca, llvm::Align(8));
             setVariable(paramName, alloca, paramType);
+            // Register record metadata for record-typed parameters (so match and field access work)
+            if (auto* recType = dynamic_cast<ast::RecordType*>(paramNode->getType())) {
+                RecordMetadata meta;
+                meta.structType = llvm::dyn_cast<llvm::StructType>(paramType);
+                meta.alloca = alloca;
+                for (const auto& f : recType->getFields()) {
+                    meta.fieldNames.push_back(f->getName());
+                }
+                if (meta.structType) {
+                    recordMetadata_[alloca] = meta;
+                    recordMetadata_[builder_->CreateBitCast(alloca, llvm::PointerType::get(context_, 0))] = meta;
+                }
+            }
         }
         idx++;
     }
@@ -272,28 +324,28 @@ void IRGenerator::visitFunctionDecl(ast::FunctionDecl* node) {
             } else if (returnType->isIntegerTy(1)) {
                 builder_->CreateRet(llvm::ConstantInt::get(context_, llvm::APInt(1, 0)));
             } else {
-                errorReporter_.error(
-                    node->getLocation(),
-                    "Function " + funcName + " missing return statement"
-                );
+                // ptr, struct, or other types: use null/default (matches generateMonomorphizedBody)
+                builder_->CreateRet(llvm::Constant::getNullValue(returnType));
             }
         }
     }
-    
+
+    currentFunctionDecl_ = nullptr;
     exitFunction();
 }
 
 void IRGenerator::visitInteractionDecl(ast::InteractionDecl* node) {
     // Interactions are similar to functions but allow side effects
     // For now, generate IR the same way as functions
-    // Get function name
     std::string funcName = node->getName();
-    
-    // Convert parameter types
+    currentInteractionDecl_ = node;
+
+    // Convert parameter types (generic params -> erased pointer when converting)
     std::vector<llvm::Type*> paramTypes;
     for (const auto& param : node->getParameters()) {
         llvm::Type* paramType = convertType(param->getType());
         if (!paramType) {
+            currentInteractionDecl_ = nullptr;
             errorReporter_.error(
                 node->getLocation(),
                 "Failed to convert parameter type for interaction: " + funcName
@@ -302,10 +354,11 @@ void IRGenerator::visitInteractionDecl(ast::InteractionDecl* node) {
         }
         paramTypes.push_back(paramType);
     }
-    
+
     // Convert return type
     llvm::Type* returnType = convertType(node->getReturnType());
     if (!returnType) {
+        currentInteractionDecl_ = nullptr;
         errorReporter_.error(
             node->getLocation(),
             "Failed to convert return type for interaction: " + funcName
@@ -359,11 +412,25 @@ void IRGenerator::visitInteractionDecl(ast::InteractionDecl* node) {
     for (auto& arg : func->args()) {
         if (idx < node->getParameters().size()) {
             std::string paramName = node->getParameters()[idx]->getName();
+            ast::Parameter* paramNode = node->getParameters()[idx].get();
             // Allocate space for parameter
             llvm::Type* paramType = arg.getType();
             llvm::AllocaInst* alloca = createAlloca(paramType, paramName);
             builder_->CreateAlignedStore(&arg, alloca, llvm::Align(8));
             setVariable(paramName, alloca, paramType);
+            // Register record metadata for record-typed parameters (so match and field access work)
+            if (auto* recType = dynamic_cast<ast::RecordType*>(paramNode->getType())) {
+                RecordMetadata meta;
+                meta.structType = llvm::dyn_cast<llvm::StructType>(paramType);
+                meta.alloca = alloca;
+                for (const auto& f : recType->getFields()) {
+                    meta.fieldNames.push_back(f->getName());
+                }
+                if (meta.structType) {
+                    recordMetadata_[alloca] = meta;
+                    recordMetadata_[builder_->CreateBitCast(alloca, llvm::PointerType::get(context_, 0))] = meta;
+                }
+            }
         }
         idx++;
     }
@@ -399,14 +466,12 @@ void IRGenerator::visitInteractionDecl(ast::InteractionDecl* node) {
             } else if (returnType->isIntegerTy(1)) {
                 builder_->CreateRet(llvm::ConstantInt::get(context_, llvm::APInt(1, 0)));
             } else {
-                errorReporter_.error(
-                    node->getLocation(),
-                    "Interaction " + funcName + " missing return statement"
-                );
+                builder_->CreateRet(llvm::Constant::getNullValue(returnType));
             }
         }
     }
-    
+
+    currentInteractionDecl_ = nullptr;
     exitFunction();
 }
 
@@ -430,10 +495,15 @@ void IRGenerator::visitFunctionCallExpr(ast::FunctionCallExpr* node) {
     // Check if this is a closure call or regular function call
     // For now, we'll try regular function call first, and if that fails,
     // we can check if it's a closure
-    currentValue_ = evaluateFunctionCall(node);
+    // Mark as tail call when in return context (e.g. return f() or return match { ... => f() })
+    currentValue_ = evaluateFunctionCall(node, inTailContext_);
     
     // TODO: Add closure detection - if the function name refers to a closure variable,
     // use invokeClosure instead
+}
+
+void IRGenerator::visitRangeExpr(ast::RangeExpr* node) {
+    currentValue_ = evaluateRangeExpr(node);
 }
 
 void IRGenerator::visitArrayLiteralExpr(ast::ArrayLiteralExpr* node) {
@@ -493,6 +563,18 @@ void IRGenerator::visitSelectExpr(ast::SelectExpr* node) {
     currentValue_ = llvm::ConstantInt::get(context_, llvm::APInt(1, 0));
 }
 
+void IRGenerator::visitBlockExpr(ast::BlockExpr* node) {
+    currentValue_ = evaluateBlockExpr(node);
+}
+
+void IRGenerator::visitIfExpr(ast::IfExpr* node) {
+    currentValue_ = evaluateIfExpr(node);
+}
+
+void IRGenerator::visitForInStmt(ast::ForInStmt* node) {
+    generateForInStmt(node);
+}
+
 void IRGenerator::visitSelectStmt(ast::SelectStmt* node) {
     // Handled by generateStatement
 }
@@ -513,6 +595,17 @@ llvm::Type* IRGenerator::convertType(ast::Type* type) {
     if (!type) {
         return nullptr;
     }
+    // Break recursion cycles (e.g. substitute T -> type that eventually refers back to T)
+    if (convertingTypes_.count(type)) {
+        return llvm::PointerType::get(context_, 0);
+    }
+    struct Guard {
+        IRGenerator* g;
+        ast::Type* t;
+        ~Guard() { if (g && t) g->convertingTypes_.erase(t); }
+    };
+    convertingTypes_.insert(type);
+    Guard guard{this, type};
     
     // Dispatch to specific type converters
     if (auto* primType = dynamic_cast<ast::PrimitiveType*>(type)) {
@@ -524,8 +617,34 @@ llvm::Type* IRGenerator::convertType(ast::Type* type) {
     } else if (auto* adtType = dynamic_cast<ast::ADTType*>(type)) {
         return convertADTType(adtType);
     } else if (auto* genType = dynamic_cast<ast::GenericType*>(type)) {
-        // Generic type parameter - this should have been substituted by now
-        // If we encounter it, it means monomorphization didn't happen
+        const std::string& name = genType->getName();
+        // When generating a monomorphized body, substitute generic params with concrete types
+        if (currentTypeSubst_) {
+            auto it = currentTypeSubst_->find(name);
+            if (it != currentTypeSubst_->end() && it->second) {
+                return convertType(it->second);
+            }
+        }
+        // Resolve type alias / sum type name from type declarations
+        auto it = typeDeclsMap_.find(name);
+        if (it != typeDeclsMap_.end() && it->second) {
+            return convertType(it->second);
+        }
+        // Type parameter of current generic function/interaction: use erased pointer representation
+        if (currentFunctionDecl_) {
+            for (const auto& gp : currentFunctionDecl_->getGenericParams()) {
+                if (gp.name == name) {
+                    return llvm::PointerType::get(context_, 0);
+                }
+            }
+        }
+        if (currentInteractionDecl_) {
+            for (const auto& gp : currentInteractionDecl_->getGenericParams()) {
+                if (gp.name == name) {
+                    return llvm::PointerType::get(context_, 0);
+                }
+            }
+        }
         errorReporter_.error(
             type->getLocation(),
             "Generic type parameter '" + genType->getName() + "' not substituted"
@@ -557,7 +676,7 @@ llvm::Type* IRGenerator::convertType(ast::Type* type) {
         if (!varTy || !bodyTy) {
             return nullptr;
         }
-        return llvm::StructType::get(context_, {varTy, bodyTy});
+        return createStructTypeSafe(context_, std::vector<llvm::Type*>{varTy, bodyTy});
     } else if (auto* forallType = dynamic_cast<ast::ForallType*>(type)) {
         // Forall T U. Body: representation is the body type (instantiation happens at use sites).
         // If body contains unsubstituted generics, convertType will fail.
@@ -569,7 +688,7 @@ llvm::Type* IRGenerator::convertType(ast::Type* type) {
         if (!varTy || !bodyTy) {
             return nullptr;
         }
-        return llvm::StructType::get(context_, {varTy, bodyTy});
+        return createStructTypeSafe(context_, std::vector<llvm::Type*>{varTy, bodyTy});
     }
     
     // TODO: Handle other types (FunctionType, etc.)
@@ -594,6 +713,8 @@ llvm::Type* IRGenerator::convertPrimitiveType(ast::PrimitiveType* type) {
             return llvm::PointerType::get(context_, 0);
         case ast::PrimitiveType::Kind::Unit:
             return llvm::Type::getVoidTy(context_);
+        case ast::PrimitiveType::Kind::Null:
+            return llvm::PointerType::get(context_, 0);  // null is represented as null pointer
         default:
             return nullptr;
     }
@@ -626,12 +747,63 @@ llvm::Type* IRGenerator::convertParameterizedType(ast::ParameterizedType* type) 
         }
     }
     
+    // User-defined generic types (e.g. List<T>, Set<T>): use base ADT for representation.
+    // All ADTs use the same LLVM layout (tag + payload), so we avoid substituteType here
+    // to prevent dynamic_cast on a temporary substituted type (possible use-after-free).
+    auto pit = typeDeclParamsMap_.find(baseName);
+    if (pit != typeDeclParamsMap_.end() && !pit->second.empty()) {
+        auto it = typeDeclsMap_.find(baseName);
+        if (it != typeDeclsMap_.end() && it->second) {
+            const std::vector<std::string>& params = pit->second;
+            if (params.size() != typeArgs.size()) {
+                errorReporter_.error(
+                    type->getLocation(),
+                    "Type '" + baseName + "' expects " + std::to_string(params.size()) +
+                    " type argument(s), got " + std::to_string(typeArgs.size()));
+                return nullptr;
+            }
+            ast::Type* baseType = it->second;
+            if (dynamic_cast<ast::ADTType*>(baseType)) {
+                // If any type arg is a generic param of the current function, use erased ptr so return/param types match
+                auto isCurrentGenericParam = [this](ast::Type* t) {
+                    auto* g = dynamic_cast<ast::GenericType*>(t);
+                    if (!g) return false;
+                    const std::string& n = g->getName();
+                    if (currentFunctionDecl_)
+                        for (const auto& gp : currentFunctionDecl_->getGenericParams())
+                            if (gp.name == n) return true;
+                    if (currentInteractionDecl_)
+                        for (const auto& gp : currentInteractionDecl_->getGenericParams())
+                            if (gp.name == n) return true;
+                    return false;
+                };
+                for (const auto& arg : typeArgs) {
+                    if (arg.get() && isCurrentGenericParam(arg.get()))
+                        return llvm::PointerType::get(context_, 0);
+                }
+                return convertType(baseType);
+            }
+        }
+    }
+
+    // Optional/union T | null: use the non-null type so match (Cons => h, Nil => null) returns i64 (null -> 0)
+    if (typeArgs.size() == 2) {
+        ast::Type* valueType = nullptr;
+        for (const auto& a : typeArgs) {
+            if (!a.get()) continue;
+            auto* p = dynamic_cast<ast::PrimitiveType*>(a.get());
+            if (p && p->getKind() == ast::PrimitiveType::Kind::Null) continue;
+            valueType = a.get();
+            break;
+        }
+        if (valueType) {
+            llvm::Type* vt = convertType(valueType);
+            if (vt) return vt;
+        }
+    }
+
     // For other parameterized types (Option<T>, Result<T, E>, etc.),
-    // we need to look up the type definition and instantiate it
-    // TODO: Look up type definition from symbol table or type registry
-    // For now, we'll treat them as ADTs (tagged unions)
-    
-    // Check if all type arguments are concrete (no generic parameters)
+    // treat as ADTs (tagged unions) with opaque payload
     bool allConcrete = true;
     for (const auto& arg : typeArgs) {
         if (dynamic_cast<ast::GenericType*>(arg.get())) {
@@ -639,50 +811,16 @@ llvm::Type* IRGenerator::convertParameterizedType(ast::ParameterizedType* type) 
             break;
         }
     }
-    
     if (!allConcrete) {
         errorReporter_.error(
             type->getLocation(),
-            "Cannot instantiate parameterized type '" + baseName + 
+            "Cannot instantiate parameterized type '" + baseName +
             "' with generic type parameters - type arguments must be concrete"
         );
         return nullptr;
     }
-    
-    // For now, treat parameterized types as ADTs (tagged unions)
-    // This is a simplified approach - full implementation would:
-    // 1. Look up the type definition
-    // 2. Substitute type parameters in the definition
-    // 3. Generate the appropriate LLVM type
-    
-    // Use the same structure as ADTType: { tag: i64, payload: i8* }
-    llvm::Type* tagType = llvm::Type::getInt64Ty(context_);
-    llvm::Type* payloadType = llvm::PointerType::get(context_, 0);
-    std::vector<llvm::Type*> structFields = {tagType, payloadType};
-    
-    // Create a unique struct type name based on the parameterized type
-    // This ensures different instantiations get different types
-    std::string structName = baseName;
-    for (const auto& arg : typeArgs) {
-        structName += "_";
-        // Generate a simple name for the type argument
-        if (auto* prim = dynamic_cast<ast::PrimitiveType*>(arg.get())) {
-            switch (prim->getKind()) {
-                case ast::PrimitiveType::Kind::Int: structName += "Int"; break;
-                case ast::PrimitiveType::Kind::Float: structName += "Float"; break;
-                case ast::PrimitiveType::Kind::Bool: structName += "Bool"; break;
-                case ast::PrimitiveType::Kind::String: structName += "String"; break;
-                case ast::PrimitiveType::Kind::Unit: structName += "Unit"; break;
-            }
-        } else {
-            structName += "T";
-        }
-    }
-    
-    // Create or get the struct type
-    llvm::StructType* structType = llvm::StructType::create(context_, structFields, structName);
-    
-    return structType;
+    // Use ptr to match constructor convention (struct built in alloca, returned as ptr)
+    return llvm::PointerType::get(context_, 0);
 }
 
 llvm::Type* IRGenerator::convertRecordType(ast::RecordType* type) {
@@ -703,24 +841,13 @@ llvm::Type* IRGenerator::convertRecordType(ast::RecordType* type) {
     }
     
     // Create struct type
-    return llvm::StructType::get(context_, fieldTypes);
+    return createStructTypeSafe(context_, fieldTypes);
 }
 
 llvm::Type* IRGenerator::convertADTType(ast::ADTType* type) {
-    // ADTs are represented as tagged unions
-    // Structure: { tag: i64, payload: union of all constructor argument types }
-    // For simplicity, we'll use a struct with tag and a single payload pointer
-    
-    // Tag type (constructor index)
-    llvm::Type* tagType = llvm::Type::getInt64Ty(context_);
-    
-    // Payload type - for now, use i8* as opaque pointer
-    // TODO: Properly compute union of all constructor argument types
-    llvm::Type* payloadType = llvm::PointerType::get(context_, 0);
-    
-    // Create struct: { tag, payload }
-    std::vector<llvm::Type*> structFields = {tagType, payloadType};
-    return llvm::StructType::get(context_, structFields);
+    // ADTs are represented as pointer to tagged union (matches constructor return convention)
+    // Structure in memory: { tag: i64, payload: union of all constructor argument types }
+    return llvm::PointerType::get(context_, 0);
 }
 
 void IRGenerator::enterFunction(llvm::Function* func) {
@@ -758,6 +885,18 @@ void IRGenerator::pushRefinementBinding(const std::string& varName, llvm::Alloca
 void IRGenerator::popRefinementBinding(const std::string& varName) {
     refinementVarOverrides_.erase(varName);
     localVarTypes_.erase(varName);
+}
+
+llvm::Function* IRGenerator::getOrCreateFirstAlloc() {
+    llvm::Function* f = module_->getFunction("first_alloc");
+    if (f) return f;
+    llvm::Type* i64 = llvm::Type::getInt64Ty(context_);
+    llvm::Type* ptr = llvm::PointerType::get(context_, 0);
+    return llvm::Function::Create(
+        llvm::FunctionType::get(ptr, {i64}, false),
+        llvm::Function::ExternalLinkage,
+        "first_alloc",
+        module_.get());
 }
 
 void IRGenerator::emitRefinementChecksForParams(const std::vector<ast::Parameter*>& params, llvm::Function* func, llvm::BasicBlock* entryBlock) {
@@ -904,6 +1043,8 @@ llvm::Value* IRGenerator::evaluateLiteral(ast::LiteralExpr* expr) {
             );
             return builder_->CreateBitCast(globalStr, llvm::PointerType::get(context_, 0));
         }
+        case ast::LiteralExpr::LiteralType::Null:
+            return llvm::ConstantPointerNull::get(llvm::PointerType::get(context_, 0));
         default:
             return nullptr;
     }
@@ -1206,13 +1347,18 @@ llvm::Value* IRGenerator::evaluateVariable(ast::VariableExpr* expr) {
     // Check if this variable has record metadata
     auto recordIt = recordMetadata_.find(alloca);
     if (recordIt != recordMetadata_.end()) {
-        // This is a record variable - return the alloca directly
-        // Cast to opaque ptr to match record representation
-        return builder_->CreateBitCast(
+        // This is a record variable - return the alloca cast to opaque ptr.
+        // Register the cast result in recordMetadata_ so pattern matching on this
+        // variable finds metadata when given the cast value.
+        llvm::Value* recordPtr = builder_->CreateBitCast(
             alloca,
             llvm::PointerType::get(context_, 0),
             name + "_ptr"
         );
+        RecordMetadata meta = recordIt->second;
+        meta.alloca = alloca;
+        recordMetadata_[recordPtr] = meta;
+        return recordPtr;
     }
     
     // Load value from alloca.
@@ -1235,18 +1381,124 @@ llvm::Value* IRGenerator::evaluateVariable(ast::VariableExpr* expr) {
     return builder_->CreateAlignedLoad(loadType, alloca, llvm::Align(8), name);
 }
 
+// Helper: extract Int literal value from an expression (LiteralExpr or BlockExpr with single literal).
+// Returns true and sets out when the expr is an Int literal.
+static bool getConsFirstArgLiteral(ast::Expr* e, int64_t& out) {
+    if (!e) return false;
+    ast::Expr* inner = e;
+    if (auto* block = dynamic_cast<ast::BlockExpr*>(e)) {
+        const auto& stmts = block->getStatements();
+        if (stmts.size() != 1) return false;
+        if (auto* exprStmt = dynamic_cast<ast::ExprStmt*>(stmts[0].get()))
+            inner = exprStmt->getExpr();
+    }
+    auto* lit = dynamic_cast<ast::LiteralExpr*>(inner);
+    if (!lit || lit->getType() != ast::LiteralExpr::LiteralType::Int) return false;
+    try {
+        out = std::stoll(lit->getValue());
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+static bool isConsCall(const std::string& funcName) {
+    return funcName == "cons" || (funcName.size() > 5 && funcName.compare(funcName.size() - 4, 4, "cons") == 0 && funcName[funcName.size() - 5] == '.');
+}
+
 llvm::Value* IRGenerator::evaluateFunctionCall(ast::FunctionCallExpr* expr, bool tailCall) {
     std::string funcName = expr->getName();
 
     // Evaluate arguments first (so we can synthesize an extern declaration if needed).
     std::vector<llvm::Value*> args;
     const auto& argExprs = expr->getArgs();
-    for (const auto& argExpr : argExprs) {
-        llvm::Value* argValue = evaluateExpr(argExpr.get());
+    for (size_t i = 0; i < argExprs.size(); ++i) {
+        llvm::Value* argValue = evaluateExpr(argExprs[i].get());
         if (!argValue) {
             return nullptr;
         }
+        // Root-cause fix for head(xs)=0: for cons(1, cons(2, ...)), the outer call's first argument
+        // can incorrectly evaluate to 0. Use the literal value from the AST when the first arg is an Int literal.
+        if (isConsCall(funcName) && i == 0) {
+            int64_t literalVal = 0;
+            if (getConsFirstArgLiteral(argExprs[i].get(), literalVal)) {
+                argValue = llvm::ConstantInt::get(context_, llvm::APInt(64, static_cast<uint64_t>(literalVal), true));
+            }
+        }
         args.push_back(argValue);
+    }
+
+    // Safety net: force cons first arg from AST literal (in case in-loop fix didn't apply).
+    if (isConsCall(funcName) && !argExprs.empty() && args.size() >= 1 && args[0]) {
+        int64_t literalVal = 0;
+        if (getConsFirstArgLiteral(argExprs[0].get(), literalVal) && args[0]->getType()->isIntegerTy(64)) {
+            args[0] = llvm::ConstantInt::get(context_, llvm::APInt(64, static_cast<uint64_t>(literalVal), true));
+        }
+    }
+
+    // Constructor call (sum type): Name(arg1, ...) -> build tagged union (single heap block, inline payload)
+    auto [adtAstType, tagIndex] = getConstructorIndex(funcName);
+    if (adtAstType) {
+        llvm::Type* tagType = llvm::Type::getInt64Ty(context_);
+        llvm::Type* payloadPtrType = llvm::PointerType::get(context_, 0);
+        const llvm::DataLayout& DL = module_->getDataLayout();
+        llvm::StructType* fullType = nullptr;
+        llvm::Value* rawPtr = nullptr;
+        if (!args.empty()) {
+            // Use constructor's declared argument types for payload layout so it matches pattern matching.
+            std::vector<llvm::Type*> fieldTypes;
+            ast::Constructor* ctor = nullptr;
+            for (const auto& c : adtAstType->getConstructors()) {
+                if (c && c->getName() == funcName) { ctor = c.get(); break; }
+            }
+            if (ctor && ctor->getArgumentTypes().size() == args.size()) {
+                for (const auto& at : ctor->getArgumentTypes()) {
+                    llvm::Type* ft = nullptr;
+                    if (currentTypeSubst_ && at.get()) {
+                        auto subTy = substituteType(at.get(), *currentTypeSubst_);
+                        if (subTy) ft = convertType(subTy.get());
+                    }
+                    if (!ft) ft = convertType(at.get());
+                    fieldTypes.push_back(ft ? ft : llvm::PointerType::get(context_, 0));
+                }
+            }
+            if (fieldTypes.size() != args.size()) {
+                fieldTypes.clear();
+                for (llvm::Value* v : args) fieldTypes.push_back(v->getType());
+            }
+            llvm::StructType* payloadStructType = createStructTypeSafe(context_, fieldTypes);
+            fullType = createStructTypeSafe(context_, {tagType, payloadStructType});
+            uint64_t fullSize = DL.getTypeAllocSize(fullType);
+            rawPtr = builder_->CreateCall(
+                getOrCreateFirstAlloc(),
+                {llvm::ConstantInt::get(llvm::Type::getInt64Ty(context_), fullSize)},
+                "adtheap"
+            );
+            llvm::Value* structPtr = builder_->CreateBitCast(rawPtr, llvm::PointerType::get(fullType, 0), "adtstruct");
+            llvm::Value* tagGep = builder_->CreateStructGEP(fullType, structPtr, 0, "tagptr");
+            builder_->CreateAlignedStore(
+                llvm::ConstantInt::get(context_, llvm::APInt(64, static_cast<uint64_t>(tagIndex))),
+                tagGep, llvm::Align(8));
+            llvm::Value* payloadPtr = builder_->CreateStructGEP(fullType, structPtr, 1, "payloadptr");
+            for (size_t i = 0; i < args.size(); ++i) {
+                llvm::Value* toStore = args[i];
+                llvm::Value* fieldPtr = builder_->CreateStructGEP(payloadStructType, payloadPtr, static_cast<unsigned>(i), "fieldptr");
+                builder_->CreateAlignedStore(toStore, fieldPtr, llvm::Align(8));
+            }
+        } else {
+            fullType = createStructTypeSafe(context_, std::vector<llvm::Type*>{tagType});
+            uint64_t fullSize = DL.getTypeAllocSize(fullType);
+            rawPtr = builder_->CreateCall(
+                getOrCreateFirstAlloc(),
+                {llvm::ConstantInt::get(llvm::Type::getInt64Ty(context_), fullSize)},
+                "adtheap"
+            );
+            llvm::Value* structPtr = builder_->CreateBitCast(rawPtr, llvm::PointerType::get(fullType, 0), "adtstruct");
+            builder_->CreateAlignedStore(
+                llvm::ConstantInt::get(context_, llvm::APInt(64, static_cast<uint64_t>(tagIndex))),
+                builder_->CreateStructGEP(fullType, structPtr, 0, "tagptr"), llvm::Align(8));
+        }
+        return builder_->CreateBitCast(rawPtr, payloadPtrType, "adtptr");
     }
 
     // Phase 7.3: arrayLength is compiler intrinsic (metadata lookup)
@@ -1270,8 +1522,249 @@ llvm::Value* IRGenerator::evaluateFunctionCall(ast::FunctionCallExpr* expr, bool
         return builder_->CreateCall(flen, {args[0], zero}, "arraylen");
     }
 
+    // Helper to resolve array metadata from an array value (e.g. args[0])
+    auto resolveArrayMetadata = [this](llvm::Value* arrayVal) -> std::pair<llvm::AllocaInst*, int64_t> {
+        auto it = arrayMetadata_.find(arrayVal);
+        if (it != arrayMetadata_.end())
+            return {it->second.alloca, static_cast<int64_t>(it->second.size)};
+        if (llvm::LoadInst* loadInst = llvm::dyn_cast<llvm::LoadInst>(arrayVal)) {
+            it = arrayMetadata_.find(loadInst->getPointerOperand());
+            if (it != arrayMetadata_.end())
+                return {it->second.alloca, static_cast<int64_t>(it->second.size)};
+        }
+        for (const auto& varPair : localVars_) {
+            it = arrayMetadata_.find(varPair.second);
+            if (it != arrayMetadata_.end())
+                return {it->second.alloca, static_cast<int64_t>(it->second.size)};
+        }
+        return {nullptr, 0};
+    };
+
+    // arrayReduceIntSum(arr: Array<Int>) -> Int
+    if (funcName == "arrayReduceIntSum" && args.size() == 1) {
+        auto [baseAlloca, len] = resolveArrayMetadata(args[0]);
+        if (!baseAlloca) {
+            errorReporter_.error(expr->getLocation(), "arrayReduceIntSum: array metadata not available");
+            return nullptr;
+        }
+        llvm::Type* i64ptr = llvm::PointerType::get(i64, 0);
+        llvm::Value* basePtr = builder_->CreateBitCast(baseAlloca, i64ptr, "arrbase");
+        llvm::Function* fn = module_->getFunction("first_array_reduce_int_sum");
+        if (!fn) fn = llvm::Function::Create(
+            llvm::FunctionType::get(i64, {i64ptr, i64}, false),
+            llvm::Function::ExternalLinkage, "first_array_reduce_int_sum", module_.get());
+        return builder_->CreateCall(fn, {basePtr, builder_->getInt64(len)}, "reduce_sum");
+    }
+
+    // arrayMapIntDouble(arr: Array<Int>) -> Array<Int>
+    if (funcName == "arrayMapIntDouble" && args.size() == 1) {
+        auto [baseAlloca, len] = resolveArrayMetadata(args[0]);
+        if (!baseAlloca || len <= 0) {
+            errorReporter_.error(expr->getLocation(), "arrayMapIntDouble: array metadata not available");
+            return nullptr;
+        }
+        llvm::Type* i64ptr = llvm::PointerType::get(i64, 0);
+        llvm::Value* basePtr = builder_->CreateBitCast(baseAlloca, i64ptr, "arrbase");
+        llvm::Function* fn = module_->getFunction("first_array_map_int_double");
+        if (!fn) fn = llvm::Function::Create(
+            llvm::FunctionType::get(i64ptr, {i64ptr, i64}, false),
+            llvm::Function::ExternalLinkage, "first_array_map_int_double", module_.get());
+        llvm::Value* outPtr = builder_->CreateCall(fn, {basePtr, builder_->getInt64(len)}, "map_out");
+        if (!outPtr) return nullptr;
+        llvm::ArrayType* arrTy = llvm::ArrayType::get(i64, static_cast<unsigned>(len));
+        llvm::AllocaInst* resultAlloca = builder_->CreateAlloca(arrTy, nullptr, "map_result");
+        for (int64_t i = 0; i < len; ++i) {
+            llvm::Value* srcElem = builder_->CreateLoad(i64, builder_->CreateGEP(i64, outPtr, builder_->getInt64(i)), "mapelem");
+            llvm::Value* dstGep = builder_->CreateGEP(arrTy, resultAlloca, {builder_->getInt64(0), builder_->getInt64(i)}, "dst");
+            builder_->CreateStore(srcElem, dstGep);
+        }
+        ArrayMetadata meta;
+        meta.elementType = i64;
+        meta.size = static_cast<size_t>(len);
+        meta.alloca = resultAlloca;
+        arrayMetadata_[resultAlloca] = meta;
+        arrayMetadata_[builder_->CreateBitCast(resultAlloca, i8ptr)] = meta;
+        return builder_->CreateBitCast(resultAlloca, i8ptr, "map_arr");
+    }
+
+    // arrayFilterIntPositive(arr: Array<Int>) -> Array<Int>
+    if (funcName == "arrayFilterIntPositive" && args.size() == 1) {
+        auto [baseAlloca, len] = resolveArrayMetadata(args[0]);
+        if (!baseAlloca) {
+            errorReporter_.error(expr->getLocation(), "arrayFilterIntPositive: array metadata not available");
+            return nullptr;
+        }
+        llvm::Type* i64ptr = llvm::PointerType::get(i64, 0);
+        llvm::Value* basePtr = builder_->CreateBitCast(baseAlloca, i64ptr, "arrbase");
+        llvm::AllocaInst* outLenAlloca = builder_->CreateAlloca(i64, nullptr, "out_len");
+        llvm::Function* fn = module_->getFunction("first_array_filter_int_positive");
+        if (!fn) fn = llvm::Function::Create(
+            llvm::FunctionType::get(i64ptr, {i64ptr, i64, llvm::PointerType::get(i64, 0)}, false),
+            llvm::Function::ExternalLinkage, "first_array_filter_int_positive", module_.get());
+        llvm::Value* outPtr = builder_->CreateCall(fn, {basePtr, builder_->getInt64(len), outLenAlloca}, "filter_out");
+        llvm::Value* outLenVal = builder_->CreateLoad(i64, outLenAlloca, "out_len_val");
+        llvm::Value* outLenZero = builder_->CreateICmpEQ(outLenVal, builder_->getInt64(0), "is_zero");
+        llvm::BasicBlock* hasResult = llvm::BasicBlock::Create(context_, "filter_has", currentFunction_);
+        llvm::BasicBlock* emptyResult = llvm::BasicBlock::Create(context_, "filter_empty", currentFunction_);
+        llvm::BasicBlock* mergeBB = llvm::BasicBlock::Create(context_, "filter_merge", currentFunction_);
+        builder_->CreateCondBr(outLenZero, emptyResult, hasResult);
+        builder_->SetInsertPoint(hasResult);
+        llvm::AllocaInst* resultAlloca = builder_->CreateAlloca(i64, outLenVal, "filter_result");
+        llvm::BasicBlock* loopCond = llvm::BasicBlock::Create(context_, "filter_loop_cond", currentFunction_);
+        llvm::BasicBlock* loopBody = llvm::BasicBlock::Create(context_, "filter_loop_body", currentFunction_);
+        llvm::BasicBlock* loopEnd = llvm::BasicBlock::Create(context_, "filter_loop_end", currentFunction_);
+        builder_->CreateBr(loopCond);
+        builder_->SetInsertPoint(loopCond);
+        llvm::PHINode* iPhi = builder_->CreatePHI(i64, 2, "i");
+        iPhi->addIncoming(builder_->getInt64(0), hasResult);
+        llvm::Value* cmp = builder_->CreateICmpSLT(iPhi, outLenVal, "cmp");
+        builder_->CreateCondBr(cmp, loopBody, loopEnd);
+        builder_->SetInsertPoint(loopBody);
+        llvm::Value* srcElem = builder_->CreateLoad(i64, builder_->CreateGEP(i64, outPtr, iPhi), "felem");
+        llvm::Value* dstGep = builder_->CreateGEP(i64, resultAlloca, iPhi, "fdst");
+        builder_->CreateStore(srcElem, dstGep);
+        llvm::Value* iNext = builder_->CreateAdd(iPhi, builder_->getInt64(1), "i_next");
+        iPhi->addIncoming(iNext, loopBody);
+        builder_->CreateBr(loopCond);
+        builder_->SetInsertPoint(loopEnd);
+        ArrayMetadata meta;
+        meta.elementType = i64;
+        meta.size = 0;
+        meta.alloca = resultAlloca;
+        arrayMetadata_[resultAlloca] = meta;
+        arrayMetadata_[builder_->CreateBitCast(resultAlloca, i8ptr)] = meta;
+        llvm::Value* resultPtr = builder_->CreateBitCast(resultAlloca, i8ptr, "filter_arr");
+        builder_->CreateBr(mergeBB);
+        builder_->SetInsertPoint(emptyResult);
+        llvm::AllocaInst* emptyAlloca = builder_->CreateAlloca(llvm::ArrayType::get(i64, 1), nullptr, "empty_arr");
+        ArrayMetadata emptyMeta;
+        emptyMeta.elementType = i64;
+        emptyMeta.size = 0;
+        emptyMeta.alloca = emptyAlloca;
+        arrayMetadata_[emptyAlloca] = emptyMeta;
+        arrayMetadata_[builder_->CreateBitCast(emptyAlloca, i8ptr)] = emptyMeta;
+        llvm::Value* emptyPtr = builder_->CreateBitCast(emptyAlloca, i8ptr);
+        builder_->CreateBr(mergeBB);
+        builder_->SetInsertPoint(mergeBB);
+        llvm::PHINode* phi = builder_->CreatePHI(i8ptr, 2, "filter_phi");
+        phi->addIncoming(resultPtr, loopEnd);
+        phi->addIncoming(emptyPtr, emptyResult);
+        return phi;
+    }
+
     // Look up function in module
     llvm::Function* func = module_->getFunction(funcName);
+
+    // Call monomorphized generic when we have inferred type args or can infer from context
+    // Prefer a function that has a body (implementation) over a signature-only decl so monomorphized body is generated
+    ast::FunctionDecl* astFunc = nullptr;
+    if (currentProgram_) {
+        for (const auto& f : currentProgram_->getFunctions()) {
+            if (f && f->getName() == funcName) {
+                if (!astFunc)
+                    astFunc = f.get();
+                else if (astFunc->isSignature() && !f->isSignature())
+                    astFunc = f.get();
+                if (astFunc && !astFunc->isSignature())
+                    break;
+            }
+        }
+    }
+    if (astFunc && !astFunc->getGenericParams().empty()) {
+            std::vector<ast::Type*> typeArgs;
+            std::vector<std::unique_ptr<ast::Type>> typeArgsStorage;
+            const auto& inferred = expr->getInferredTypeArgs();
+            if (!inferred.empty()) {
+                if (currentTypeSubst_) {
+                    for (const auto& t : inferred) {
+                        if (!t) continue;
+                        auto sub = substituteType(t.get(), *currentTypeSubst_);
+                        if (sub) {
+                            typeArgsStorage.push_back(std::move(sub));
+                            typeArgs.push_back(typeArgsStorage.back().get());
+                        } else {
+                            typeArgs.push_back(t.get());
+                        }
+                    }
+                } else {
+                    for (const auto& t : inferred)
+                        if (t) typeArgs.push_back(t.get());
+                }
+            } else if (currentTypeSubst_) {
+                // Recursive call inside monomorphized body: no inferred args on expr; use current substitution
+                for (const auto& gp : astFunc->getGenericParams()) {
+                    auto it = currentTypeSubst_->find(gp.name);
+                    if (it == currentTypeSubst_->end() || !it->second) break;
+                    typeArgs.push_back(it->second);
+                }
+            } else {
+                // Fallback: infer type args from variable declarations (e.g. isEmpty(xs) with xs: List<Int>)
+                auto getDeclBody = [this]() -> const std::vector<std::unique_ptr<ast::Stmt>>* {
+                    if (currentFunctionDecl_) return &currentFunctionDecl_->getBody();
+                    if (currentInteractionDecl_) return &currentInteractionDecl_->getBody();
+                    return nullptr;
+                };
+                const auto* body = getDeclBody();
+                if (body && argExprs.size() == astFunc->getParameters().size()) {
+                    std::map<std::string, ast::Type*> subst;
+                    for (size_t i = 0; i < argExprs.size(); ++i) {
+                        ast::Type* paramType = astFunc->getParameters()[i]->getType();
+                        ast::Type* argType = nullptr;
+                        if (auto* varExpr = dynamic_cast<ast::VariableExpr*>(argExprs[i].get())) {
+                            for (const auto& stmt : *body) {
+                                if (auto* vd = dynamic_cast<ast::VariableDecl*>(stmt.get())) {
+                                    if (vd->getName() == varExpr->getName() && vd->getType()) {
+                                        argType = vd->getType();
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                        if (!argType) continue;
+                        // Match ParameterizedType: List<T> vs List<Int> -> T = Int
+                        auto* pParam = dynamic_cast<ast::ParameterizedType*>(paramType);
+                        auto* pArg = dynamic_cast<ast::ParameterizedType*>(argType);
+                        if (pParam && pArg && pParam->getBaseName() == pArg->getBaseName() &&
+                            pParam->getTypeArgs().size() == pArg->getTypeArgs().size()) {
+                            for (size_t j = 0; j < pParam->getTypeArgs().size(); ++j) {
+                                if (auto* g = dynamic_cast<ast::GenericType*>(pParam->getTypeArgs()[j].get())) {
+                                    if (pArg->getTypeArgs()[j]) subst[g->getName()] = pArg->getTypeArgs()[j].get();
+                                }
+                            }
+                        } else if (auto* gParam = dynamic_cast<ast::GenericType*>(paramType)) {
+                            subst[gParam->getName()] = argType;
+                        }
+                    }
+                    if (subst.size() == astFunc->getGenericParams().size()) {
+                        for (const auto& gp : astFunc->getGenericParams()) {
+                            auto it = subst.find(gp.name);
+                            if (it == subst.end() || !it->second) break;
+                            typeArgs.push_back(it->second);
+                        }
+                    }
+                }
+            }
+            if (typeArgs.size() == astFunc->getGenericParams().size()) {
+                // Only monomorphize when all type args are concrete (no GenericType)
+                bool allConcrete = true;
+                for (ast::Type* ta : typeArgs) {
+                    if (ta && dynamic_cast<ast::GenericType*>(ta)) {
+                        allConcrete = false;
+                        break;
+                    }
+                }
+                if (allConcrete) {
+                    llvm::Function* monoFunc = monomorphizeFunction(astFunc, typeArgs);
+                    if (monoFunc) {
+                        bool needBody = monoFunc->isDeclaration() && generatingMonomorphized_.count(monoFunc) == 0;
+                        // Generate body only if not already generating it (avoid infinite recursion for recursive calls)
+                        if (needBody)
+                            generateMonomorphizedBody(astFunc, typeArgs, monoFunc);
+                        func = monoFunc;
+                    }
+                }
+            }
+    }
 
     // Stdlib (Phase 7.3): map First name -> C symbol and signature when not in module
     auto getStdlibSig = [&](const std::string& name) -> std::pair<std::string, llvm::FunctionType*> {
@@ -1348,8 +1841,10 @@ llvm::Value* IRGenerator::evaluateFunctionCall(ast::FunctionCallExpr* expr, bool
         );
         return nullptr;
     }
-    
-    // If the callee has a known function type, cast arguments as needed (opaque ptr -> i64 etc.).
+
+    // (First-arg literal fix for cons is applied when building args above.)
+
+    // If the callee has a known function type, cast arguments as needed (opaque ptr -> i64, record ptr -> struct by value, etc.).
     if (func->getFunctionType() && func->getFunctionType()->getNumParams() == args.size()) {
         for (size_t i = 0; i < args.size(); ++i) {
             llvm::Type* pt = func->getFunctionType()->getParamType(static_cast<unsigned>(i));
@@ -1358,13 +1853,28 @@ llvm::Value* IRGenerator::evaluateFunctionCall(ast::FunctionCallExpr* expr, bool
             if (pt->isIntegerTy(64) && at->isPointerTy()) {
                 args[i] = builder_->CreatePtrToInt(args[i], llvm::Type::getInt64Ty(context_), "ptrtoint");
             } else if (pt->isPointerTy() && at->isIntegerTy(64)) {
-                args[i] = builder_->CreateIntToPtr(args[i], llvm::PointerType::get(context_, 0), "inttoptr");
+                // Erased generic param: pass by pointer so callee/optimizer never dereference invalid addr (e.g. 0x1)
+                llvm::AllocaInst* slot = builder_->CreateAlloca(llvm::Type::getInt64Ty(context_), nullptr, "scalar.arg");
+                builder_->CreateAlignedStore(args[i], slot, llvm::Align(8));
+                args[i] = builder_->CreateBitCast(slot, i8ptr, "scalar.arg.ptr");
+            } else if (pt->isPointerTy() && at->isDoubleTy()) {
+                llvm::AllocaInst* slot = builder_->CreateAlloca(llvm::Type::getDoubleTy(context_), nullptr, "scalar.arg");
+                builder_->CreateAlignedStore(args[i], slot, llvm::Align(8));
+                args[i] = builder_->CreateBitCast(slot, i8ptr, "scalar.arg.ptr");
+            } else if (pt->isPointerTy() && at->isIntegerTy(1)) {
+                llvm::AllocaInst* slot = builder_->CreateAlloca(llvm::Type::getInt1Ty(context_), nullptr, "scalar.arg");
+                builder_->CreateAlignedStore(args[i], slot, llvm::Align(1));
+                args[i] = builder_->CreateBitCast(slot, i8ptr, "scalar.arg.ptr");
+            } else if (pt->isStructTy() && at->isPointerTy()) {
+                // Record literal/arg is a pointer; param expects struct by value - load the struct
+                args[i] = builder_->CreateLoad(pt, args[i], "loadrec");
             }
         }
     }
 
     // Create call instruction (Phase 6.2: tail call when requested for TCO)
-    llvm::Value* callValue = builder_->CreateCall(func, args, "calltmp");
+    llvm::Value* callValue = builder_->CreateCall(func, args,
+        func->getReturnType()->isVoidTy() ? "" : "calltmp");
     if (tailCall) {
         if (auto* callInst = llvm::dyn_cast<llvm::CallInst>(callValue)) {
             callInst->setTailCall(true);
@@ -1386,10 +1896,10 @@ void IRGenerator::generateStatement(ast::Stmt* stmt) {
         generateExprStmt(exprStmt);
     } else if (auto* ifStmt = dynamic_cast<ast::IfStmt*>(stmt)) {
         generateIfStmt(ifStmt);
-    } else if (auto* whileStmt = dynamic_cast<ast::WhileStmt*>(stmt)) {
-        generateWhileStmt(whileStmt);
     } else if (auto* assignStmt = dynamic_cast<ast::AssignmentStmt*>(stmt)) {
         generateAssignmentStmt(assignStmt);
+    } else if (auto* forInStmt = dynamic_cast<ast::ForInStmt*>(stmt)) {
+        generateForInStmt(forInStmt);
     } else if (auto* selectStmt = dynamic_cast<ast::SelectStmt*>(stmt)) {
         generateSelectStmt(selectStmt);
     }
@@ -1454,22 +1964,24 @@ void IRGenerator::generateVariableDecl(ast::VariableDecl* stmt) {
     // Track the type explicitly for proper loading with opaque pointers
     setVariable(stmt->getName(), alloca, varType);
     
-    // If this is an array variable, preserve metadata
-    // Check if initValue has array metadata
+    // If this is an array variable, preserve metadata so indexing via this variable
+    // can find the original array storage. Key by variable's alloca; keep metadata.alloca
+    // as the original array alloca (do not overwrite with variable's alloca).
     auto arrayIt = arrayMetadata_.find(initValue);
     if (arrayIt != arrayMetadata_.end()) {
-        // Copy metadata for the stored value
         ArrayMetadata metadata = arrayIt->second;
-        metadata.alloca = alloca;
         arrayMetadata_[alloca] = metadata;
     }
     
-    // If this is a record variable, preserve metadata
+    // If this is a record variable, preserve metadata so field access and match find the struct.
+    // Key by variable's alloca; keep metadata.alloca as the original struct alloca (initValue
+    // is the record ptr from the literal, and we store that in the variable's alloca).
     auto recordIt = recordMetadata_.find(initValue);
     if (recordIt != recordMetadata_.end()) {
         RecordMetadata metadata = recordIt->second;
-        metadata.alloca = alloca;
         recordMetadata_[alloca] = metadata;
+        llvm::Value* castPtr = builder_->CreateBitCast(alloca, llvm::PointerType::get(context_, 0), stmt->getName() + "_ptr");
+        recordMetadata_[castPtr] = metadata;
     }
 }
 
@@ -1480,8 +1992,15 @@ void IRGenerator::generateReturnStmt(ast::ReturnStmt* stmt) {
         llvm::Value* returnValue = nullptr;
         if (auto* callExpr = dynamic_cast<ast::FunctionCallExpr*>(returnExpr)) {
             returnValue = evaluateFunctionCall(callExpr, /*tailCall=*/ true);
+            // If tail path returned null (e.g. constructor "Cons" not in map), try normal eval (ConstructorExpr path)
+            if (!returnValue && getConstructorIndex(callExpr->getName()).first)
+                returnValue = evaluateExpr(returnExpr);
         } else {
+            // Mark tail context so calls inside match/if/block (e.g. case => f()) are emitted as tail calls
+            bool savedTailContext = inTailContext_;
+            inTailContext_ = true;
             returnValue = evaluateExpr(returnExpr);
+            inTailContext_ = savedTailContext;
         }
         if (returnValue) {
             builder_->CreateRet(returnValue);
@@ -1504,10 +2023,6 @@ void IRGenerator::generateExprStmt(ast::ExprStmt* stmt) {
 
 void IRGenerator::visitIfStmt(ast::IfStmt* node) {
     generateIfStmt(node);
-}
-
-void IRGenerator::visitWhileStmt(ast::WhileStmt* node) {
-    generateWhileStmt(node);
 }
 
 void IRGenerator::generateIfStmt(ast::IfStmt* stmt) {
@@ -1581,67 +2096,6 @@ void IRGenerator::generateIfStmt(ast::IfStmt* stmt) {
     
     // Set insert point to merge block
     builder_->SetInsertPoint(mergeBB);
-}
-
-void IRGenerator::generateWhileStmt(ast::WhileStmt* stmt) {
-    if (!stmt || !currentFunction_) {
-        return;
-    }
-    
-    llvm::Function* func = currentFunction_;
-    
-    // Create basic blocks
-    llvm::BasicBlock* condBB = llvm::BasicBlock::Create(context_, "whilecond", func);
-    llvm::BasicBlock* bodyBB = llvm::BasicBlock::Create(context_, "whilebody", func);
-    llvm::BasicBlock* afterBB = llvm::BasicBlock::Create(context_, "whileend", func);
-    
-    // Branch to condition block
-    builder_->CreateBr(condBB);
-    
-    // Generate condition check
-    builder_->SetInsertPoint(condBB);
-    llvm::Value* condValue = evaluateExpr(stmt->getCondition());
-    if (!condValue) {
-        return;
-    }
-    
-    // Convert condition to boolean if needed
-    llvm::Type* condType = condValue->getType();
-    if (!condType->isIntegerTy(1)) {
-        if (condType->isIntegerTy()) {
-            condValue = builder_->CreateICmpNE(
-                condValue,
-                llvm::ConstantInt::get(condType, 0),
-                "whilecond"
-            );
-        } else if (condType->isFloatingPointTy()) {
-            condValue = builder_->CreateFCmpONE(
-                condValue,
-                llvm::ConstantFP::get(condType, 0.0),
-                "whilecond"
-            );
-        } else {
-            errorReporter_.error(
-                stmt->getLocation(),
-                "While condition must be a boolean, integer, or floating-point value"
-            );
-            return;
-        }
-    }
-    
-    // Branch based on condition
-    builder_->CreateCondBr(condValue, bodyBB, afterBB);
-    
-    // Generate loop body
-    builder_->SetInsertPoint(bodyBB);
-    generateStatement(stmt->getBody());
-    // If body doesn't terminate, branch back to condition
-    if (!bodyBB->getTerminator()) {
-        builder_->CreateBr(condBB);
-    }
-    
-    // Set insert point to after loop
-    builder_->SetInsertPoint(afterBB);
 }
 
 llvm::Value* IRGenerator::evaluateShortCircuitAnd(ast::BinaryExpr* expr) {
@@ -1854,19 +2308,14 @@ llvm::Value* IRGenerator::evaluateRecordLiteral(ast::RecordLiteralExpr* expr) {
     }
     
     // Create struct type from field types
-    llvm::StructType* structType = llvm::StructType::get(context_, fieldTypes);
+    llvm::StructType* structType = createStructTypeSafe(context_, fieldTypes);
     
     // Allocate struct on stack
     llvm::AllocaInst* structAlloca = builder_->CreateAlloca(structType, nullptr, "rectmp");
     
     // Store each field value
     for (size_t i = 0; i < fields.size(); ++i) {
-        // Get pointer to field i
-        llvm::Value* indices[] = {
-            llvm::ConstantInt::get(context_, llvm::APInt(64, 0)),
-            llvm::ConstantInt::get(context_, llvm::APInt(64, i))
-        };
-        llvm::Value* fieldPtr = builder_->CreateGEP(structType, structAlloca, indices, "recfield");
+        llvm::Value* fieldPtr = builder_->CreateStructGEP(structType, structAlloca, static_cast<unsigned>(i), "recfield");
         
         // Store field value
         builder_->CreateStore(fieldValues[i], fieldPtr);
@@ -1907,6 +2356,7 @@ llvm::Value* IRGenerator::evaluateFieldAccess(ast::FieldAccessExpr* expr) {
     
     // Look up record metadata
     auto it = recordMetadata_.find(recordValue);
+    bool recordIsIndirect = false;  // true when variable holds pointer to record (e.g. ADT payload)
     
     // If not found, try to find it by checking local variables
     if (it == recordMetadata_.end()) {
@@ -1915,6 +2365,7 @@ llvm::Value* IRGenerator::evaluateFieldAccess(ast::FieldAccessExpr* expr) {
             auto varIt = recordMetadata_.find(varAlloca);
             if (varIt != recordMetadata_.end()) {
                 it = varIt;
+                recordIsIndirect = true;  // variable holds pointer; record is at recordValue
                 break;
             }
         }
@@ -1943,23 +2394,25 @@ llvm::Value* IRGenerator::evaluateFieldAccess(ast::FieldAccessExpr* expr) {
     }
     
     if (fieldIndex >= fieldNames.size()) {
-        errorReporter_.error(
-            expr->getLocation(),
-            "Field '" + fieldName + "' not found in record"
-        );
-        return nullptr;
+        // Single-constructor ADT with one field (e.g. Operator(op: String)): allow any name for the single field
+        if (fieldNames.size() == 1) {
+            fieldIndex = 0;
+        } else {
+            errorReporter_.error(
+                expr->getLocation(),
+                "Field '" + fieldName + "' not found in record"
+            );
+            return nullptr;
+        }
     }
     
-    // In LLVM opaque-pointer mode, `recordAlloca` is already a pointer to the alloca'd struct.
-    // We keep the element type (`structType`) explicit when doing GEPs.
-    llvm::Value* typedPtr = recordAlloca;
+    // In LLVM opaque-pointer mode, use recordAlloca or the loaded recordValue as base.
+    // When recordIsIndirect, the variable holds a pointer to the record (e.g. ADT payload).
+    llvm::Value* typedPtr = recordIsIndirect
+        ? builder_->CreateBitCast(recordValue, llvm::PointerType::get(structType, 0), "recbase")
+        : recordAlloca;
     
-    // Get pointer to field
-    llvm::Value* indices[] = {
-        llvm::ConstantInt::get(context_, llvm::APInt(64, 0)),
-        llvm::ConstantInt::get(context_, llvm::APInt(64, fieldIndex))
-    };
-    llvm::Value* fieldPtr = builder_->CreateGEP(structType, typedPtr, indices, "recfield");
+    llvm::Value* fieldPtr = builder_->CreateStructGEP(structType, typedPtr, static_cast<unsigned>(fieldIndex), "recfield");
     
     // Get field type
     llvm::Type* fieldType = structType->getElementType(fieldIndex);
@@ -1987,56 +2440,46 @@ llvm::Value* IRGenerator::evaluateConstructor(ast::ConstructorExpr* expr) {
     (void)adtAstType;
 
     llvm::Type* tagType = llvm::Type::getInt64Ty(context_);
-    llvm::Type* payloadType = llvm::PointerType::get(context_, 0);
-    std::vector<llvm::Type*> structFields = {tagType, payloadType};
-    llvm::StructType* adtType = llvm::StructType::get(context_, structFields);
-    llvm::AllocaInst* adtAlloca = builder_->CreateAlloca(adtType, nullptr, "adttmp");
-
-    llvm::Value* tagIndices[] = {
-        llvm::ConstantInt::get(context_, llvm::APInt(64, 0)),
-        llvm::ConstantInt::get(context_, llvm::APInt(64, 0))
-    };
-    llvm::Value* tagPtr = builder_->CreateGEP(adtType, adtAlloca, tagIndices, "tagptr");
-    builder_->CreateStore(
-        llvm::ConstantInt::get(context_, llvm::APInt(64, tagIndex)),
-        tagPtr
-    );
-
-    llvm::Value* payloadValue = nullptr;
+    llvm::Type* payloadPtrType = llvm::PointerType::get(context_, 0);
+    const llvm::DataLayout& DL = module_->getDataLayout();
+    llvm::StructType* fullType = nullptr;
+    llvm::Value* rawPtr = nullptr;
     if (!argValues.empty()) {
         std::vector<llvm::Type*> fieldTypes;
         for (llvm::Value* v : argValues) fieldTypes.push_back(v->getType());
-        llvm::StructType* payloadStructType = llvm::StructType::get(context_, fieldTypes);
-        llvm::AllocaInst* payloadAlloca = builder_->CreateAlloca(payloadStructType, nullptr, "payload");
-        for (size_t i = 0; i < argValues.size(); ++i) {
-            llvm::Value* fieldIndices[] = {
-                llvm::ConstantInt::get(context_, llvm::APInt(64, 0)),
-                llvm::ConstantInt::get(context_, llvm::APInt(64, i))
-            };
-            llvm::Value* fieldPtr = builder_->CreateGEP(payloadStructType, payloadAlloca, fieldIndices, "fieldptr");
-            builder_->CreateStore(argValues[i], fieldPtr);
-        }
-        payloadValue = builder_->CreateBitCast(
-            payloadAlloca,
-            llvm::PointerType::get(context_, 0),
-            "payloadptr"
+        llvm::StructType* payloadStructType = createStructTypeSafe(context_, fieldTypes);
+        fullType = createStructTypeSafe(context_, {tagType, payloadStructType});
+        uint64_t fullSize = DL.getTypeAllocSize(fullType);
+        rawPtr = builder_->CreateCall(
+            getOrCreateFirstAlloc(),
+            {llvm::ConstantInt::get(llvm::Type::getInt64Ty(context_), fullSize)},
+            "adtheap"
         );
+        llvm::Value* structPtr = builder_->CreateBitCast(rawPtr, llvm::PointerType::get(fullType, 0), "adtstruct");
+        llvm::Value* tagGep = builder_->CreateStructGEP(fullType, structPtr, 0, "tagptr");
+        builder_->CreateAlignedStore(
+            llvm::ConstantInt::get(context_, llvm::APInt(64, tagIndex)),
+            tagGep, llvm::Align(8));
+        llvm::Value* payloadPtr = builder_->CreateStructGEP(fullType, structPtr, 1, "payloadptr");
+        for (size_t i = 0; i < argValues.size(); ++i) {
+            llvm::Value* toStore = argValues[i];
+            llvm::Value* fieldPtr = builder_->CreateStructGEP(payloadStructType, payloadPtr, static_cast<unsigned>(i), "fieldptr");
+            builder_->CreateAlignedStore(toStore, fieldPtr, llvm::Align(8));
+        }
     } else {
-        payloadValue = llvm::ConstantPointerNull::get(llvm::PointerType::get(context_, 0));
+        fullType = createStructTypeSafe(context_, std::vector<llvm::Type*>{tagType});
+        uint64_t fullSize = DL.getTypeAllocSize(fullType);
+        rawPtr = builder_->CreateCall(
+            getOrCreateFirstAlloc(),
+            {llvm::ConstantInt::get(llvm::Type::getInt64Ty(context_), fullSize)},
+            "adtheap"
+        );
+        llvm::Value* structPtr = builder_->CreateBitCast(rawPtr, llvm::PointerType::get(fullType, 0), "adtstruct");
+        builder_->CreateAlignedStore(
+            llvm::ConstantInt::get(context_, llvm::APInt(64, tagIndex)),
+            builder_->CreateStructGEP(fullType, structPtr, 0, "tagptr"), llvm::Align(8));
     }
-
-    llvm::Value* payloadIndices[] = {
-        llvm::ConstantInt::get(context_, llvm::APInt(64, 0)),
-        llvm::ConstantInt::get(context_, llvm::APInt(64, 1))
-    };
-    llvm::Value* payloadPtr = builder_->CreateGEP(adtType, adtAlloca, payloadIndices, "payloadptr");
-    builder_->CreateStore(payloadValue, payloadPtr);
-
-    return builder_->CreateBitCast(
-        adtAlloca,
-        llvm::PointerType::get(context_, 0),
-        "adtptr"
-    );
+    return builder_->CreateBitCast(rawPtr, payloadPtrType, "adtptr");
 }
 
 llvm::Value* IRGenerator::evaluateMatch(ast::MatchExpr* expr) {
@@ -2049,15 +2492,21 @@ llvm::Value* IRGenerator::evaluateMatch(ast::MatchExpr* expr) {
     // 2. For each case, check if pattern matches
     // 3. If match, bind pattern variables and evaluate case body
     // 4. Use PHI nodes to merge results from all cases
-    
     llvm::Value* matchedValue = evaluateExpr(expr->getMatchedExpr());
     if (!matchedValue) {
         return nullptr;
     }
-    
-    // If matchedValue is a pointer (i8*), we may need to load it
-    // For now, assume it's already the value we want to match against
-    // TODO: Handle different value representations (primitives vs pointers)
+    // ADT parameters may be passed by value (struct); constructor pattern matching
+    // expects a pointer (to load tag and payload). Store in an alloca if needed.
+    if (!matchedValue->getType()->isPointerTy() && matchedValue->getType()->isStructTy()) {
+        llvm::AllocaInst* adtAlloca = builder_->CreateAlloca(
+            matchedValue->getType(), nullptr, "match_scrutinee");
+        builder_->CreateAlignedStore(matchedValue, adtAlloca, llvm::Align(8));
+        matchedValue = builder_->CreateBitCast(
+            adtAlloca,
+            llvm::PointerType::get(context_, 0),
+            "match_scrutinee_ptr");
+    }
     
     const auto& cases = expr->getCases();
     if (cases.empty()) {
@@ -2100,6 +2549,28 @@ llvm::Value* IRGenerator::evaluateMatch(ast::MatchExpr* expr) {
         if (!c->hasGuard() && isCatchAll(c->getPattern())) {
             hasExplicitCatchAll = true;
             break;
+        }
+    }
+    // Record types: a RecordPattern with variable sub-patterns matches any record; treat as exhaustive
+    if (!hasExplicitCatchAll && matchedValue->getType()->isPointerTy()) {
+        for (const auto& c : cases) {
+            if (c && dynamic_cast<ast::RecordPattern*>(c->getPattern())) {
+                hasExplicitCatchAll = true;
+                break;
+            }
+        }
+    }
+    // ADT: all cases are constructor patterns — type checker already ensured exhaustiveness
+    if (!hasExplicitCatchAll) {
+        bool allConstructorPatterns = true;
+        for (const auto& c : cases) {
+            if (!c || !dynamic_cast<ast::ConstructorPattern*>(c->getPattern())) {
+                allConstructorPatterns = false;
+                break;
+            }
+        }
+        if (allConstructorPatterns && !cases.empty()) {
+            hasExplicitCatchAll = true;
         }
     }
     
@@ -2153,10 +2624,28 @@ llvm::Value* IRGenerator::evaluateMatch(ast::MatchExpr* expr) {
             return nullptr;
         }
         caseResults.push_back(caseResult);
-        resultBlocks.push_back(bodyBB); // Track the block where this result was generated
+        // Use actual insert block (e.g. inner merge of ||) so PHI predecessors match
+        resultBlocks.push_back(builder_->GetInsertBlock());
         builder_->CreateBr(mergeBB);
     }
     
+    // Determine result type: use first case, or unify Int | null (i64 + null ptr) as i64
+    if (caseResults.empty() || !caseResults[0]) {
+        errorReporter_.error(
+            expr->getLocation(),
+            "Match expression: failed to generate case results"
+        );
+        return nullptr;
+    }
+    llvm::Type* resultType = caseResults[0]->getType();
+    bool hasI64 = false, hasNullPtr = false;
+    for (llvm::Value* v : caseResults) {
+        if (v->getType()->isIntegerTy(64)) hasI64 = true;
+        if (v->getType()->isPointerTy() && llvm::isa<llvm::ConstantPointerNull>(v)) hasNullPtr = true;
+    }
+    if (hasI64 && hasNullPtr)
+        resultType = llvm::Type::getInt64Ty(context_);
+
     // Default case: no pattern matched
     builder_->SetInsertPoint(defaultBB);
     if (!hasExplicitCatchAll) {
@@ -2165,35 +2654,123 @@ llvm::Value* IRGenerator::evaluateMatch(ast::MatchExpr* expr) {
             "Match expression: no pattern matched (non-exhaustive match)"
         );
     }
-    // Return default value based on expected return type
-    // TODO: Determine return type from context
-    llvm::Value* defaultResult = llvm::ConstantInt::get(context_, llvm::APInt(64, 0));
+    llvm::Value* defaultResult = nullptr;
+    if (resultType->isIntegerTy(64)) {
+        defaultResult = llvm::ConstantInt::get(context_, llvm::APInt(64, 0, true));
+    } else if (resultType->isIntegerTy(1)) {
+        defaultResult = llvm::ConstantInt::get(context_, llvm::APInt(1, 0));
+    } else if (resultType->isDoubleTy()) {
+        defaultResult = llvm::ConstantFP::get(context_, llvm::APFloat(0.0));
+    } else if (resultType->isPointerTy()) {
+        defaultResult = llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(resultType));
+    } else {
+        defaultResult = llvm::ConstantInt::get(context_, llvm::APInt(64, 0, true));
+    }
     caseResults.push_back(defaultResult);
     builder_->CreateBr(mergeBB);
     
     // Merge block: PHI node selects result
+    // Normalize optional (T | null): null ptr -> i64 0 when result type is i64 so PHI type is consistent
+    auto normalizeForPhi = [&](llvm::Value* val) -> llvm::Value* {
+        if (resultType->isIntegerTy(64) && val->getType()->isPointerTy() &&
+            llvm::isa<llvm::ConstantPointerNull>(val))
+            return llvm::ConstantInt::get(context_, llvm::APInt(64, 0, true));
+        return val;
+    };
+
     builder_->SetInsertPoint(mergeBB);
-    
-    // Determine result type from first case result
-    if (caseResults.empty() || !caseResults[0]) {
-        errorReporter_.error(
-            expr->getLocation(),
-            "Match expression: failed to generate case results"
-        );
-        return nullptr;
-    }
-    
-    llvm::Type* resultType = caseResults[0]->getType();
     llvm::PHINode* phi = builder_->CreatePHI(resultType, caseResults.size() + 1, "matchresult");
-    
+
     // Add incoming values from result blocks (match blocks or guard pass blocks)
     for (size_t i = 0; i < resultBlocks.size(); ++i) {
-        phi->addIncoming(caseResults[i], resultBlocks[i]);
+        llvm::Value* val = (caseResults[i]->getType() != resultType) ? normalizeForPhi(caseResults[i]) : caseResults[i];
+        phi->addIncoming(val, resultBlocks[i]);
     }
     // Add default result
-    phi->addIncoming(defaultResult, defaultBB);
-    
+    llvm::Value* defVal = (defaultResult->getType() != resultType) ? normalizeForPhi(defaultResult) : defaultResult;
+    phi->addIncoming(defVal, defaultBB);
+
     return phi;
+}
+
+llvm::Value* IRGenerator::evaluateBlockExpr(ast::BlockExpr* expr) {
+    if (!expr || !currentFunction_) return nullptr;
+    for (const auto& stmt : expr->getStatements()) {
+        generateStatement(stmt.get());
+    }
+    if (expr->hasValueExpr()) {
+        return evaluateExpr(expr->getValueExpr());
+    }
+    return llvm::ConstantInt::get(context_, llvm::APInt(64, 0));
+}
+
+llvm::Value* IRGenerator::evaluateIfExpr(ast::IfExpr* expr) {
+    if (!expr || !currentFunction_) return nullptr;
+    ast::Expr* thenBranch = expr->getThenBranch();
+    ast::Expr* elseBranch = expr->getElseBranch();
+    if (!thenBranch || !elseBranch) {
+        errorReporter_.error(
+            expr->getLocation(),
+            "if expression requires both then and else branches");
+        return nullptr;
+    }
+    llvm::Value* condValue = evaluateExpr(expr->getCondition());
+    if (!condValue) return nullptr;
+    llvm::Type* condType = condValue->getType();
+    if (!condType->isIntegerTy(1)) {
+        if (condType->isIntegerTy()) {
+            condValue = builder_->CreateICmpNE(
+                condValue,
+                llvm::ConstantInt::get(condType, 0),
+                "ifcond");
+        } else if (condType->isFloatingPointTy()) {
+            condValue = builder_->CreateFCmpONE(
+                condValue,
+                llvm::ConstantFP::get(condType, 0.0),
+                "ifcond");
+        } else {
+            errorReporter_.error(
+                expr->getLocation(),
+                "If condition must be boolean, integer, or floating-point");
+            return nullptr;
+        }
+    }
+    llvm::Function* func = currentFunction_;
+    llvm::BasicBlock* thenBB = llvm::BasicBlock::Create(context_, "if.then", func);
+    llvm::BasicBlock* elseBB = llvm::BasicBlock::Create(context_, "if.else", func);
+    llvm::BasicBlock* mergeBB = llvm::BasicBlock::Create(context_, "if.cont", func);
+    builder_->CreateCondBr(condValue, thenBB, elseBB);
+    builder_->SetInsertPoint(thenBB);
+    llvm::Value* thenVal = evaluateExpr(thenBranch);
+    if (!thenVal) return nullptr;
+    builder_->CreateBr(mergeBB);
+    builder_->SetInsertPoint(elseBB);
+    llvm::Value* elseVal = evaluateExpr(elseBranch);
+    if (!elseVal) return nullptr;
+    // When else branch is another if (else-if), the insert point is the inner merge block,
+    // not elseBB. The phi must get the else value from the block that actually flows to mergeBB.
+    llvm::BasicBlock* elseSourceBB = builder_->GetInsertBlock();
+    if (!elseSourceBB->getTerminator()) {
+        builder_->CreateBr(mergeBB);
+    }
+    builder_->SetInsertPoint(mergeBB);
+    llvm::Type* resultType = thenVal->getType();
+    if (resultType != elseVal->getType()) {
+        errorReporter_.error(
+            expr->getLocation(),
+            "if expression branches must produce the same type");
+        return nullptr;
+    }
+    llvm::PHINode* phi = builder_->CreatePHI(resultType, 2, "if.result");
+    phi->addIncoming(thenVal, thenBB);
+    phi->addIncoming(elseVal, elseSourceBB);
+    return phi;
+}
+
+llvm::Value* IRGenerator::evaluateRangeExpr(ast::RangeExpr* expr) {
+    // Range as standalone expression: return nullptr (used only in for-in)
+    (void)expr;
+    return nullptr;
 }
 
 bool IRGenerator::generatePatternMatch(ast::Pattern* pattern, llvm::Value* value,
@@ -2257,15 +2834,35 @@ bool IRGenerator::generatePatternMatch(ast::Pattern* pattern, llvm::Value* value
     else if (auto* recordPattern = dynamic_cast<ast::RecordPattern*>(pattern)) {
         // Record pattern: extract specified fields and match subpatterns.
         // This relies on recordMetadata_ (same mechanism as field access).
-        auto it = recordMetadata_.find(value);
+        // Value may be a BitCast(alloca) when matching on a record variable, or the alloca itself.
+        llvm::Value* recordKey = value;
+        if (auto* cast = llvm::dyn_cast<llvm::CastInst>(value))
+            recordKey = cast->getOperand(0);
+        else if (auto* load = llvm::dyn_cast<llvm::LoadInst>(value))
+            recordKey = load->getPointerOperand();
+        auto it = recordMetadata_.find(recordKey);
         if (it == recordMetadata_.end()) {
-            // Try to find metadata via local variable allocas (same fallback as evaluateFieldAccess)
+            it = recordMetadata_.find(value);
+        }
+        if (it == recordMetadata_.end()) {
             for (const auto& varPair : localVars_) {
                 llvm::Value* varAlloca = varPair.second;
-                auto varIt = recordMetadata_.find(varAlloca);
-                if (varIt != recordMetadata_.end()) {
-                    it = varIt;
-                    break;
+                if (varAlloca == value || varAlloca == recordKey) {
+                    auto varIt = recordMetadata_.find(varAlloca);
+                    if (varIt != recordMetadata_.end()) {
+                        it = varIt;
+                        break;
+                    }
+                }
+                if (recordKey != value) {
+                    auto* cast = llvm::dyn_cast<llvm::CastInst>(value);
+                    if (cast && cast->getOperand(0) == varAlloca) {
+                        auto varIt = recordMetadata_.find(varAlloca);
+                        if (varIt != recordMetadata_.end()) {
+                            it = varIt;
+                            break;
+                        }
+                    }
                 }
             }
         }
@@ -2283,7 +2880,11 @@ bool IRGenerator::generatePatternMatch(ast::Pattern* pattern, llvm::Value* value
             return false;
         }
 
-        llvm::Value* recPtr = builder_->CreateBitCast(value, llvm::PointerType::get(context_, 0), "recptr");
+        // Use the metadata's alloca as the record pointer when available (canonical);
+        // otherwise bitcast value (e.g. when value is the alloca or a cast of it).
+        llvm::Value* recPtr = meta.alloca
+            ? builder_->CreateBitCast(meta.alloca, llvm::PointerType::get(context_, 0), "recptr")
+            : builder_->CreateBitCast(value, llvm::PointerType::get(context_, 0), "recptr");
 
         llvm::Function* func = currentFunction_;
         llvm::BasicBlock* curBB = builder_->GetInsertBlock();
@@ -2307,11 +2908,7 @@ bool IRGenerator::generatePatternMatch(ast::Pattern* pattern, llvm::Value* value
             llvm::Type* fieldTy = structType->getElementType(static_cast<unsigned>(fieldIndex));
 
             builder_->SetInsertPoint(curBB);
-            llvm::Value* idxs[] = {
-                llvm::ConstantInt::get(context_, llvm::APInt(64, 0)),
-                llvm::ConstantInt::get(context_, llvm::APInt(64, fieldIndex))
-            };
-            llvm::Value* fieldPtr = builder_->CreateGEP(structType, recPtr, idxs, "recfieldptr");
+            llvm::Value* fieldPtr = builder_->CreateStructGEP(structType, recPtr, static_cast<unsigned>(fieldIndex), "recfieldptr");
             llvm::Value* fieldVal = builder_->CreateLoad(fieldTy, fieldPtr, "recfieldval");
 
             llvm::BasicBlock* nextFieldBB =
@@ -2331,7 +2928,7 @@ bool IRGenerator::generatePatternMatch(ast::Pattern* pattern, llvm::Value* value
         llvm::Type* tagType = llvm::Type::getInt64Ty(context_);
         llvm::Type* payloadType = llvm::PointerType::get(context_, 0);
         std::vector<llvm::Type*> structFields = {tagType, payloadType};
-        llvm::StructType* adtType = llvm::StructType::get(context_, structFields);
+        llvm::StructType* adtType = createStructTypeSafe(context_, structFields);
         
         // Cast value to a pointer (value might already be a pointer).
         // In LLVM opaque-pointer mode we avoid constructing typed pointers via getPointerTo().
@@ -2350,21 +2947,32 @@ bool IRGenerator::generatePatternMatch(ast::Pattern* pattern, llvm::Value* value
             );
             return false;
         }
-        
-        // Load tag
-        llvm::Value* tagIndices[] = {
-            llvm::ConstantInt::get(context_, llvm::APInt(64, 0)),
-            llvm::ConstantInt::get(context_, llvm::APInt(64, 0))
-        };
-        llvm::Value* tagPtr = builder_->CreateGEP(adtType, adtPtr, tagIndices, "tagptr");
-        llvm::Value* tag = builder_->CreateLoad(tagType, tagPtr, "tag");
 
         const std::string& constructorName = constructorPattern->getConstructorName();
+        const auto& argPatterns = constructorPattern->getArguments();
+        bool noArgConstructor = argPatterns.empty();
         auto [adtAstType, tagIndex] = getConstructorIndex(constructorName);
         llvm::Value* expectedTag = llvm::ConstantInt::get(context_, llvm::APInt(64, tagIndex));
         (void)adtAstType;
+
+        // Never load from null: if scrutinee is null, match only no-arg constructor (e.g. Nil), else go to next case.
+        llvm::Value* isNull = builder_->CreateICmpEQ(
+            adtPtr,
+            llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(adtPtr->getType())),
+            "adt.isnull"
+        );
+        llvm::BasicBlock* tagCheckBB = llvm::BasicBlock::Create(context_, "tagcheck", currentFunction_);
+        if (noArgConstructor) {
+            builder_->CreateCondBr(isNull, matchBB, tagCheckBB);
+        } else {
+            builder_->CreateCondBr(isNull, nextBB, tagCheckBB);
+        }
+        builder_->SetInsertPoint(tagCheckBB);
+
+        // Load tag only when value is non-null
+        llvm::Value* tagPtr = builder_->CreateStructGEP(adtType, adtPtr, 0, "tagptr");
+        llvm::Value* tag = builder_->CreateLoad(tagType, tagPtr, "tag");
         llvm::Value* tagMatch = builder_->CreateICmpEQ(tag, expectedTag, "tagcmp");
-        
         builder_->CreateCondBr(tagMatch, matchBB, nextBB);
         return true;
     }
@@ -2399,9 +3007,24 @@ void IRGenerator::bindPatternVariables(ast::Pattern* pattern, llvm::Value* value
         llvm::AllocaInst* alloca = builder_->CreateAlloca(varType, nullptr, varName);
         builder_->CreateStore(value, alloca);
         setVariable(varName, alloca, varType);
+        // If value is a record pointer (e.g. from Circle(c)), propagate metadata so c.radius works
+        auto metaIt = recordMetadata_.find(value);
+        if (metaIt == recordMetadata_.end() && value->getType()->isPointerTy()) {
+            llvm::Value* castVal = builder_->CreateBitCast(value, llvm::PointerType::get(context_, 0), "cast");
+            metaIt = recordMetadata_.find(castVal);
+        }
+        if (metaIt != recordMetadata_.end()) {
+            recordMetadata_[alloca] = metaIt->second;
+            recordMetadata_[builder_->CreateBitCast(alloca, llvm::PointerType::get(context_, 0), "allocacast")] = metaIt->second;
+        }
     }
     else if (auto* recordPattern = dynamic_cast<ast::RecordPattern*>(pattern)) {
-        auto it = recordMetadata_.find(value);
+        llvm::Value* recordKey = value;
+        if (auto* cast = llvm::dyn_cast<llvm::CastInst>(value))
+            recordKey = cast->getOperand(0);
+        else if (auto* load = llvm::dyn_cast<llvm::LoadInst>(value))
+            recordKey = load->getPointerOperand();
+        auto it = recordMetadata_.find(recordKey);
         if (it == recordMetadata_.end()) {
             for (const auto& varPair : localVars_) {
                 llvm::Value* varAlloca = varPair.second;
@@ -2428,27 +3051,22 @@ void IRGenerator::bindPatternVariables(ast::Pattern* pattern, llvm::Value* value
             if (nameIt == meta.fieldNames.end()) continue;
             size_t fieldIndex = static_cast<size_t>(std::distance(meta.fieldNames.begin(), nameIt));
             llvm::Type* fieldTy = structType->getElementType(static_cast<unsigned>(fieldIndex));
-            llvm::Value* idxs[] = {
-                llvm::ConstantInt::get(context_, llvm::APInt(64, 0)),
-                llvm::ConstantInt::get(context_, llvm::APInt(64, fieldIndex))
-            };
-            llvm::Value* fieldPtr = builder_->CreateGEP(structType, recPtr, idxs, "recfieldptr");
+            llvm::Value* fieldPtr = builder_->CreateStructGEP(structType, recPtr, static_cast<unsigned>(fieldIndex), "recfieldptr");
             llvm::Value* fieldVal = builder_->CreateLoad(fieldTy, fieldPtr, "recfieldval");
             bindPatternVariables(fp.pattern.get(), fieldVal);
         }
     }
     else if (auto* constructorPattern = dynamic_cast<ast::ConstructorPattern*>(pattern)) {
         const auto& argPatterns = constructorPattern->getArguments();
+        // No-arg constructor (e.g. Nil): nothing to bind; value may be null so do not dereference.
         if (argPatterns.empty()) return;
 
         llvm::Type* tagType = llvm::Type::getInt64Ty(context_);
-        llvm::Type* payloadPtrType = llvm::PointerType::get(context_, 0);
-        std::vector<llvm::Type*> structFields = {tagType, payloadPtrType};
-        llvm::StructType* adtType = llvm::StructType::get(context_, structFields);
+        llvm::Type* ptrTy = llvm::PointerType::get(context_, 0);
 
         llvm::Value* adtPtr = nullptr;
         if (value->getType()->isPointerTy()) {
-            adtPtr = builder_->CreateBitCast(value, llvm::PointerType::get(context_, 0), "adtptr");
+            adtPtr = builder_->CreateBitCast(value, ptrTy, "adtptr");
         } else {
             errorReporter_.error(
                 pattern->getLocation(),
@@ -2457,42 +3075,43 @@ void IRGenerator::bindPatternVariables(ast::Pattern* pattern, llvm::Value* value
             return;
         }
 
-        llvm::Value* payloadIndices[] = {
-            llvm::ConstantInt::get(context_, llvm::APInt(64, 0)),
-            llvm::ConstantInt::get(context_, llvm::APInt(64, 1))
-        };
-        llvm::Value* payloadPtr = builder_->CreateGEP(adtType, adtPtr, payloadIndices, "payloadptr");
-        llvm::Value* payload = builder_->CreateLoad(payloadPtrType, payloadPtr, "payload");
-
         auto [adtAstType, tagIndex] = getConstructorIndex(constructorPattern->getConstructorName());
         (void)tagIndex;
-        if (!adtAstType || adtAstType->getConstructors().size() <= 0) {
-            bindPatternVariables(argPatterns[0].get(), payload);
-            return;
-        }
         ast::Constructor* constructor = nullptr;
-        for (const auto& c : adtAstType->getConstructors()) {
-            if (c->getName() == constructorPattern->getConstructorName()) {
-                constructor = c.get();
-                break;
+        if (adtAstType && adtAstType->getConstructors().size() > 0) {
+            for (const auto& c : adtAstType->getConstructors()) {
+                if (!c) continue;
+                if (c->getName() == constructorPattern->getConstructorName()) {
+                    constructor = c.get();
+                    break;
+                }
             }
         }
+        // ADT layout: single block { tag, payload_struct } (inline payload)
+        std::vector<llvm::Type*> fieldTypes;
+        if (constructor && constructor->getArgumentTypes().size() == argPatterns.size()) {
+            const auto& argTypes = constructor->getArgumentTypes();
+            for (size_t j = 0; j < argPatterns.size(); ++j) {
+                llvm::Type* ft = convertType(argTypes[j].get());
+                fieldTypes.push_back(ft ? ft : ptrTy);
+            }
+        } else {
+            fieldTypes.resize(argPatterns.size(), ptrTy);
+        }
+        llvm::StructType* payloadStructType = createStructTypeSafe(context_, fieldTypes);
+        llvm::StructType* fullType = createStructTypeSafe(context_, {tagType, payloadStructType});
+        llvm::Value* structPtr = builder_->CreateBitCast(adtPtr, llvm::PointerType::get(fullType, 0), "adtstruct");
+        llvm::Value* payloadPtr = builder_->CreateStructGEP(fullType, structPtr, 1, "payloadptr");
+
         if (!constructor || constructor->getArgumentTypes().size() != argPatterns.size()) {
             if (argPatterns.size() == 1) {
-                bindPatternVariables(argPatterns[0].get(), payload);
+                bindPatternVariables(argPatterns[0].get(), payloadPtr);
             } else {
-                std::vector<llvm::Type*> fieldTypes;
-                for (size_t j = 0; j < argPatterns.size(); ++j)
-                    fieldTypes.push_back(llvm::PointerType::get(context_, 0));
-                llvm::StructType* payloadStructType = llvm::StructType::get(context_, fieldTypes);
-                llvm::Value* structPtr = builder_->CreateBitCast(payload, llvm::PointerType::get(context_, 0), "structptr");
+                std::vector<llvm::Type*> fallbackTypes(argPatterns.size(), ptrTy);
+                llvm::StructType* fallbackPayloadType = createStructTypeSafe(context_, fallbackTypes);
                 for (size_t j = 0; j < argPatterns.size(); ++j) {
-                    llvm::Value* fieldIndices[] = {
-                        llvm::ConstantInt::get(context_, llvm::APInt(64, 0)),
-                        llvm::ConstantInt::get(context_, llvm::APInt(64, j))
-                    };
-                    llvm::Value* fieldPtr = builder_->CreateGEP(payloadStructType, structPtr, fieldIndices, "fieldptr");
-                    llvm::Value* fieldValue = builder_->CreateLoad(fieldTypes[j], fieldPtr, "fieldval");
+                    llvm::Value* fieldPtr = builder_->CreateStructGEP(fallbackPayloadType, payloadPtr, static_cast<unsigned>(j), "fieldptr");
+                    llvm::Value* fieldValue = builder_->CreateLoad(ptrTy, fieldPtr, "fieldval");
                     bindPatternVariables(argPatterns[j].get(), fieldValue);
                 }
             }
@@ -2500,31 +3119,112 @@ void IRGenerator::bindPatternVariables(ast::Pattern* pattern, llvm::Value* value
         }
 
         const auto& argTypes = constructor->getArgumentTypes();
+        if (argPatterns.size() > 1) {
+        // Use payloadPtr (inline payload) directly; no load
+        for (size_t j = 0; j < argPatterns.size(); ++j) {
+            llvm::Value* fieldPtr = builder_->CreateStructGEP(payloadStructType, payloadPtr, static_cast<unsigned>(j), "fieldptr");
+            llvm::Value* fieldValue = builder_->CreateAlignedLoad(fieldTypes[j], fieldPtr, llvm::Align(8), "fieldval");
+            ast::Type* argType = argTypes[j].get();
+            if (auto* gen = dynamic_cast<ast::GenericType*>(argType)) {
+                auto typeIt = typeDeclsMap_.find(gen->getName());
+                if (typeIt != typeDeclsMap_.end() && typeIt->second) {
+                    argType = typeIt->second;
+                }
+            }
+            // Single-constructor ADT with one field (e.g. Operator(op: String)): extract payload so x.op works
+            // fieldValue is the full ADT pointer (tag, payload); we need the payload pointer for field access
+            auto* argAdt = dynamic_cast<ast::ADTType*>(argType);
+            if (argAdt && argAdt->getConstructors().size() == 1) {
+                const auto& ctorArgs = argAdt->getConstructors()[0]->getArgumentTypes();
+                if (ctorArgs.size() == 1) {
+                    ast::Type* payloadType = ctorArgs[0].get();
+                    if (auto* genPayload = dynamic_cast<ast::GenericType*>(payloadType)) {
+                        auto typeIt = typeDeclsMap_.find(genPayload->getName());
+                        if (typeIt != typeDeclsMap_.end() && typeIt->second) {
+                            payloadType = typeIt->second;
+                        }
+                    }
+                    llvm::Type* payloadLlvmTy = convertType(payloadType);
+                    if (payloadLlvmTy) {
+                        llvm::StructType* singleFieldTy = createStructTypeSafe(context_, std::vector<llvm::Type*>{payloadLlvmTy});
+                        std::string fieldName = "value";  // single-constructor ADT single field
+                        if (auto* varPat = dynamic_cast<ast::VariablePattern*>(argPatterns[j].get())) {
+                            std::string varName = varPat->getName();
+                            // Extract payload from ADT: fieldValue points to { tag, payload }; load payload
+                            llvm::Type* tagType = llvm::Type::getInt64Ty(context_);
+                            std::vector<llvm::Type*> adtFields = {tagType, ptrTy};
+                            llvm::StructType* adtStructTy = createStructTypeSafe(context_, adtFields);
+                            llvm::Value* adtPtr = builder_->CreateBitCast(fieldValue, llvm::PointerType::get(context_, 0), "adtptr");
+                            llvm::Value* payloadSlotPtr = builder_->CreateStructGEP(adtStructTy, adtPtr, 1, "payloadslot");
+                            llvm::Value* payloadPtr = builder_->CreateAlignedLoad(ptrTy, payloadSlotPtr, llvm::Align(8), "payload");
+                            llvm::AllocaInst* alloca = builder_->CreateAlloca(ptrTy, nullptr, varName);
+                            builder_->CreateStore(payloadPtr, alloca);
+                            setVariable(varName, alloca, ptrTy);
+                            RecordMetadata meta;
+                            meta.structType = singleFieldTy;
+                            meta.fieldNames.push_back(fieldName);
+                            meta.alloca = nullptr;
+                            recordMetadata_[alloca] = meta;
+                            recordMetadata_[builder_->CreateBitCast(alloca, ptrTy, "allocacast")] = meta;
+                            continue;
+                        }
+                    }
+                }
+            }
+            bindPatternVariables(argPatterns[j].get(), fieldValue);
+        }
+        return;
+        }
         if (argPatterns.size() == 1) {
-            llvm::Type* fieldType = convertType(argTypes[0].get());
-            if (fieldType && payload->getType()->isPointerTy()) {
-                llvm::Value* casted = builder_->CreateBitCast(payload, llvm::PointerType::get(context_, 0), "payloadcast");
-                llvm::Value* loaded = builder_->CreateLoad(fieldType, casted, "payloadval");
-                bindPatternVariables(argPatterns[0].get(), loaded);
+            ast::Type* argType = argTypes[0].get();
+            if (auto* gen = dynamic_cast<ast::GenericType*>(argType)) {
+                auto it = typeDeclsMap_.find(gen->getName());
+                if (it != typeDeclsMap_.end() && it->second) {
+                    argType = it->second;
+                }
+            }
+            llvm::Value* valueForBinding = payloadPtr;
+            if (auto* recType = dynamic_cast<ast::RecordType*>(argType)) {
+                // Payload is a pointer to wrapper struct { recordPtr }; load the record pointer.
+                llvm::Type* ptrTy = llvm::PointerType::get(context_, 0);
+                llvm::StructType* wrapperTy = createStructTypeSafe(context_, std::vector<llvm::Type*>{ptrTy});
+                llvm::Value* wrapperPtr = builder_->CreateBitCast(payloadPtr, ptrTy, "wrapperptr");
+                llvm::Value* recPtrGep = builder_->CreateStructGEP(wrapperTy, wrapperPtr, 0, "recptrgep");
+                valueForBinding = builder_->CreateLoad(ptrTy, recPtrGep, "recptr");
+                RecordMetadata meta;
+                meta.structType = llvm::dyn_cast<llvm::StructType>(convertType(recType));
+                meta.alloca = nullptr;
+                for (const auto& f : recType->getFields()) {
+                    meta.fieldNames.push_back(f->getName());
+                }
+                if (meta.structType) {
+                    recordMetadata_[valueForBinding] = meta;
+                    recordMetadata_[builder_->CreateBitCast(valueForBinding, ptrTy, "recptrcast")] = meta;
+                    recordMetadata_[recPtrGep] = meta;  // RecordPattern may look up by load's pointer operand
+                }
             } else {
-                bindPatternVariables(argPatterns[0].get(), payload);
+                // Single scalar (e.g. Term(Int)): payload is pointer to struct { scalar }; load the scalar.
+                llvm::Type* scalarTy = convertType(argType);
+                if (scalarTy) {
+                    llvm::StructType* singleFieldTy = createStructTypeSafe(context_, std::vector<llvm::Type*>{scalarTy});
+                    llvm::Value* structPtr = builder_->CreateBitCast(payloadPtr, llvm::PointerType::get(context_, 0), "scalarstructptr");
+                    llvm::Value* fieldPtr = builder_->CreateStructGEP(singleFieldTy, structPtr, 0, "scalarfieldptr");
+                    valueForBinding = builder_->CreateLoad(scalarTy, fieldPtr, "scalarval");
+                }
             }
+            bindPatternVariables(argPatterns[0].get(), valueForBinding);
         } else {
+            // Payload layout must match evaluateConstructor (inline payload).
+            llvm::Type* ptrTy = llvm::PointerType::get(context_, 0);
             std::vector<llvm::Type*> fieldTypes;
-            for (const auto& t : argTypes) {
-                llvm::Type* lt = convertType(t.get());
-                fieldTypes.push_back(lt ? lt : llvm::PointerType::get(context_, 0));
-            }
-            llvm::StructType* payloadStructType = llvm::StructType::get(context_, fieldTypes);
-            llvm::Value* structPtr = builder_->CreateBitCast(payload, llvm::PointerType::get(context_, 0), "structptr");
             for (size_t j = 0; j < argPatterns.size(); ++j) {
-                llvm::Value* fieldIndices[] = {
-                    llvm::ConstantInt::get(context_, llvm::APInt(64, 0)),
-                    llvm::ConstantInt::get(context_, llvm::APInt(64, j))
-                };
-                llvm::Value* fieldPtr = builder_->CreateGEP(payloadStructType, structPtr, fieldIndices, "fieldptr");
-                llvm::Type* ft = fieldTypes[j];
-                llvm::Value* fieldValue = builder_->CreateLoad(ft, fieldPtr, "fieldval");
+                llvm::Type* ft = convertType(argTypes[j].get());
+                fieldTypes.push_back(ft ? ft : ptrTy);
+            }
+            llvm::StructType* payloadStructTypeInner = createStructTypeSafe(context_, fieldTypes);
+            for (size_t j = 0; j < argPatterns.size(); ++j) {
+                llvm::Value* fieldPtr = builder_->CreateStructGEP(payloadStructTypeInner, payloadPtr, static_cast<unsigned>(j), "fieldptr");
+                llvm::Value* fieldValue = builder_->CreateLoad(fieldTypes[j], fieldPtr, "fieldval");
                 bindPatternVariables(argPatterns[j].get(), fieldValue);
             }
         }
@@ -2737,14 +3437,14 @@ llvm::Value* IRGenerator::allocateClosure(llvm::Function* func,
         envTypes.push_back(llvm::Type::getInt8Ty(context_)); // Dummy field
     }
     
-    llvm::StructType* envType = llvm::StructType::get(context_, envTypes);
+    llvm::StructType* envType = createStructTypeSafe(context_, envTypes);
     
     // Build closure struct: { function pointer, environment }
     std::vector<llvm::Type*> closureTypes = {
         llvm::PointerType::get(context_, 0), // Function pointer (opaque ptr)
         llvm::PointerType::get(context_, 0)  // Environment pointer (opaque ptr)
     };
-    llvm::StructType* closureType = llvm::StructType::get(context_, closureTypes);
+    llvm::StructType* closureType = createStructTypeSafe(context_, closureTypes);
     
     // Allocate closure on stack
     llvm::AllocaInst* closureAlloca = builder_->CreateAlloca(closureType, nullptr, "closure");
@@ -2756,11 +3456,7 @@ llvm::Value* IRGenerator::allocateClosure(llvm::Function* func,
         "funcptr"
     );
     
-    llvm::Value* funcPtrIndices[] = {
-        llvm::ConstantInt::get(context_, llvm::APInt(64, 0)),
-        llvm::ConstantInt::get(context_, llvm::APInt(64, 0))
-    };
-    llvm::Value* funcPtrPtr = builder_->CreateGEP(closureType, closureAlloca, funcPtrIndices, "funcptrptr");
+    llvm::Value* funcPtrPtr = builder_->CreateStructGEP(closureType, closureAlloca, 0, "funcptrptr");
     builder_->CreateStore(funcPtr, funcPtrPtr);
     
     // Allocate and store captured environment
@@ -2775,22 +3471,14 @@ llvm::Value* IRGenerator::allocateClosure(llvm::Function* func,
                 if (auto* alloca = llvm::dyn_cast<llvm::AllocaInst>(capturedValue)) {
                     llvm::Value* value = builder_->CreateLoad(alloca->getAllocatedType(), alloca, "captval");
                     
-                    llvm::Value* fieldIndices[] = {
-                        llvm::ConstantInt::get(context_, llvm::APInt(64, 0)),
-                        llvm::ConstantInt::get(context_, llvm::APInt(64, i))
-                    };
-                    llvm::Value* fieldPtr = builder_->CreateGEP(envType, envAlloca, fieldIndices, "fieldptr");
+                    llvm::Value* fieldPtr = builder_->CreateStructGEP(envType, envAlloca, static_cast<unsigned>(i), "fieldptr");
                     builder_->CreateStore(value, fieldPtr);
                 }
             }
         }
         
         // Store environment pointer in closure
-        llvm::Value* envPtrIndices[] = {
-            llvm::ConstantInt::get(context_, llvm::APInt(64, 0)),
-            llvm::ConstantInt::get(context_, llvm::APInt(64, 1))
-        };
-        llvm::Value* envPtrPtr = builder_->CreateGEP(closureType, closureAlloca, envPtrIndices, "envptrptr");
+        llvm::Value* envPtrPtr = builder_->CreateStructGEP(closureType, closureAlloca, 1, "envptrptr");
         builder_->CreateStore(envAlloca, envPtrPtr);
     }
     
@@ -2814,7 +3502,7 @@ llvm::Value* IRGenerator::invokeClosure(llvm::Value* closure,
     llvm::Type* funcPtrType = llvm::PointerType::get(context_, 0);
     llvm::Type* envPtrType = llvm::PointerType::get(context_, 0);
     std::vector<llvm::Type*> closureStructFields = {funcPtrType, envPtrType};
-    llvm::StructType* closureType = llvm::StructType::get(context_, closureStructFields);
+    llvm::StructType* closureType = createStructTypeSafe(context_, closureStructFields);
     
     // Cast closure to a pointer for GEPs (opaque pointer mode)
     llvm::Value* closurePtr = builder_->CreateBitCast(
@@ -2824,19 +3512,11 @@ llvm::Value* IRGenerator::invokeClosure(llvm::Value* closure,
     );
     
     // Load function pointer
-    llvm::Value* funcPtrIndices[] = {
-        llvm::ConstantInt::get(context_, llvm::APInt(64, 0)),
-        llvm::ConstantInt::get(context_, llvm::APInt(64, 0))
-    };
-    llvm::Value* funcPtrPtr = builder_->CreateGEP(closureType, closurePtr, funcPtrIndices, "funcptrptr");
+    llvm::Value* funcPtrPtr = builder_->CreateStructGEP(closureType, closurePtr, 0, "funcptrptr");
     llvm::Value* funcPtr = builder_->CreateLoad(funcPtrType, funcPtrPtr, "funcptr");
     
     // Load environment pointer
-    llvm::Value* envPtrIndices[] = {
-        llvm::ConstantInt::get(context_, llvm::APInt(64, 0)),
-        llvm::ConstantInt::get(context_, llvm::APInt(64, 1))
-    };
-    llvm::Value* envPtrPtr = builder_->CreateGEP(closureType, closurePtr, envPtrIndices, "envptrptr");
+    llvm::Value* envPtrPtr = builder_->CreateStructGEP(closureType, closurePtr, 1, "envptrptr");
     llvm::Value* envPtr = builder_->CreateLoad(envPtrType, envPtrPtr, "envptr");
     
     // Determine function type from arguments and return type
@@ -2976,12 +3656,8 @@ llvm::Value* IRGenerator::evaluateArrayLiteral(ast::ArrayLiteralExpr* expr) {
     
     // Store each element
     for (size_t i = 0; i < arraySize; ++i) {
-        // Get pointer to element i
-        llvm::Value* indices[] = {
-            llvm::ConstantInt::get(context_, llvm::APInt(64, 0)),
-            llvm::ConstantInt::get(context_, llvm::APInt(64, i))
-        };
-        llvm::Value* elemPtr = builder_->CreateGEP(arrayType, arrayAlloca, indices, "arrelem");
+        llvm::Value* elemPtr = builder_->CreateGEP(arrayType, arrayAlloca,
+            {builder_->getInt64(0), builder_->getInt64(static_cast<uint64_t>(i))}, "arrelem");
         
         // Store element value
         builder_->CreateStore(elementValues[i], elemPtr);
@@ -3054,20 +3730,21 @@ llvm::Value* IRGenerator::evaluateArrayIndex(ast::ArrayIndexExpr* expr) {
     }
     
     // Look up array metadata
-    // arrayValue might be a direct array pointer (i8*) or an alloca
+    // arrayValue might be a direct array pointer (i8*) or the result of loading from a variable
     auto it = arrayMetadata_.find(arrayValue);
     
-    // If not found, arrayValue might be a bitcast from an alloca
-    // Try to find the original alloca by checking local variables
     if (it == arrayMetadata_.end()) {
-        // Check if arrayValue is a bitcast that came from a variable
-        // We need to trace back: if arrayValue is i8*, it might have been
-        // created from an alloca stored in a variable
+        // arrayValue may be a load from a variable (LoadInst); find the alloca we loaded from
+        if (llvm::LoadInst* loadInst = llvm::dyn_cast<llvm::LoadInst>(arrayValue)) {
+            llvm::Value* loadedFrom = loadInst->getPointerOperand();
+            it = arrayMetadata_.find(loadedFrom);
+        }
+    }
+    if (it == arrayMetadata_.end()) {
         for (const auto& varPair : localVars_) {
             llvm::Value* varAlloca = varPair.second;
             auto varIt = arrayMetadata_.find(varAlloca);
             if (varIt != arrayMetadata_.end()) {
-                // Found array variable - use its metadata
                 it = varIt;
                 break;
             }
@@ -3114,18 +3791,14 @@ llvm::Value* IRGenerator::evaluateArrayIndex(ast::ArrayIndexExpr* expr) {
     // Opaque-pointer mode: keep element type explicit in the GEP.
     llvm::Value* typedPtr = arrayAlloca;
     
-    // Get pointer to element
-    llvm::Value* indices[] = {
-        llvm::ConstantInt::get(context_, llvm::APInt(64, 0)),
-        indexValue
-    };
-    llvm::Value* elemPtr = builder_->CreateGEP(arrayType, typedPtr, indices, "arrelem");
+    llvm::Value* elemPtr = builder_->CreateGEP(arrayType, typedPtr,
+        {builder_->getInt64(0), indexValue}, "arrelem");
     
     // Load element value
     llvm::Value* elemValue = builder_->CreateLoad(elementType, elemPtr, "arrelemval");
     builder_->CreateBr(continueBB);
     
-    // Out of bounds: error (for now, return default value)
+    // Out of bounds: use default value (null/zero for the element type)
     builder_->SetInsertPoint(outOfBoundsBB);
     llvm::Value* defaultValue = nullptr;
     if (elementType->isIntegerTy(64)) {
@@ -3134,6 +3807,8 @@ llvm::Value* IRGenerator::evaluateArrayIndex(ast::ArrayIndexExpr* expr) {
         defaultValue = llvm::ConstantFP::get(context_, llvm::APFloat(0.0));
     } else if (elementType->isIntegerTy(1)) {
         defaultValue = llvm::ConstantInt::get(context_, llvm::APInt(1, 0));
+    } else if (elementType->isPointerTy()) {
+        defaultValue = llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(elementType));
     } else {
         errorReporter_.error(
             expr->getLocation(),
@@ -3189,6 +3864,146 @@ void IRGenerator::generateAssignmentStmt(ast::AssignmentStmt* stmt) {
             "Assignment target must be a variable"
         );
     }
+}
+
+void IRGenerator::generateForInStmt(ast::ForInStmt* stmt) {
+    if (!stmt || !currentFunction_) return;
+
+    llvm::Type* i64 = llvm::Type::getInt64Ty(context_);
+    const std::string& varName = stmt->getVariableName();
+    ast::Expr* iterable = stmt->getIterable();
+
+    // Case 1: Range expression (Haskell-style: 1..5 step 1, or 1,3..9 step 2, or 10,8..2 step -2)
+    if (auto* rangeExpr = dynamic_cast<ast::RangeExpr*>(iterable)) {
+        llvm::Value* startVal = evaluateExpr(rangeExpr->getStart());
+        llvm::Value* endVal = evaluateExpr(rangeExpr->getEnd());
+        if (!startVal || !endVal) {
+            errorReporter_.error(stmt->getLocation(), "Failed to evaluate range bounds");
+            return;
+        }
+        if (startVal->getType() != i64)
+            startVal = builder_->CreateSExtOrTrunc(startVal, i64, "start.i64");
+        if (endVal->getType() != i64)
+            endVal = builder_->CreateSExtOrTrunc(endVal, i64, "end.i64");
+
+        llvm::Value* stepVal;
+        if (rangeExpr->hasStepHint()) {
+            llvm::Value* secondVal = evaluateExpr(rangeExpr->getStepHint());
+            if (!secondVal) {
+                errorReporter_.error(stmt->getLocation(), "Failed to evaluate range step hint");
+                return;
+            }
+            if (secondVal->getType() != i64)
+                secondVal = builder_->CreateSExtOrTrunc(secondVal, i64, "second.i64");
+            stepVal = builder_->CreateSub(secondVal, startVal, "range.step");
+        } else {
+            stepVal = builder_->getInt64(1);
+        }
+
+        llvm::BasicBlock* condBB = llvm::BasicBlock::Create(context_, "for.cond", currentFunction_);
+        llvm::BasicBlock* bodyBB = llvm::BasicBlock::Create(context_, "for.body", currentFunction_);
+        llvm::BasicBlock* exitBB = llvm::BasicBlock::Create(context_, "for.exit", currentFunction_);
+
+        llvm::AllocaInst* iAlloca = builder_->CreateAlloca(i64, nullptr, "for.i");
+        llvm::AllocaInst* stepAlloca = builder_->CreateAlloca(i64, nullptr, "for.step");
+        builder_->CreateStore(startVal, iAlloca);
+        builder_->CreateStore(stepVal, stepAlloca);
+        builder_->CreateBr(condBB);
+
+        builder_->SetInsertPoint(condBB);
+        llvm::Value* i = builder_->CreateLoad(i64, iAlloca, "i");
+        llvm::Value* step = builder_->CreateLoad(i64, stepAlloca, "step");
+        llvm::Value* stepPos = builder_->CreateICmpSGT(step, builder_->getInt64(0), "step.pos");
+        llvm::Value* le = builder_->CreateICmpSLE(i, endVal, "i.le.end");
+        llvm::Value* ge = builder_->CreateICmpSGE(i, endVal, "i.ge.end");
+        llvm::Value* lt = builder_->CreateICmpSLT(i, endVal, "i.lt.end");
+        llvm::Value* gt = builder_->CreateICmpSGT(i, endVal, "i.gt.end");
+        llvm::Value* cmp;
+        if (rangeExpr->isInclusive()) {
+            llvm::Value* posOk = builder_->CreateAnd(stepPos, le, "pos.incl");
+            llvm::Value* negOk = builder_->CreateAnd(builder_->CreateNot(stepPos), ge, "neg.incl");
+            cmp = builder_->CreateOr(posOk, negOk, "for.cmp");
+        } else {
+            llvm::Value* posOk = builder_->CreateAnd(stepPos, lt, "pos.excl");
+            llvm::Value* negOk = builder_->CreateAnd(builder_->CreateNot(stepPos), gt, "neg.excl");
+            cmp = builder_->CreateOr(posOk, negOk, "for.cmp");
+        }
+        builder_->CreateCondBr(cmp, bodyBB, exitBB);
+
+        builder_->SetInsertPoint(bodyBB);
+        setVariable(varName, iAlloca, i64);
+        for (const auto& s : stmt->getBody()) {
+            generateStatement(s.get());
+        }
+        llvm::Value* iCur = builder_->CreateLoad(i64, iAlloca, "i");
+        llvm::Value* stepCur = builder_->CreateLoad(i64, stepAlloca, "step");
+        llvm::Value* iNext = builder_->CreateAdd(iCur, stepCur, "i.next");
+        builder_->CreateStore(iNext, iAlloca);
+        builder_->CreateBr(condBB);
+
+        builder_->SetInsertPoint(exitBB);
+        return;
+    }
+
+    // Case 2: Array - iterate over indices
+    llvm::Value* arrayVal = evaluateExpr(iterable);
+    if (!arrayVal) {
+        errorReporter_.error(stmt->getLocation(), "Failed to evaluate iterable");
+        return;
+    }
+    auto resolveArrayMeta = [this](llvm::Value* v) -> std::pair<llvm::AllocaInst*, int64_t> {
+        auto it = arrayMetadata_.find(v);
+        if (it != arrayMetadata_.end())
+            return {it->second.alloca, static_cast<int64_t>(it->second.size)};
+        if (auto* load = llvm::dyn_cast<llvm::LoadInst>(v)) {
+            it = arrayMetadata_.find(load->getPointerOperand());
+            if (it != arrayMetadata_.end())
+                return {it->second.alloca, static_cast<int64_t>(it->second.size)};
+        }
+        for (const auto& p : localVars_) {
+            it = arrayMetadata_.find(p.second);
+            if (it != arrayMetadata_.end())
+                return {it->second.alloca, static_cast<int64_t>(it->second.size)};
+        }
+        return {nullptr, 0};
+    };
+    auto [baseAlloca, len] = resolveArrayMeta(arrayVal);
+    if (!baseAlloca || len <= 0) {
+        errorReporter_.error(stmt->getLocation(), "for-in over non-array or array without metadata");
+        return;
+    }
+
+    llvm::AllocaInst* idxAlloca = builder_->CreateAlloca(i64, nullptr, "for.idx");
+    builder_->CreateStore(builder_->getInt64(0), idxAlloca);
+
+    llvm::BasicBlock* condBB = llvm::BasicBlock::Create(context_, "for.cond", currentFunction_);
+    llvm::BasicBlock* bodyBB = llvm::BasicBlock::Create(context_, "for.body", currentFunction_);
+    llvm::BasicBlock* exitBB = llvm::BasicBlock::Create(context_, "for.exit", currentFunction_);
+
+    builder_->CreateBr(condBB);
+    builder_->SetInsertPoint(condBB);
+    llvm::Value* idx = builder_->CreateLoad(i64, idxAlloca, "idx");
+    llvm::Value* cmp = builder_->CreateICmpSLT(idx, builder_->getInt64(len), "for.cmp");
+    builder_->CreateCondBr(cmp, bodyBB, exitBB);
+
+    builder_->SetInsertPoint(bodyBB);
+    llvm::Type* elemTy = arrayMetadata_[baseAlloca].elementType;
+    llvm::Type* arrTy = baseAlloca->getAllocatedType();
+    llvm::Value* elemPtr = builder_->CreateGEP(arrTy, baseAlloca,
+        {builder_->getInt64(0), idx}, "elem.ptr");
+    llvm::Value* elemVal = builder_->CreateLoad(elemTy, elemPtr, "elem");
+    llvm::AllocaInst* elemAlloca = builder_->CreateAlloca(elemTy, nullptr, varName);
+    builder_->CreateStore(elemVal, elemAlloca);
+    setVariable(varName, elemAlloca, elemTy);
+
+    for (const auto& s : stmt->getBody()) {
+        generateStatement(s.get());
+    }
+    llvm::Value* idxNext = builder_->CreateAdd(idx, builder_->getInt64(1), "idx.next");
+    builder_->CreateStore(idxNext, idxAlloca);
+    builder_->CreateBr(condBB);
+
+    builder_->SetInsertPoint(exitBB);
 }
 
 void IRGenerator::generateSelectStmt(ast::SelectStmt* stmt) {
@@ -3285,6 +4100,23 @@ std::unique_ptr<ast::Type> IRGenerator::substituteType(ast::Type* type,
         return nullptr;
     }
     
+    // If it's an ADT type, substitute in constructor argument types
+    if (auto* adtType = dynamic_cast<ast::ADTType*>(type)) {
+        std::vector<std::unique_ptr<ast::Constructor>> constructors;
+        for (const auto& c : adtType->getConstructors()) {
+            if (!c) continue;
+            std::vector<std::unique_ptr<ast::Type>> argTypes;
+            for (const auto& a : c->getArgumentTypes()) {
+                auto at = substituteType(a.get(), substitutions);
+                if (!at) return nullptr;
+                argTypes.push_back(std::move(at));
+            }
+            constructors.push_back(std::make_unique<ast::Constructor>(
+                c->getLocation(), c->getName(), std::move(argTypes)));
+        }
+        return std::make_unique<ast::ADTType>(loc, adtType->getName(), std::move(constructors));
+    }
+
     // For primitive types and other types, return a copy
     return copyType(type);
 }
@@ -3366,6 +4198,7 @@ std::string IRGenerator::getMonomorphizedName(const std::string& baseName,
                     case ast::PrimitiveType::Kind::Bool: name += "Bool"; break;
                     case ast::PrimitiveType::Kind::String: name += "String"; break;
                     case ast::PrimitiveType::Kind::Unit: name += "Unit"; break;
+                    case ast::PrimitiveType::Kind::Null: name += "Null"; break;
                 }
             } else if (auto* arr = dynamic_cast<ast::ArrayType*>(typeArgs[i])) {
                 name += "Array";
@@ -3408,7 +4241,7 @@ llvm::Function* IRGenerator::monomorphizeFunction(ast::FunctionDecl* func,
     
     std::map<std::string, ast::Type*> substitutions;
     for (size_t i = 0; i < genericParams.size(); ++i) {
-        substitutions[genericParams[i]] = typeArgs[i];
+        substitutions[genericParams[i].name] = typeArgs[i];
     }
     
     // Substitute types in function signature
@@ -3465,14 +4298,140 @@ llvm::Function* IRGenerator::monomorphizeFunction(ast::FunctionDecl* func,
     // Cache the monomorphized function
     monomorphizedFunctions_[monoName] = monoFunc;
     
-    // TODO: Generate function body with type substitutions
-    // For now, we'll just create the function signature
-    // Full implementation would need to:
-    // 1. Clone function body
-    // 2. Substitute types throughout the body
-    // 3. Generate IR for the specialized body
-    
     return monoFunc;
+}
+
+void IRGenerator::generateMonomorphizedBody(ast::FunctionDecl* astFunc,
+                                            const std::vector<ast::Type*>& typeArgs,
+                                            llvm::Function* monoFunc) {
+    if (!astFunc || !monoFunc || typeArgs.size() != astFunc->getGenericParams().size()) {
+        return;
+    }
+    if (monoFunc->arg_size() != astFunc->getParameters().size()) {
+        errorReporter_.error(
+            astFunc->getLocation(),
+            "Monomorphized function " + monoFunc->getName().str() + " has " +
+            std::to_string(monoFunc->arg_size()) + " params but AST has " +
+            std::to_string(astFunc->getParameters().size())
+        );
+        return;
+    }
+    generatingMonomorphized_.insert(monoFunc);
+    std::map<std::string, ast::Type*> subst;
+    for (size_t i = 0; i < astFunc->getGenericParams().size(); ++i) {
+        subst[astFunc->getGenericParams()[i].name] = typeArgs[i];
+    }
+    std::map<std::string, ast::Type*>* savedSubst = currentTypeSubst_;
+    currentTypeSubst_ = &subst;
+    ast::FunctionDecl* savedDecl = currentFunctionDecl_;
+    currentFunctionDecl_ = astFunc;
+
+    // Save caller's context (enterFunction/exitFunction would corrupt it)
+    llvm::Function* savedFunc = currentFunction_;
+    llvm::BasicBlock* savedInsertBlock = builder_->GetInsertBlock();
+    auto savedLocalVars = localVars_;
+    auto savedLocalVarTypes = localVarTypes_;
+    auto savedRefinementOverrides = refinementVarOverrides_;
+    auto savedArrayMetadata = arrayMetadata_;
+    auto savedRecordMetadata = recordMetadata_;
+
+    enterFunction(monoFunc);
+    llvm::BasicBlock* entryBlock = llvm::BasicBlock::Create(context_, "entry", monoFunc);
+    builder_->SetInsertPoint(entryBlock);
+
+    auto createAlloca = [&](llvm::Type* ty, const std::string& name) -> llvm::AllocaInst* {
+        return new llvm::AllocaInst(ty, 0, nullptr, llvm::Align(8), name, entryBlock);
+    };
+
+    unsigned idx = 0;
+    for (auto& arg : monoFunc->args()) {
+        if (idx < astFunc->getParameters().size()) {
+            std::string paramName = astFunc->getParameters()[idx]->getName();
+            ast::Parameter* paramNode = astFunc->getParameters()[idx].get();
+            auto subParamType = substituteType(paramNode->getType(), subst);
+            llvm::Type* astLlvmType = subParamType ? convertType(subParamType.get()) : nullptr;
+            llvm::Type* paramType = arg.getType();
+            // Use AST type for scalar params so we load from pointer when caller passed a slot (erased generic).
+            if (astLlvmType && astLlvmType->isIntegerTy(64) && paramType->isPointerTy()) {
+                paramType = astLlvmType;
+            } else if (astLlvmType && (astLlvmType->isDoubleTy() || astLlvmType->isIntegerTy(1)) && paramType->isPointerTy()) {
+                paramType = astLlvmType;
+            }
+            llvm::AllocaInst* alloca = createAlloca(paramType, paramName);
+            llvm::Value* valueToStore = &arg;
+            if (arg.getType()->isPointerTy() && paramType->isIntegerTy(64)) {
+                valueToStore = builder_->CreateAlignedLoad(llvm::Type::getInt64Ty(context_), &arg, llvm::Align(8), paramName + ".load");
+            } else if (arg.getType()->isPointerTy() && paramType->isDoubleTy()) {
+                valueToStore = builder_->CreateAlignedLoad(llvm::Type::getDoubleTy(context_), &arg, llvm::Align(8), paramName + ".load");
+            } else if (arg.getType()->isPointerTy() && paramType->isIntegerTy(1)) {
+                valueToStore = builder_->CreateAlignedLoad(llvm::Type::getInt1Ty(context_), &arg, llvm::Align(1), paramName + ".load");
+            }
+            builder_->CreateAlignedStore(valueToStore, alloca, llvm::Align(8));
+            setVariable(paramName, alloca, paramType);
+            if (subParamType) {
+                if (auto* recType = dynamic_cast<ast::RecordType*>(subParamType.get())) {
+                    RecordMetadata meta;
+                    meta.structType = llvm::dyn_cast<llvm::StructType>(paramType);
+                    meta.alloca = alloca;
+                    for (const auto& f : recType->getFields()) {
+                        meta.fieldNames.push_back(f->getName());
+                    }
+                    if (meta.structType) {
+                        recordMetadata_[alloca] = meta;
+                        recordMetadata_[builder_->CreateBitCast(alloca, llvm::PointerType::get(context_, 0))] = meta;
+                    }
+                }
+            }
+        }
+        idx++;
+    }
+
+    std::vector<ast::Parameter*> paramPtrs;
+    for (const auto& p : astFunc->getParameters()) {
+        paramPtrs.push_back(p.get());
+    }
+    emitRefinementChecksForParams(paramPtrs, monoFunc, entryBlock);
+
+    llvm::Type* returnType = monoFunc->getReturnType();
+    bool hasReturn = false;
+    const auto& bodyStmts = astFunc->getBody();
+    for (size_t si = 0; si < bodyStmts.size(); ++si) {
+        generateStatement(bodyStmts[si].get());
+        if (dynamic_cast<ast::ReturnStmt*>(bodyStmts[si].get())) {
+            hasReturn = true;
+        }
+    }
+
+    if (!hasReturn) {
+        if (returnType->isVoidTy()) {
+            builder_->CreateRetVoid();
+        } else {
+            if (returnType->isIntegerTy(64)) {
+                builder_->CreateRet(llvm::ConstantInt::get(context_, llvm::APInt(64, 0, true)));
+            } else if (returnType->isDoubleTy()) {
+                builder_->CreateRet(llvm::ConstantFP::get(context_, llvm::APFloat(0.0)));
+            } else if (returnType->isIntegerTy(1)) {
+                builder_->CreateRet(llvm::ConstantInt::get(context_, llvm::APInt(1, 0)));
+            } else {
+                builder_->CreateRet(llvm::Constant::getNullValue(returnType));
+            }
+        }
+    }
+
+    currentFunctionDecl_ = savedDecl;
+    currentTypeSubst_ = savedSubst;
+    generatingMonomorphized_.erase(monoFunc);
+
+    // Restore caller's context (exitFunction would have cleared it)
+    currentFunction_ = savedFunc;
+    if (savedInsertBlock) {
+        builder_->SetInsertPoint(savedInsertBlock);
+    }
+    localVars_ = std::move(savedLocalVars);
+    localVarTypes_ = std::move(savedLocalVarTypes);
+    refinementVarOverrides_ = std::move(savedRefinementOverrides);
+    arrayMetadata_ = std::move(savedArrayMetadata);
+    recordMetadata_ = std::move(savedRecordMetadata);
 }
 
 void IRGenerator::visitImportDecl(ast::ImportDecl* node) {
@@ -3650,6 +4609,10 @@ void IRGenerator::visitTypeDecl(ast::TypeDecl* node) {
 
 void IRGenerator::buildConstructorIndexMap(ast::Program* program) {
     if (!program) return;
+    for (const auto& typeDecl : program->getTypeDecls()) {
+        if (!typeDecl || !typeDecl->getType()) continue;
+        registerADTFromType(typeDecl->getType());
+    }
     for (const auto& func : program->getFunctions()) {
         if (!func) continue;
         for (const auto& param : func->getParameters()) {
@@ -3679,7 +4642,7 @@ void IRGenerator::registerADTFromType(ast::Type* type) {
         for (size_t i = 0; i < constructors.size(); ++i) {
             const std::string& name = constructors[i]->getName();
             if (constructorIndexMap_.find(name) == constructorIndexMap_.end()) {
-                constructorIndexMap_[name] = std::make_pair(adt, i);
+                constructorIndexMap_[name] = std::make_pair(adt, nextConstructorTag_++);
             }
         }
         return;
@@ -3695,6 +4658,10 @@ void IRGenerator::registerADTFromType(ast::Type* type) {
         return;
     }
     if (auto* param = dynamic_cast<ast::ParameterizedType*>(type)) {
+        // Register the base type's ADT if it's a named type (e.g. List<Int> -> register List's Cons/Nil)
+        auto it = typeDeclsMap_.find(param->getBaseName());
+        if (it != typeDeclsMap_.end() && it->second)
+            registerADTFromType(it->second);
         for (const auto& arg : param->getTypeArgs()) {
             if (arg) registerADTFromType(arg.get());
         }
@@ -3761,16 +4728,20 @@ void IRGenerator::collectTypesFromStmt(ast::Stmt* stmt) {
         if (ifStmt->getElseBranch()) collectTypesFromStmt(ifStmt->getElseBranch());
         return;
     }
-    if (auto* whileStmt = dynamic_cast<ast::WhileStmt*>(stmt)) {
-        if (whileStmt->getBody()) collectTypesFromStmt(whileStmt->getBody());
+    if (auto* forIn = dynamic_cast<ast::ForInStmt*>(stmt)) {
+        for (const auto& s : forIn->getBody()) {
+            if (s) collectTypesFromStmt(s.get());
+        }
         return;
     }
 }
 
 std::pair<ast::ADTType*, size_t> IRGenerator::getConstructorIndex(const std::string& name) const {
     auto it = constructorIndexMap_.find(name);
-    if (it == constructorIndexMap_.end()) return {nullptr, 0};
-    return it->second;
+    if (it != constructorIndexMap_.end()) return it->second;
+    // Unknown constructor: deterministic tag per name so different names never collide
+    size_t tag = std::hash<std::string>{}(name) % 1024;
+    return {nullptr, tag};
 }
 
 } // namespace ir

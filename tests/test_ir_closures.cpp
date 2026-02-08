@@ -92,7 +92,7 @@ void test_closure_ir_generation() {
     funcBody.push_back(std::move(returnZero));
     
     auto funcDecl = std::make_unique<first::ast::FunctionDecl>(
-        loc, "test_func", std::vector<std::string>(), std::move(funcParams), 
+        loc, "test_func", std::vector<first::ast::GenericParam>(), std::move(funcParams), 
         std::move(funcReturnType), std::move(funcBody)
     );
     
@@ -144,7 +144,7 @@ void test_closure_no_captures() {
     funcBody.push_back(std::move(returnZero));
     
     auto funcDecl = std::make_unique<first::ast::FunctionDecl>(
-        loc, "test_func", std::vector<std::string>(), std::move(funcParams), 
+        loc, "test_func", std::vector<first::ast::GenericParam>(), std::move(funcParams), 
         std::move(funcReturnType), std::move(funcBody)
     );
     
@@ -194,7 +194,7 @@ void test_closure_multiple_parameters() {
     funcBody.push_back(std::move(returnZero));
     
     auto funcDecl = std::make_unique<first::ast::FunctionDecl>(
-        loc, "test_func", std::vector<std::string>(), std::move(funcParams), 
+        loc, "test_func", std::vector<first::ast::GenericParam>(), std::move(funcParams), 
         std::move(funcReturnType), std::move(funcBody)
     );
     

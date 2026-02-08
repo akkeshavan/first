@@ -1,0 +1,74 @@
+// =============================================================================
+// Chapter 6: Records and Pattern Matching — combined example
+// =============================================================================
+// 1. Expression example (sum type: Term | Operator | BinaryExpression)
+// 2. FizzBuzz with match and guards (n when n%3==0) and otherwise clause
+// 3. Shape example (record types: Circle | Rectangle)
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// 1. Expression example
+// -----------------------------------------------------------------------------
+type Operator(op: String);
+type Expr = Term(value: Int)
+          | BinaryExpression(left: Expr, op: Operator, right: Expr);
+
+function showExpression(expr: Expr) -> String {
+    return match expr {
+        Term(value) => "expr: " + intToString(value),
+        BinaryExpression(left, Operator(opStr), right) =>
+            "Binary(" + showExpression(left) + ", " + opStr + ", " + showExpression(right) + ")"
+    };
+}
+
+// -----------------------------------------------------------------------------
+// 2. FizzBuzz with guards and otherwise
+// -----------------------------------------------------------------------------
+function fizzBuzz(n: Int) -> String {
+    return match n {
+        n when n % 15 == 0 => "FizzBuzz",
+        n when n % 3 == 0 => "Fizz",
+        n when n % 5 == 0 => "Buzz",
+        otherwise => intToString(n)
+    };
+}
+
+// -----------------------------------------------------------------------------
+// 3. Shape example (sum-of-records: Circle | Rectangle)
+// -----------------------------------------------------------------------------
+type Circle = { radius: Float };
+type Rectangle = { len: Float, width: Float };
+type Shape = Circle | Rectangle;
+
+function describe(s: Shape) -> String {
+    return match s {
+        Circle({ radius }) => "Circle with radius " + floatToString(radius),
+        Rectangle({ len, width }) => "Rectangle " + floatToString(len) + " x " + floatToString(width)
+    };
+}
+
+// -----------------------------------------------------------------------------
+// main — run all examples
+// -----------------------------------------------------------------------------
+interaction main() -> Unit {
+    // Expression example
+    let e1 = Term(42);
+    let op = Operator("+");
+    let left = Term(10);
+    let right = Term(20);
+    let bin = BinaryExpression(left, op, right);
+    println(showExpression(e1));
+    println(showExpression(bin));
+
+    // FizzBuzz
+    println("fizzBuzz(3) = " + fizzBuzz(3));
+    println("fizzBuzz(5) = " + fizzBuzz(5));
+    println("fizzBuzz(15) = " + fizzBuzz(15));
+    println("fizzBuzz(1) = " + fizzBuzz(1));
+
+    // Shapes (record construction)
+    let c = Circle({ radius: 5.0 });
+    let r = Rectangle({ len: 10.0, width: 20.0 });
+    println(describe(c));
+    println(describe(r));
+}

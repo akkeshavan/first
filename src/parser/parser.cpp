@@ -33,7 +33,8 @@
 
      switch (rawType) {
      case FirstLexer::IDENTIFIER:
-         kind = TokenKind::Identifier;
+         // "_" is lexed as IDENTIFIER but must be Underscore for pattern matching
+         if (text != "_") kind = TokenKind::Identifier;
          break;
      case FirstLexer::INT_LITERAL:
          kind = TokenKind::IntLiteral;
@@ -49,12 +50,12 @@
      case FirstLexer::INTERACTION: kind = TokenKind::KwInteraction; break;
      case FirstLexer::IF: kind = TokenKind::KwIf; break;
      case FirstLexer::ELSE: kind = TokenKind::KwElse; break;
-     case FirstLexer::WHILE: kind = TokenKind::KwWhile; break;
      case FirstLexer::RETURN: kind = TokenKind::KwReturn; break;
      case FirstLexer::LET: kind = TokenKind::KwLet; break;
      case FirstLexer::VAR: kind = TokenKind::KwVar; break;
      case FirstLexer::MUT: kind = TokenKind::KwMut; break;
     case FirstLexer::MATCH: kind = TokenKind::KwMatch; break;
+    case FirstLexer::WHEN: kind = TokenKind::KwWhen; break;
      case FirstLexer::TYPE: kind = TokenKind::KwType; break;
      case FirstLexer::INTERFACE: kind = TokenKind::KwInterface; break;
      case FirstLexer::IMPLEMENTATION: kind = TokenKind::KwImplementation; break;
@@ -71,6 +72,8 @@
     case FirstLexer::SPAWN: kind = TokenKind::KwSpawn; break;
     case FirstLexer::JOIN: kind = TokenKind::KwJoin; break;
     case FirstLexer::SELECT: kind = TokenKind::KwSelect; break;
+    case FirstLexer::FOR: kind = TokenKind::KwFor; break;
+    case FirstLexer::IN: kind = TokenKind::KwIn; break;
 
     case FirstLexer::INT: kind = TokenKind::KwInt; break;
     case FirstLexer::FLOAT: kind = TokenKind::KwFloat; break;
@@ -134,9 +137,10 @@
      case FirstLexer::LBRACKET: kind = TokenKind::LBracket; break;
      case FirstLexer::RBRACKET: kind = TokenKind::RBracket; break;
      case FirstLexer::SEMICOLON: kind = TokenKind::Semicolon; break;
-     case FirstLexer::COMMA: kind = TokenKind::Comma; break;
-     case FirstLexer::COLON: kind = TokenKind::Colon; break;
-     case FirstLexer::DOT: kind = TokenKind::Dot; break;
+    case FirstLexer::COMMA: kind = TokenKind::Comma; break;
+    case FirstLexer::COLON: kind = TokenKind::Colon; break;
+    case FirstLexer::DOT: kind = TokenKind::Dot; break;
+    case FirstLexer::PIPE_DELIM: kind = TokenKind::OpPipe; break;
      default:
         // If we already classified the token by text (e.g. '_' / '@'), keep it.
         // Otherwise, treat it as non-surfaceable.
@@ -225,6 +229,11 @@
      refreshCurrent();
  }
 
+ void TokenStreamAdapter::setIndex(std::size_t index) {
+     index_ = index;
+     refreshCurrent();
+ }
+
  // -------- FirstParser --------
 
  FirstParser::FirstParser(TokenStreamAdapter& tokens,
@@ -274,6 +283,7 @@
         } else if (current().kind == TokenKind::KwModule ||
                    current().kind == TokenKind::KwImport ||
                    current().kind == TokenKind::KwExport ||
+                   current().kind == TokenKind::KwType ||
                    current().kind == TokenKind::KwFunction ||
                    current().kind == TokenKind::KwInterface ||
                    current().kind == TokenKind::KwImplementation ||
@@ -313,10 +323,10 @@
         break;
     }
     case TokenKind::KwInterface:
-        parseInterfaceDecl();
+        parseInterfaceDecl(program);
         break;
     case TokenKind::KwImplementation:
-        parseImplementationDecl();
+        parseImplementationDecl(program);
         break;
     case TokenKind::KwInteraction: {
         // interaction declarations are like functions but stored separately
@@ -330,6 +340,35 @@
         }
         std::string name = current().lexeme;
         advance();
+
+        std::vector<ast::GenericParam> genericParams;
+        if (current().kind == TokenKind::OpLt) {
+            advance();
+            while (true) {
+                if (current().kind != TokenKind::Identifier) {
+                    reportSyntaxError("expected generic parameter name");
+                    break;
+                }
+                ast::GenericParam p;
+                p.name = current().lexeme;
+                p.constraint.clear();
+                advance();
+                if (match(TokenKind::Colon)) {
+                    if (current().kind == TokenKind::Identifier) {
+                        p.constraint = current().lexeme;
+                        advance();
+                    } else {
+                        reportSyntaxError("expected interface name after ':' in generic parameter");
+                    }
+                }
+                genericParams.push_back(std::move(p));
+                if (match(TokenKind::Comma)) continue;
+                break;
+            }
+            if (!match(TokenKind::OpGt)) {
+                reportSyntaxError("expected '>' after generic parameter list");
+            }
+        }
 
         expect(TokenKind::LParen, "expected '(' after interaction name");
 
@@ -385,10 +424,13 @@
         }
 
         program.addInteraction(std::make_unique<ast::InteractionDecl>(
-            loc, name, std::vector<std::string>{}, std::move(params),
+            loc, name, std::move(genericParams), std::move(params),
             std::move(retType), std::move(body), false));
         break;
     }
+    case TokenKind::KwType:
+        parseTypeDecl(program);
+        break;
     case TokenKind::KwLet:
     case TokenKind::KwVar: {
         // Allow top-level variable declarations (for simple parser tests).
@@ -511,8 +553,8 @@
     std::string name = current().lexeme;
     advance();
 
-    // Optional generic parameter list: <T, U, ...>
-    std::vector<std::string> genericParams;
+    // Optional generic parameter list: <T, U : Eq, ...>
+    std::vector<ast::GenericParam> genericParams;
     if (current().kind == TokenKind::OpLt) {
         advance(); // '<'
         while (true) {
@@ -520,8 +562,19 @@
                 reportSyntaxError("expected generic parameter name");
                 break;
             }
-            genericParams.push_back(current().lexeme);
+            ast::GenericParam p;
+            p.name = current().lexeme;
+            p.constraint.clear();
             advance();
+            if (match(TokenKind::Colon)) {
+                if (current().kind == TokenKind::Identifier) {
+                    p.constraint = current().lexeme;
+                    advance();
+                } else {
+                    reportSyntaxError("expected interface name after ':' in generic parameter");
+                }
+            }
+            genericParams.push_back(std::move(p));
             if (match(TokenKind::Comma)) {
                 continue;
             }
@@ -590,17 +643,18 @@
         std::move(retType), std::move(body), exported));
  }
 
-void FirstParser::parseInterfaceDecl() {
-    // interface Name<T> extends Base { members };  -- for now we just consume it
+void FirstParser::parseInterfaceDecl(ast::Program& program) {
+    SourceLocation loc = locCurrent();
     expect(TokenKind::KwInterface, "expected 'interface'");
 
     if (current().kind != TokenKind::Identifier) {
         reportSyntaxError("expected interface name");
         return;
     }
-    advance(); // name
+    std::string name = current().lexeme;
+    advance();
 
-    // Optional generic params: <T, U, ...>
+    std::vector<std::string> genericParams;
     if (current().kind == TokenKind::OpLt) {
         advance();
         if (current().kind != TokenKind::OpGt) {
@@ -609,6 +663,7 @@ void FirstParser::parseInterfaceDecl() {
                     reportSyntaxError("expected generic parameter name");
                     break;
                 }
+                genericParams.push_back(current().lexeme);
                 advance();
                 if (match(TokenKind::Comma)) {
                     continue;
@@ -621,10 +676,8 @@ void FirstParser::parseInterfaceDecl() {
         }
     }
 
-    // Optional extends clause: extends Type, ...
     if (current().kind == TokenKind::KwExtends) {
         advance();
-        // At least one type
         auto baseType = parseType();
         (void)baseType;
         while (match(TokenKind::Comma)) {
@@ -633,58 +686,58 @@ void FirstParser::parseInterfaceDecl() {
         }
     }
 
-    // Body
     expect(TokenKind::LBrace, "expected '{' in interface declaration");
+    std::vector<std::unique_ptr<ast::InterfaceMember>> members;
     while (current().kind != TokenKind::RBrace &&
            current().kind != TokenKind::EndOfFile) {
         if (current().kind == TokenKind::Identifier) {
-            // member: name : type ;
-            advance(); // member name
-            if (match(TokenKind::Colon)) {
-                // For now, interface member types are parsed in a very
-                // lightweight way: we simply skip tokens until the end of
-                // the declaration (`;` or `}`) rather than requiring a full
-                // type grammar (e.g. function types).
-                while (current().kind != TokenKind::Semicolon &&
-                       current().kind != TokenKind::RBrace &&
-                       current().kind != TokenKind::EndOfFile) {
-                    advance();
-                }
+            SourceLocation memberLoc = current().loc;
+            std::string memberName = current().lexeme;
+            advance();
+            if (!match(TokenKind::Colon)) {
+                reportSyntaxError("expected ':' after interface member name");
+                break;
+            }
+            std::unique_ptr<ast::Type> memberType = parseType();
+            if (memberType) {
+                members.push_back(std::make_unique<ast::InterfaceMember>(
+                    memberLoc, memberName, std::move(memberType)));
             }
             if (current().kind == TokenKind::Semicolon) {
                 advance();
             } else if (current().kind != TokenKind::RBrace &&
                        current().kind != TokenKind::EndOfFile) {
-                // Only complain if we hit an unexpected token that is not
-                // the end of the interface body.
                 reportSyntaxError("expected ';' after interface member");
             }
         } else {
-            // Recovery: skip unexpected tokens inside body
             advance();
         }
     }
     expect(TokenKind::RBrace, "expected '}' at end of interface body");
-    // Leave trailing semicolon (if any) to be consumed by the top-level loop.
+    program.addInterface(std::make_unique<ast::InterfaceDecl>(
+        loc, name, std::move(genericParams), std::move(members)));
 }
 
-void FirstParser::parseImplementationDecl() {
-    // implementation Name<T> { members };  -- consume only
+void FirstParser::parseImplementationDecl(ast::Program& program) {
+    SourceLocation loc = locCurrent();
     expect(TokenKind::KwImplementation, "expected 'implementation'");
 
     if (current().kind != TokenKind::Identifier) {
         reportSyntaxError("expected implementation target name");
         return;
     }
-    advance(); // name (e.g., Show)
+    std::string interfaceName = current().lexeme;
+    advance();
 
-    // Type arguments: <T, ...> or <ConcreteType, ...>
+    std::vector<std::unique_ptr<ast::Type>> typeArgs;
     if (current().kind == TokenKind::OpLt) {
         advance();
         if (current().kind != TokenKind::OpGt) {
             while (true) {
                 auto instType = parseType();
-                (void)instType;
+                if (instType) {
+                    typeArgs.push_back(std::move(instType));
+                }
                 if (match(TokenKind::Comma)) {
                     continue;
                 }
@@ -696,13 +749,6 @@ void FirstParser::parseImplementationDecl() {
         }
     }
 
-    // Optional WHERE ... (constraints) – skip until '{' for now.
-    // We don't currently model 'where' constraints; just skip tokens until '{'.
-    // TokenKind does not distinguish WHERE specifically, so rely on grammar
-    // shape: IMPLEMENTATION ... LT ... GT WHERE ... '{'.
-    // If an identifier 'where' appears here, it will be treated as part of
-    // the skipped region.
-    // Skip tokens until '{' or EOF.
     while (current().kind != TokenKind::LBrace &&
            current().kind != TokenKind::EndOfFile &&
            current().kind != TokenKind::Semicolon) {
@@ -710,24 +756,28 @@ void FirstParser::parseImplementationDecl() {
     }
 
     expect(TokenKind::LBrace, "expected '{' in implementation body");
-
-    // Members: name = expressionOrFunctionBody ;
+    std::vector<std::unique_ptr<ast::ImplementationMember>> members;
     while (current().kind != TokenKind::RBrace &&
            current().kind != TokenKind::EndOfFile) {
         if (current().kind == TokenKind::Identifier) {
-            advance(); // member name
+            SourceLocation memberLoc = current().loc;
+            std::string memberName = current().lexeme;
+            advance();
             if (!match(TokenKind::OpAssign)) {
                 reportSyntaxError("expected '=' in implementation member");
+                break;
             }
-            // Body: either function body '{...}' or expression
+            std::unique_ptr<ast::Expr> value;
             if (current().kind == TokenKind::LBrace) {
-                // Reuse block + statements by parsing as lambda body-style block.
-                // Consume '{' and nested statements, then '}'.
+                SourceLocation blockLoc = current().loc;
                 advance();
+                std::vector<std::unique_ptr<ast::Stmt>> body;
                 while (current().kind != TokenKind::RBrace &&
                        current().kind != TokenKind::EndOfFile) {
                     auto stmt = parseStatement();
-                    (void)stmt;
+                    if (stmt) {
+                        body.push_back(std::move(stmt));
+                    }
                     if (current().kind == TokenKind::Semicolon) {
                         advance();
                     } else if (!stmt) {
@@ -735,9 +785,13 @@ void FirstParser::parseImplementationDecl() {
                     }
                 }
                 expect(TokenKind::RBrace, "expected '}' at end of implementation function body");
+                value = std::make_unique<ast::BlockExpr>(blockLoc, std::move(body), nullptr);
             } else {
-                auto rhs = parseExpression();
-                (void)rhs;
+                value = parseExpression();
+            }
+            if (value) {
+                members.push_back(std::make_unique<ast::ImplementationMember>(
+                    memberLoc, memberName, std::move(value)));
             }
             if (current().kind == TokenKind::Semicolon) {
                 advance();
@@ -745,13 +799,127 @@ void FirstParser::parseImplementationDecl() {
                 reportSyntaxError("expected ';' after implementation member");
             }
         } else {
-            // Recovery: skip unexpected token inside implementation body
             advance();
         }
     }
 
     expect(TokenKind::RBrace, "expected '}' at end of implementation body");
-    // Leave trailing semicolon (if any) to be consumed by the top-level loop.
+    program.addImplementation(std::make_unique<ast::ImplementationDecl>(
+        loc, interfaceName, std::move(typeArgs), std::move(members)));
+}
+
+void FirstParser::parseTypeDecl(ast::Program& program) {
+    SourceLocation loc = current().loc;
+    if (!expect(TokenKind::KwType, "expected 'type'")) return;
+    if (current().kind != TokenKind::Identifier) {
+        reportSyntaxError("expected type name after 'type'");
+        return;
+    }
+    std::string typeName = current().lexeme;
+    advance();
+    std::vector<std::string> typeParams;
+    if (current().kind == TokenKind::OpLt) {
+        advance();
+        while (current().kind == TokenKind::Identifier) {
+            typeParams.push_back(current().lexeme);
+            advance();
+            if (!match(TokenKind::Comma)) break;
+        }
+        if (!expect(TokenKind::OpGt, "expected '>' after type parameters")) return;
+    }
+    // Shorthand: type Name(args) means type Name = Name(args)
+    if (current().kind == TokenKind::LParen) {
+        advance();
+        SourceLocation cLoc = current().loc;
+        std::vector<std::unique_ptr<ast::Type>> argTypes;
+        if (current().kind != TokenKind::RParen) {
+            while (true) {
+                if (current().kind == TokenKind::Identifier && tokens_.lookahead(1).kind == TokenKind::Colon) {
+                    advance();
+                    advance();
+                }
+                auto t = parseType();
+                if (t) argTypes.push_back(std::move(t));
+                if (match(TokenKind::Comma)) continue;
+                break;
+            }
+        }
+        if (!expect(TokenKind::RParen, "expected ')' in type declaration")) return;
+        std::vector<std::unique_ptr<ast::Constructor>> constructors;
+        constructors.push_back(std::make_unique<ast::Constructor>(cLoc, typeName, std::move(argTypes)));
+        auto type = std::make_unique<ast::ADTType>(cLoc, typeName, std::move(constructors));
+        if (current().kind == TokenKind::Semicolon) advance();
+        program.addTypeDecl(std::make_unique<ast::TypeDecl>(loc, typeName, std::move(type), false, std::move(typeParams)));
+        return;
+    }
+    if (!expect(TokenKind::OpAssign, "expected '=' in type declaration")) return;
+    auto type = parseTypeRhs(typeName);
+    if (!type) return;
+    if (current().kind == TokenKind::Semicolon) advance();
+    program.addTypeDecl(std::make_unique<ast::TypeDecl>(loc, typeName, std::move(type), false, std::move(typeParams)));
+}
+
+std::unique_ptr<ast::Type> FirstParser::parseTypeRhs(const std::string& typeName) {
+    // Sum type with parens: [|] Identifier ( Type, ... ) | Identifier ( Type, ... ) | ...
+    bool leadingPipe = match(TokenKind::OpPipe);
+    if (leadingPipe || (current().kind == TokenKind::Identifier && tokens_.lookahead(1).kind == TokenKind::LParen)) {
+        SourceLocation adtLoc = current().loc;
+        std::vector<std::unique_ptr<ast::Constructor>> constructors;
+        do {
+            if (leadingPipe) leadingPipe = false;
+            SourceLocation cLoc = current().loc;
+            if (current().kind != TokenKind::Identifier) {
+                reportSyntaxError("expected constructor name in sum type");
+                break;
+            }
+            std::string cName = current().lexeme;
+            advance();
+            std::vector<std::unique_ptr<ast::Type>> argTypes;
+            if (match(TokenKind::LParen)) {
+                if (current().kind != TokenKind::RParen) {
+                    while (true) {
+                        // Optional "name: " before type (e.g. radius: Float)
+                        if (current().kind == TokenKind::Identifier && tokens_.lookahead(1).kind == TokenKind::Colon) {
+                            advance();
+                            advance();
+                        }
+                        auto t = parseType();
+                        if (t) argTypes.push_back(std::move(t));
+                        if (match(TokenKind::Comma)) continue;
+                        break;
+                    }
+                }
+                if (!expect(TokenKind::RParen, "expected ')' after constructor argument types")) {
+                    break;
+                }
+            }
+            constructors.push_back(std::make_unique<ast::Constructor>(cLoc, cName, std::move(argTypes)));
+        } while (match(TokenKind::OpPipe));
+        if (!constructors.empty()) {
+            return std::make_unique<ast::ADTType>(adtLoc, typeName, std::move(constructors));
+        }
+        return nullptr;
+    }
+    // Sum type without parens: Identifier | Identifier | ... (each variant carries type of same name)
+    // e.g. type Shape = Circle | Rectangle -> Circle(Circle) | Rectangle(Rectangle)
+    if (current().kind == TokenKind::Identifier && tokens_.lookahead(1).kind == TokenKind::OpPipe) {
+        SourceLocation adtLoc = current().loc;
+        std::vector<std::unique_ptr<ast::Constructor>> constructors;
+        while (current().kind == TokenKind::Identifier) {
+            SourceLocation cLoc = current().loc;
+            std::string cName = current().lexeme;
+            advance();
+            std::vector<std::unique_ptr<ast::Type>> argTypes;
+            argTypes.push_back(std::make_unique<ast::GenericType>(cLoc, cName));
+            constructors.push_back(std::make_unique<ast::Constructor>(cLoc, cName, std::move(argTypes)));
+            if (current().kind != TokenKind::OpPipe) break;
+            advance(); // consume |
+        }
+        if (!constructors.empty()) {
+            return std::make_unique<ast::ADTType>(adtLoc, typeName, std::move(constructors));
+        }
+    }
+    return parseType();
 }
 
  // ---- Types (minimal subset used in tests) ----
@@ -804,6 +972,65 @@ void FirstParser::parseImplementationDecl() {
              return nullptr;
          }
          return std::make_unique<ast::ExistentialType>(loc, varName, std::move(varType), std::move(bodyType));
+     }
+    // Record type: { field: Type, ... }
+    if (current().kind == TokenKind::LBrace) {
+        SourceLocation loc = current().loc;
+        advance(); // '{'
+        std::vector<std::unique_ptr<ast::RecordField>> fields;
+        if (current().kind != TokenKind::RBrace) {
+            while (true) {
+                if (current().kind != TokenKind::Identifier) {
+                    reportSyntaxError("expected field name in record type");
+                    break;
+                }
+                SourceLocation fieldLoc = current().loc;
+                std::string name = current().lexeme;
+                advance();
+                if (!expect(TokenKind::Colon, "expected ':' after field name in record type")) {
+                    break;
+                }
+                auto fieldType = parseType();
+                if (fieldType) {
+                    fields.push_back(std::make_unique<ast::RecordField>(fieldLoc, name, std::move(fieldType)));
+                }
+                if (!match(TokenKind::Comma)) {
+                    break;
+                }
+            }
+        }
+        if (!expect(TokenKind::RBrace, "expected '}' at end of record type")) {
+            return nullptr;
+        }
+        return std::make_unique<ast::RecordType>(loc, std::move(fields));
+    }
+    // Function type: function(ParamTypes) -> ReturnType (e.g. in interface members)
+    if (current().kind == TokenKind::KwFunction) {
+         SourceLocation loc = current().loc;
+         advance(); // consume 'function'
+         if (!expect(TokenKind::LParen, "expected '(' in function type")) {
+             return nullptr;
+         }
+         std::vector<std::unique_ptr<ast::Type>> paramTypes;
+         if (current().kind != TokenKind::RParen) {
+             while (true) {
+                 auto paramType = parseType();
+                 if (!paramType) return nullptr;
+                 paramTypes.push_back(std::move(paramType));
+                 if (match(TokenKind::Comma)) continue;
+                 break;
+             }
+         }
+         if (!expect(TokenKind::RParen, "expected ')' after function parameter types")) {
+             return nullptr;
+         }
+         if (!expect(TokenKind::OpArrow, "expected '->' in function type")) {
+             return nullptr;
+         }
+         auto returnType = parseType();
+         if (!returnType) return nullptr;
+         return std::make_unique<ast::FunctionType>(
+             loc, std::move(paramTypes), std::move(returnType), false);
      }
      // ( type ) parenthesized, or ( id : type ) -> type (Pi) / ( id : type ) * type (Sigma)
      if (current().kind == TokenKind::LParen) {
@@ -887,8 +1114,24 @@ void FirstParser::parseImplementationDecl() {
                  }
              }
          }
-         expect(TokenKind::RBracket, "expected ']' at end of indexed type");
-         base = std::make_unique<ast::IndexedType>(loc, std::move(base), std::move(indices));
+        expect(TokenKind::RBracket, "expected ']' at end of indexed type");
+        base = std::make_unique<ast::IndexedType>(loc, std::move(base), std::move(indices));
+     }
+     // Union type: T | null | ... (so "-> T | null { body }" parses correctly and body is not skipped)
+     if (current().kind == TokenKind::OpPipe) {
+         SourceLocation unionLoc = base->getLocation();
+         std::vector<std::unique_ptr<ast::Type>> unionMembers;
+         unionMembers.push_back(std::move(base));
+         do {
+             advance(); // consume |
+             auto next = parsePrimaryType();
+             if (!next) break;
+             unionMembers.push_back(std::move(next));
+         } while (current().kind == TokenKind::OpPipe);
+         if (unionMembers.size() > 1)
+             return std::make_unique<ast::ParameterizedType>(unionLoc, "|", std::move(unionMembers));
+         if (unionMembers.size() == 1)
+             return std::move(unionMembers[0]);
      }
      return base;
  }
@@ -933,9 +1176,12 @@ void FirstParser::parseImplementationDecl() {
      case TokenKind::KwString:
          advance();
          return std::make_unique<ast::PrimitiveType>(loc, ast::PrimitiveType::Kind::String);
-     case TokenKind::KwUnit:
-         advance();
-         return std::make_unique<ast::PrimitiveType>(loc, ast::PrimitiveType::Kind::Unit);
+    case TokenKind::KwUnit:
+        advance();
+        return std::make_unique<ast::PrimitiveType>(loc, ast::PrimitiveType::Kind::Unit);
+    case TokenKind::KwNull:
+        advance();
+        return std::make_unique<ast::PrimitiveType>(loc, ast::PrimitiveType::Kind::Null);
     case TokenKind::Identifier: {
         std::string name = current().lexeme;
         advance();
@@ -972,16 +1218,26 @@ void FirstParser::parseImplementationDecl() {
 
  std::unique_ptr<ast::Stmt> FirstParser::parseStatement() {
      switch (current().kind) {
+     case TokenKind::KwFor:
+         return parseForInStmt();
      case TokenKind::KwLet:
      case TokenKind::KwVar:
          return parseVarDecl();
      case TokenKind::KwReturn:
          return parseReturnStmt();
-     case TokenKind::KwIf:
-         return parseIfStmt();
-     case TokenKind::KwWhile:
-         return parseWhileStmt();
-    case TokenKind::KwSelect:
+    case TokenKind::KwIf:
+        // if/elseif/else is an expression; parse as expr then require semicolon
+        {
+            auto expr = parseIfExpr();
+            if (!expr) return nullptr;
+            if (current().kind != TokenKind::Semicolon) {
+                reportSyntaxError("expected ';' after if expression");
+                return nullptr;
+            }
+            advance();
+            return std::make_unique<ast::ExprStmt>(expr->getLocation(), std::move(expr));
+        }
+     case TokenKind::KwSelect:
         return parseSelectStmt();
     case TokenKind::KwMatch: {
         // Allow `match` as a statement by wrapping the expression in an ExprStmt.
@@ -1105,6 +1361,34 @@ void FirstParser::parseImplementationDecl() {
      return std::make_unique<ast::ReturnStmt>(loc, std::move(value));
  }
 
+ std::unique_ptr<ast::ForInStmt> FirstParser::parseForInStmt() {
+     SourceLocation loc = current().loc;
+     expect(TokenKind::KwFor, "expected 'for'");
+     if (current().kind != TokenKind::Identifier) {
+         reportSyntaxError("expected variable name in for-in loop");
+         return nullptr;
+     }
+     std::string varName = current().lexeme;
+     advance();
+     expect(TokenKind::KwIn, "expected 'in' after variable name in for-in loop");
+     auto iterable = parseExpression();
+     if (!iterable) {
+         reportSyntaxError("expected iterable expression in for-in loop");
+         return nullptr;
+     }
+     expect(TokenKind::LBrace, "expected '{' after iterable in for-in loop");
+     std::vector<std::unique_ptr<ast::Stmt>> body;
+     while (current().kind != TokenKind::RBrace &&
+            current().kind != TokenKind::EndOfFile) {
+         auto stmt = parseStatement();
+         if (stmt) body.push_back(std::move(stmt));
+         if (current().kind == TokenKind::Semicolon) advance();
+     }
+     expect(TokenKind::RBrace, "expected '}' at end of for-in loop body");
+     return std::make_unique<ast::ForInStmt>(
+         loc, varName, std::move(iterable), std::move(body));
+ }
+
  std::unique_ptr<ast::IfStmt> FirstParser::parseIfStmt() {
      SourceLocation loc = current().loc;
      expect(TokenKind::KwIf, "expected 'if'");
@@ -1120,15 +1404,96 @@ void FirstParser::parseImplementationDecl() {
          loc, std::move(cond), std::move(thenBranch), std::move(elseBranch));
  }
 
- std::unique_ptr<ast::WhileStmt> FirstParser::parseWhileStmt() {
+ std::unique_ptr<ast::Expr> FirstParser::parseBranchOrBlock() {
+     if (current().kind == TokenKind::LBrace) {
+         return parseBlockExpr();
+     }
+     return parseExpression();
+ }
+
+ static bool isStatementStart(TokenKind k) {
+     return k == TokenKind::KwFor || k == TokenKind::KwLet || k == TokenKind::KwVar || k == TokenKind::KwReturn
+         || k == TokenKind::KwIf || k == TokenKind::KwSelect
+         || k == TokenKind::KwMatch || k == TokenKind::LBrace;
+ }
+
+ std::unique_ptr<ast::Expr> FirstParser::parseBlockExpr() {
      SourceLocation loc = current().loc;
-     expect(TokenKind::KwWhile, "expected 'while'");
-     expect(TokenKind::LParen, "expected '(' after 'while'");
+     if (current().kind != TokenKind::LBrace) {
+         reportSyntaxError("expected '{' for block expression");
+         return nullptr;
+     }
+     advance(); // consume '{'
+     std::vector<std::unique_ptr<ast::Stmt>> statements;
+     std::unique_ptr<ast::Expr> valueExpr;
+     while (current().kind != TokenKind::RBrace && current().kind != TokenKind::EndOfFile) {
+         // If at start of block: 'if' can be either statement (if; ) or trailing expression (if .. }).
+         if (current().kind == TokenKind::KwIf) {
+             auto ifExpr = parseIfExpr();
+             if (!ifExpr) continue;
+             if (current().kind == TokenKind::Semicolon) {
+                 advance();
+                 statements.push_back(std::make_unique<ast::ExprStmt>(ifExpr->getLocation(), std::move(ifExpr)));
+                 continue;
+             }
+             if (current().kind == TokenKind::RBrace) {
+                 valueExpr = std::move(ifExpr);
+                 break;
+             }
+             reportSyntaxError("expected ';' or '}' after if expression in block");
+             continue;
+         }
+         if (isStatementStart(current().kind)) {
+             auto stmt = parseStatement();
+             if (stmt) {
+                 statements.push_back(std::move(stmt));
+             }
+             continue;
+         }
+         auto expr = parseExpression();
+         if (!expr) {
+             reportSyntaxError("expected statement or expression in block");
+             break;
+         }
+         if (current().kind == TokenKind::Semicolon) {
+             advance();
+             statements.push_back(std::make_unique<ast::ExprStmt>(expr->getLocation(), std::move(expr)));
+             continue;
+         }
+         if (current().kind == TokenKind::RBrace) {
+             valueExpr = std::move(expr);
+             break;
+         }
+         reportSyntaxError("expected ';' or '}' after expression in block");
+         break;
+     }
+     if (!expect(TokenKind::RBrace, "expected '}' at end of block")) {
+         return nullptr;
+     }
+     return std::make_unique<ast::BlockExpr>(loc, std::move(statements), std::move(valueExpr));
+ }
+
+ std::unique_ptr<ast::Expr> FirstParser::parseIfExpr() {
+     SourceLocation loc = current().loc;
+     expect(TokenKind::KwIf, "expected 'if'");
+     expect(TokenKind::LParen, "expected '(' after 'if'");
      auto cond = parseExpression();
+     if (!cond) return nullptr;
      expect(TokenKind::RParen, "expected ')' after condition");
-     auto body = parseStatement();
-     return std::make_unique<ast::WhileStmt>(
-         loc, std::move(cond), std::move(body));
+     auto thenBranch = parseBranchOrBlock();
+     if (!thenBranch) return nullptr;
+     if (!match(TokenKind::KwElse)) {
+         reportSyntaxError("expected 'else' in if expression");
+         return nullptr;
+     }
+     std::unique_ptr<ast::Expr> elseBranch;
+     if (current().kind == TokenKind::KwIf) {
+         elseBranch = parseIfExpr();
+     } else {
+         elseBranch = parseBranchOrBlock();
+     }
+     if (!elseBranch) return nullptr;
+     return std::make_unique<ast::IfExpr>(loc, std::move(cond), std::move(thenBranch), std::move(elseBranch));
  }
 
  std::unique_ptr<ast::AssignmentStmt> FirstParser::parseAssignmentStmt() {
@@ -1439,7 +1804,7 @@ std::unique_ptr<ast::Expr> FirstParser::parseDoBlockExpr() {
  }
 
  std::unique_ptr<ast::Expr> FirstParser::parseComparison() {
-     auto left = parseAdditive();
+     auto left = parseRange();
      while (current().kind == TokenKind::OpLt ||
             current().kind == TokenKind::OpLe ||
             current().kind == TokenKind::OpGt ||
@@ -1447,7 +1812,7 @@ std::unique_ptr<ast::Expr> FirstParser::parseDoBlockExpr() {
          SourceLocation loc = current().loc;
          TokenKind op = current().kind;
          advance();
-         auto right = parseAdditive();
+         auto right = parseRange();
          if (!right) break;
          ast::BinaryExpr::Op beOp = ast::BinaryExpr::Op::Add;
          switch (op) {
@@ -1461,6 +1826,37 @@ std::unique_ptr<ast::Expr> FirstParser::parseDoBlockExpr() {
              loc, beOp, std::move(left), std::move(right));
      }
      return left;
+ }
+
+ std::unique_ptr<ast::Expr> FirstParser::parseRange() {
+     auto start = parseAdditive();
+     if (!start) return nullptr;
+     // Optional second element: first, second..last (step = second - first, Haskell-style).
+     // Backtrack if we see comma but no .. or ..= (e.g. f(1, 2) must not consume ", 2").
+     std::unique_ptr<ast::Expr> stepHint;
+     std::size_t savedIndex = tokens_.getIndex();
+     if (match(TokenKind::Comma)) {
+         stepHint = parseAdditive();
+         if (!stepHint || (current().kind != TokenKind::OpRange &&
+                          current().kind != TokenKind::OpRangeInclusive)) {
+             tokens_.setIndex(savedIndex);
+             stepHint.reset();
+         }
+     }
+     if (current().kind == TokenKind::OpRange ||
+         current().kind == TokenKind::OpRangeInclusive) {
+         SourceLocation loc = start->getLocation();
+         bool inclusive = (current().kind == TokenKind::OpRangeInclusive);
+         advance();  // consume .. or ..=
+         auto end = parseAdditive();
+         if (!end) {
+             reportSyntaxError("expected expression after range operator");
+             return start;
+         }
+         return std::make_unique<ast::RangeExpr>(
+             loc, std::move(start), std::move(end), inclusive, std::move(stepHint));
+     }
+     return start;
  }
 
  std::unique_ptr<ast::Expr> FirstParser::parseAdditive() {
@@ -1546,56 +1942,40 @@ std::unique_ptr<ast::Expr> FirstParser::parseDoBlockExpr() {
                  base = std::make_unique<ast::FunctionCallExpr>(
                      loc, calleeName, std::move(args));
              }
-         } else if (match(TokenKind::Dot)) {
-             if (current().kind != TokenKind::Identifier) {
-                 reportSyntaxError("expected field name after '.'");
-                 break;
-             }
-             std::string fieldName = current().lexeme;
-             SourceLocation loc = base->getLocation();
-             advance();
-             base = std::make_unique<ast::FieldAccessExpr>(
-                 loc, std::move(base), fieldName);
-         } else {
-             break;
-         }
-     }
-     return base;
- }
+        } else if (match(TokenKind::Dot)) {
+            if (current().kind != TokenKind::Identifier) {
+                reportSyntaxError("expected field name after '.'");
+                break;
+            }
+            std::string fieldName = current().lexeme;
+            SourceLocation loc = base->getLocation();
+            advance();
+            base = std::make_unique<ast::FieldAccessExpr>(
+                loc, std::move(base), fieldName);
+        } else if (match(TokenKind::LBracket)) {
+            // Array indexing: base [ index ]
+            auto indexExpr = parseExpression();
+            if (!indexExpr) {
+                reportSyntaxError("expected index expression in array subscript");
+                break;
+            }
+            if (!expect(TokenKind::RBracket, "expected ']' after array index")) {
+                break;
+            }
+            SourceLocation loc = base->getLocation();
+            base = std::make_unique<ast::ArrayIndexExpr>(
+                loc, std::move(base), std::move(indexExpr));
+        } else {
+            break;
+        }
+    }
+    return base;
+}
 
  std::unique_ptr<ast::Expr> FirstParser::parsePrimaryExpr() {
      switch (current().kind) {
-    case TokenKind::KwIf: {
-        // Conditional expression: if (cond) thenExpr else elseExpr
-        SourceLocation loc = current().loc;
-        advance(); // consume 'if'
-        expect(TokenKind::LParen, "expected '(' after 'if'");
-        auto cond = parseExpression();
-        expect(TokenKind::RParen, "expected ')' after condition");
-        auto thenExpr = parseExpression();
-        if (!match(TokenKind::KwElse)) {
-            reportSyntaxError("expected 'else' in conditional expression");
-        }
-        auto elseExpr = parseExpression();
-
-        // Represent conditional expression as:
-        // match-like desugaring is not available here; instead, we create a
-        // trivial if-statement in a lambda and call it immediately is overkill.
-        // For now, lower it to:
-        // (cond ? thenExpr : elseExpr) is not a distinct AST node, so we
-        // approximate using a simple binary expression tree:
-        // this is sufficient for parser tests which only check for success.
-        // Use a placeholder: (cond && thenExpr) || (!cond && elseExpr)
-        auto notCond = std::make_unique<ast::UnaryExpr>(loc, ast::UnaryExpr::Op::Not, std::move(cond));
-        auto condThen = std::make_unique<ast::BinaryExpr>(loc, ast::BinaryExpr::Op::And,
-                                                          std::make_unique<ast::LiteralExpr>(loc, ast::LiteralExpr::LiteralType::Bool, "true"),
-                                                          std::move(thenExpr));
-        auto elsePart = std::make_unique<ast::BinaryExpr>(loc, ast::BinaryExpr::Op::And,
-                                                          std::move(notCond),
-                                                          std::move(elseExpr));
-        return std::make_unique<ast::BinaryExpr>(loc, ast::BinaryExpr::Op::Or,
-                                                 std::move(condThen), std::move(elsePart));
-    }
+    case TokenKind::KwIf:
+        return parseIfExpr();
     case TokenKind::KwMatch:
         return parseMatchExpr();
     case TokenKind::KwDo:
@@ -1762,11 +2142,14 @@ std::unique_ptr<ast::Expr> FirstParser::parseDoBlockExpr() {
         return std::make_unique<ast::ArrayLiteralExpr>(loc, std::move(elements));
      }
     case TokenKind::LBrace: {
-        // Record literal: { field: expr, ... }
-        SourceLocation loc = current().loc;
-        advance(); // '{'
-        std::vector<ast::RecordLiteralExpr::Field> fields;
-        if (current().kind != TokenKind::RBrace) {
+        // Block expression { stmt* expr? } vs record literal { id: expr, ... } vs shorthand { id1, id2 }
+        TokenKind k2 = tokens_.lookahead(2).kind;
+        if (tokens_.lookahead(1).kind == TokenKind::Identifier && k2 == TokenKind::Colon) {
+            // Record literal: { field: expr, ... }
+            SourceLocation loc = current().loc;
+            advance(); // '{'
+            std::vector<ast::RecordLiteralExpr::Field> fields;
+            if (current().kind != TokenKind::RBrace) {
             while (true) {
                 if (current().kind != TokenKind::Identifier) {
                     reportSyntaxError("expected field name in record literal");
@@ -1789,6 +2172,28 @@ std::unique_ptr<ast::Expr> FirstParser::parseDoBlockExpr() {
         }
         expect(TokenKind::RBrace, "expected '}' in record literal");
         return std::make_unique<ast::RecordLiteralExpr>(loc, std::move(fields));
+        }
+        if (tokens_.lookahead(1).kind == TokenKind::Identifier &&
+            (k2 == TokenKind::Comma || k2 == TokenKind::RBrace)) {
+            // Shorthand record literal: { id1, id2 } means { id1: id1, id2: id2 }
+            SourceLocation loc = current().loc;
+            advance(); // '{'
+            std::vector<ast::RecordLiteralExpr::Field> fields;
+            while (current().kind == TokenKind::Identifier) {
+                SourceLocation fieldLoc = current().loc;
+                std::string fieldName = current().lexeme;
+                advance();
+                fields.push_back(ast::RecordLiteralExpr::Field(
+                    fieldName, std::make_unique<ast::VariableExpr>(fieldLoc, fieldName)));
+                if (match(TokenKind::Comma)) {
+                    continue;
+                }
+                break;
+            }
+            expect(TokenKind::RBrace, "expected '}' in record literal");
+            return std::make_unique<ast::RecordLiteralExpr>(loc, std::move(fields));
+        }
+        return parseBlockExpr();
     }
      default:
          reportSyntaxError("expected expression");
@@ -1881,7 +2286,12 @@ std::unique_ptr<ast::Expr> FirstParser::parseMatchExpr() {
         }
 
         std::unique_ptr<ast::Expr> guard;
-        // WHEN guards not yet supported; can be added here if needed.
+        if (match(TokenKind::KwWhen)) {
+            guard = parseExpression();
+            if (!guard) {
+                reportSyntaxError("expected expression after 'when' in match case");
+            }
+        }
 
         if (!match(TokenKind::OpFatArrow)) {
             reportSyntaxError("expected '=>' after pattern in match case");
@@ -1912,12 +2322,17 @@ std::unique_ptr<ast::Expr> FirstParser::parseMatchExpr() {
 std::unique_ptr<ast::Pattern> FirstParser::parsePattern() {
     SourceLocation loc = current().loc;
 
-    // Wildcard pattern
+    // Wildcard pattern (_ or identifier "_"); accept by kind or by lexeme for robustness
     if (match(TokenKind::Underscore)) {
         return std::make_unique<ast::WildcardPattern>(loc);
     }
+    if ((current().kind == TokenKind::Identifier && current().lexeme == "_") ||
+        current().lexeme == "_") {
+        advance();
+        return std::make_unique<ast::WildcardPattern>(loc);
+    }
 
-    // Record pattern: { field: pattern, ... }
+    // Record pattern: { field: pattern, ... } or shorthand { field } meaning { field: field }
     if (match(TokenKind::LBrace)) {
         std::vector<ast::RecordPattern::FieldPattern> fields;
         if (current().kind != TokenKind::RBrace) {
@@ -1926,10 +2341,16 @@ std::unique_ptr<ast::Pattern> FirstParser::parsePattern() {
                     reportSyntaxError("expected field name in record pattern");
                     break;
                 }
+                SourceLocation fieldLoc = current().loc;
                 std::string fieldName = current().lexeme;
                 advance();
-                expect(TokenKind::Colon, "expected ':' after field name in record pattern");
-                auto fieldPat = parsePattern();
+                std::unique_ptr<ast::Pattern> fieldPat;
+                if (current().kind == TokenKind::Comma || current().kind == TokenKind::RBrace) {
+                    fieldPat = std::make_unique<ast::VariablePattern>(fieldLoc, fieldName);
+                } else {
+                    expect(TokenKind::Colon, "expected ':' after field name in record pattern");
+                    fieldPat = parsePattern();
+                }
                 if (fieldPat) {
                     fields.push_back(ast::RecordPattern::FieldPattern{fieldName, std::move(fieldPat)});
                 }

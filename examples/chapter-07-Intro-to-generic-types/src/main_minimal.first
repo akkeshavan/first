@@ -1,0 +1,14 @@
+// Minimal test: List and match, no Prelude
+type List<T> = Cons(T, List<T>);
+
+function length<T>(xs: List<T>) -> Int {
+    return match xs {
+        Cons(h, t) => 1 + length(t),
+        null => 0
+    };
+}
+
+interaction main() -> Unit {
+    let xs: List<Int> = Cons(1, Cons(2, Cons(3, null)));
+    println(intToString(length(xs)));
+}

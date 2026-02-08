@@ -79,11 +79,11 @@ void test_recursive_function() {
     
     std::string source = R"(
         function factorial(n: Int) -> Int {
-            if (n <= 1) {
-                return 1;
+            return if (n <= 1) {
+                1
             } else {
-                return n * factorial(n - 1);
-            }
+                n * factorial(n - 1)
+            };
         }
     )";
     

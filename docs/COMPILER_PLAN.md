@@ -174,7 +174,6 @@ First Source (.first)
 ### Step 3.8: Semantic Restrictions Enforcement
 **Verification**: Pure function restrictions are enforced
 - [ ] Check for mutable variables in pure functions
-- [ ] Check for while loops in pure functions
 - [ ] Check for monadic operators in pure functions
 - [ ] Check for I/O operations in pure functions
 - [ ] Clear error messages for violations

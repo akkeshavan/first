@@ -21,13 +21,13 @@
      KwInteraction,
      KwIf,
      KwElse,
-     KwWhile,
      KwReturn,
      KwLet,
      KwVar,
      KwMut,
-     KwMatch,
-     KwType,
+    KwMatch,
+    KwWhen,
+    KwType,
      KwInterface,
      KwImplementation,
      KwImport,
@@ -43,6 +43,8 @@
     KwSpawn,
     KwJoin,
     KwSelect,
+    KwFor,
+    KwIn,
 
     // Primitive types / builtins
      KwInt,
@@ -76,8 +78,9 @@
      OpDivAssign,
      OpArrow,
      OpFatArrow,
-     OpRange,
-     OpRangeInclusive,
+    OpRange,
+    OpRangeInclusive,
+    OpPipe,  // | for sum types (V1(T1) | V2(T2))
 
     // Monadic / functional operators (for interactions)
     OpBind,   // >>=

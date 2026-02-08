@@ -190,6 +190,33 @@ int64_t first_array_length(const void* arr, int64_t known_len) {
     return known_len;
 }
 
+int64_t first_array_reduce_int_sum(const int64_t* arr, int64_t len) {
+    if (!arr || len <= 0) return 0;
+    int64_t sum = 0;
+    for (int64_t i = 0; i < len; ++i) sum += arr[i];
+    return sum;
+}
+
+int64_t* first_array_map_int_double(const int64_t* arr, int64_t len) {
+    if (!arr || len <= 0) return nullptr;
+    int64_t* out = static_cast<int64_t*>(first_alloc(static_cast<size_t>(len) * sizeof(int64_t)));
+    if (!out) return nullptr;
+    for (int64_t i = 0; i < len; ++i) out[i] = arr[i] * 2;
+    return out;
+}
+
+int64_t* first_array_filter_int_positive(const int64_t* arr, int64_t len, int64_t* out_len) {
+    if (!arr || !out_len) { if (out_len) *out_len = 0; return nullptr; }
+    std::vector<int64_t> tmp;
+    for (int64_t i = 0; i < len; ++i) if (arr[i] > 0) tmp.push_back(arr[i]);
+    *out_len = static_cast<int64_t>(tmp.size());
+    if (tmp.empty()) return nullptr;
+    int64_t* out = static_cast<int64_t*>(first_alloc(tmp.size() * sizeof(int64_t)));
+    if (!out) return nullptr;
+    for (size_t i = 0; i < tmp.size(); ++i) out[i] = tmp[i];
+    return out;
+}
+
 // --- Socket (TCP client) ---
 int64_t first_socket_connect(const char* host, int64_t port) {
 #ifndef _WIN32

@@ -1,0 +1,19 @@
+// Test for-in loops and range expressions
+interaction testForInRange() -> Unit {
+    for i in 1..5 {
+        print(intToString(i));
+    }
+}
+
+interaction testForInRangeInclusive() -> Unit {
+    for i in 1..=3 {
+        print(intToString(i));
+    }
+}
+
+interaction testForInArray() -> Unit {
+    let nums = [10, 20, 30];
+    for x in nums {
+        print(intToString(x));
+    }
+}

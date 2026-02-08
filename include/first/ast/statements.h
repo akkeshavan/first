@@ -116,28 +116,6 @@ private:
     std::unique_ptr<Stmt> elseBranch_;
 };
 
-// While statement
-class WhileStmt : public Stmt {
-public:
-    WhileStmt(const SourceLocation& location,
-              std::unique_ptr<Expr> condition,
-              std::unique_ptr<Stmt> body)
-        : Stmt(location), condition_(std::move(condition)), body_(std::move(body)) {}
-
-    Expr* getCondition() const { return condition_.get(); }
-    Stmt* getBody() const { return body_.get(); }
-    
-    void accept(ASTVisitor& visitor) override {
-        visitor.visitWhileStmt(this);
-    }
-    
-    std::string getNodeType() const override { return "WhileStmt"; }
-
-private:
-    std::unique_ptr<Expr> condition_;
-    std::unique_ptr<Stmt> body_;
-};
-
 // Assignment statement
 class AssignmentStmt : public Stmt {
 public:
@@ -160,6 +138,31 @@ private:
     std::unique_ptr<Expr> value_;
 };
 
+// For-in statement: for x in iterable { body }
+class ForInStmt : public Stmt {
+public:
+    ForInStmt(const SourceLocation& location,
+              const std::string& variableName,
+              std::unique_ptr<Expr> iterable,
+              std::vector<std::unique_ptr<Stmt>> body)
+        : Stmt(location), variableName_(variableName),
+          iterable_(std::move(iterable)), body_(std::move(body)) {}
+
+    const std::string& getVariableName() const { return variableName_; }
+    Expr* getIterable() const { return iterable_.get(); }
+    const std::vector<std::unique_ptr<Stmt>>& getBody() const { return body_; }
+
+    void accept(ASTVisitor& visitor) override {
+        visitor.visitForInStmt(this);
+    }
+    std::string getNodeType() const override { return "ForInStmt"; }
+
+private:
+    std::string variableName_;
+    std::unique_ptr<Expr> iterable_;
+    std::vector<std::unique_ptr<Stmt>> body_;
+};
+
 // Select statement: select { receive/send/else branches }
 class SelectStmt : public Stmt {
 public:
@@ -172,6 +175,25 @@ public:
     std::string getNodeType() const override { return "SelectStmt"; }
 private:
     std::vector<std::unique_ptr<SelectBranch>> branches_;
+};
+
+// Block expression (Rust-style): { stmt* expr? } — value is last expr or Unit
+class BlockExpr : public Expr {
+public:
+    BlockExpr(const SourceLocation& location,
+              std::vector<std::unique_ptr<Stmt>> statements,
+              std::unique_ptr<Expr> valueExpr)
+        : Expr(location), statements_(std::move(statements)), valueExpr_(std::move(valueExpr)) {}
+
+    const std::vector<std::unique_ptr<Stmt>>& getStatements() const { return statements_; }
+    Expr* getValueExpr() const { return valueExpr_.get(); }
+    bool hasValueExpr() const { return valueExpr_ != nullptr; }
+
+    void accept(ASTVisitor& visitor) override { visitor.visitBlockExpr(this); }
+    std::string getNodeType() const override { return "BlockExpr"; }
+private:
+    std::vector<std::unique_ptr<Stmt>> statements_;
+    std::unique_ptr<Expr> valueExpr_;
 };
 
 } // namespace ast

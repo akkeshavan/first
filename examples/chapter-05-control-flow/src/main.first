@@ -1,0 +1,21 @@
+// Chapter 5: Control Flow (first-book)
+// Run with: fir run
+// Pure function fizzBuzz(n); main uses for-in over range 1..=30 to println each result.
+
+function fizzBuzz(n: Int) -> String {
+    return if (n % 15 == 0) {
+        "FizzBuzz"
+    } else if (n % 3 == 0) {
+        "Fizz"
+    } else if (n % 5 == 0) {
+        "Buzz"
+    } else {
+        intToString(n)
+    };
+}
+
+interaction main() -> Unit {
+    for i in 1..=30 {
+        println(fizzBuzz(i));
+    }
+}

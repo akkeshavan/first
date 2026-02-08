@@ -50,8 +50,8 @@ function pureFunction(): Int {
 
 ### 2.3 Keywords
 ```
-let var function interaction if else while return
-type interface implementation import export
+let var function interaction if else return
+for in type interface implementation import export
 true false null Int String Bool Float Array
 ```
 
@@ -63,6 +63,7 @@ true false null Int String Bool Float Array
 - `Bool`: Boolean values (`true`, `false`)
 - `String`: UTF-8 encoded strings
 - `Unit`: Void type (represented as `()`)
+- `Null`: Null type (value `null`); used in union types like `T | Null`
 
 ### 3.2 Composite Types
 
@@ -112,13 +113,37 @@ type Status = "loading" | "success" | "error";
 type NumberOrString = Int | String;
 ```
 
-#### 3.2.6 Algebraic Data Types
+#### 3.2.6 Algebraic Data Types (Sum Types)
+
+**Case-class style** (constructors with payload types; exhaustive match required). Parameter names in the declaration are optional and document the payload:
+
 ```
-type Shape = 
-    | Circle(radius: Float)
-    | Rectangle(width: Float, height: Float)
-    | Square(side: Float);
+type LexItem = Expression(value: Int) | Operator(op: String);
+type Expression = Term(Int) | Operator(String) | BinaryExpression(Expression, Operator, Expression);
+match e {
+    Term(value) => ...,
+    Operator(op) => ...,
+    BinaryExpression(left, op, right) => ...
+}
 ```
+
+**Sum-of-records style** (each variant carries a named record type; default case required):
+
+```
+type Circle = { radius: Float };
+type Rectangle = { len: Float, width: Float };
+type Shape = Circle | Rectangle;   // sugar for Circle(Circle) | Rectangle(Rectangle)
+
+match v {
+    Circle({ radius }) => ...,
+    Rectangle({ len, width }) => ...,
+    other => ...
+}
+```
+
+- **Construction:** `Circle({ radius: 5.0 })`, `Rectangle({ len: 10.0, width: 20.0 })`.
+- **Record pattern shorthand:** `{ radius }` means `{ radius: radius }` (bind field to variable of same name).
+- **Exhaustiveness:** Case-class style requires all constructors covered (or a catch-all). Sum-of-records requires a default (variable or `_`) case.
 
 #### 3.2.7 Refinement Types
 Refinement types allow you to specify types with predicates that constrain values:
@@ -193,6 +218,11 @@ type ReadableWritable = Readable & Writable;
 
 // Union types: T1 | T2 | ...
 type StringOrNumber = String | Int;
+
+// T | Null for optional values (Iterator.next returns T | null)
+interface Iterator<T> {
+    next: function() -> T | Null;
+}
 ```
 
 #### 3.2.10 Existential Types
@@ -267,50 +297,87 @@ function processString(s: String) -> Result<String, String> {
 
 ## 5. Control Flow
 
-### 5.1 Conditional Statements
-```
-if (condition) {
-    // statements
-} else if (anotherCondition) {
-    // statements
-} else {
-    // statements
-}
+### 5.1 If / Else If / Else as Expression (Rust-style)
 
-// Conditional expressions
+**If is an expression, not a statement.** The value of the `if` expression is the **last expression** in whichever branch is taken. This is the same as in Rust.
+
+- **Branches** are either a **block** `{ stmt* expr? }` or a single **expression**.
+- In a block, the last expression (without a trailing semicolon) is the value of the block; if there is no trailing expression, the block’s value is **Unit**.
+- **Else if** is supported: after `else` you may write another `if (condition) branch` instead of a final `else branch`.
+- **No `return` inside if-expression branches.** You may not use `return` inside the block of an if/else branch. To return a value from a function, return the whole if-expression: `return if (...) { ... } else { ... };`
+
+```
+// Single-expression branches (value = that expression)
 let result = if (x > 0) "positive" else "non-positive";
-```
 
-### 5.2 While Loops
+// Block branches: value = last expression in the block (no return inside)
+let n = if (flag) {
+    let a = 1;
+    let b = 2;
+    a + b
+} else {
+    0
+};
 
-**While loops are ONLY allowed in interaction functions, not in pure functions.**
-
-```
-// ✅ Valid - while loop in interaction function
-interaction processNumbers(): Unit {
-    var i = 0;
-    while (i < 10) {
-        print(i.toString());
-        i += 1;
-    }
+// Returning from a function: return the result of the if-expression
+function factorial(n: Int) -> Int {
+    return if (n <= 1) {
+        1
+    } else {
+        n * factorial(n - 1)
+    };
 }
 
-// ❌ Invalid - while loop in pure function
-function invalidLoop(): Int {
-    while (true) {        // ERROR: while loops not allowed in pure functions
-        return 1;
-    }
-    return 0;
+// Else if
+let kind = if (x < 0) { "negative" } else if (x > 0) { "positive" } else { "zero" };
+
+// Used as statement: evaluate and discard value (semicolon required)
+if (condition) {
+    doSomething();
+} else {
+    doOther();
+};
+```
+
+**All branches must have the same type.** The type of the whole `if` expression is that common type.
+
+### 5.2 For-In Loops (Rust-style) and Range Expressions
+
+**For-in loops** iterate over any type that implements the `Iterator<T>` interface. They are **only allowed in interaction functions** (not in pure functions).
+
+```
+// Iterate over a range (exclusive end: 1, 2, 3, 4)
+for i in 1..5 {
+    print(intToString(i));
 }
 
-// ✅ Alternative - use recursion in pure functions
-function countdown(n: Int): Unit {
-    if (n > 0) {
-        // Use recursion instead of loops in pure functions
-        return countdown(n - 1);
-    }
+// Iterate over a range (inclusive end: 1, 2, 3, 4, 5)
+for i in 1..=5 {
+    print(intToString(i));
+}
+
+// Iterate over an array
+let nums = [10, 20, 30];
+for x in nums {
+    print(intToString(x));
 }
 ```
+
+**Range expressions:**
+- `start..end` – exclusive range (values from `start` up to but not including `end`)
+- `start..=end` – inclusive range (values from `start` through `end`, inclusive)
+- Both bounds must be `Int`
+
+**Iterator<T> interface:**
+```first
+interface Iterator<T> {
+    next: function() -> T | Null;
+}
+```
+
+Types that implement `Iterator<T>` can be used in `for-in` loops. Built-in implementations:
+- **Range** (from `start..end` or `start..=end`): implements `Iterator<Int>`
+- **Array<T>**: implements `Iterator<T>`
 
 ## 6. Functions and Interactions
 
@@ -322,7 +389,7 @@ Pure functions are the **primary and preferred** way to write code in First. The
 
 **Restrictions in Pure Functions:**
 - ❌ **No mutable variables** (`var` declarations)
-- ❌ **No while loops** (use recursion instead)
+- ❌ **No for-in loops** (only allowed in interactions)
 - ❌ **No monadic operators** (`>>=`, `>>`, `<$>`, `<*>`)
 - ❌ **No I/O operations** (reading files, printing, etc.)
 
@@ -369,7 +436,7 @@ Interactions allow **controlled imperative programming** and are used when side 
 
 **Everything Pure Functions Can Do, Plus:**
 - ✅ **Mutable variables** (`var` declarations and assignments)
-- ✅ **While loops** and imperative control flow
+- ✅ **For-in loops** (iterate over ranges and arrays)
 - ✅ **Monadic operators** (`>>=`, `>>`, `<$>`, `<*>`)
 - ✅ **I/O operations** (file operations, printing, user input)
 - ✅ **Side effects** and state modification
@@ -382,10 +449,12 @@ interaction greet(name: String) -> Unit {
 
 interaction processWithState(): Int {
     var counter: Int = 0;           // Mutable variable
-    while (counter < 10) {          // While loop
+    if (counter < 10) {
         counter = counter + 1;      // Assignment
         print(counter.toString());  // I/O operation
-    }
+    } else {
+        return counter;
+    };
     return counter;
 }
 
@@ -536,7 +605,6 @@ First enforces **strict semantic restrictions** to maintain functional purity an
 **❌ FORBIDDEN:**
 - Mutable variable declarations (`var`)
 - Variable assignments (`=`, `+=`, `-=`, etc.)
-- While loops (`while`)
 - Monadic operators (`>>=`, `>>`, `<$>`, `<*>`)
 - I/O operations (print, readFile, input, etc.)
 - Any side effects or state mutations
@@ -547,7 +615,6 @@ First enforces **strict semantic restrictions** to maintain functional purity an
 - Everything pure functions can do, PLUS:
 - Mutable variable declarations (`var`)
 - Variable assignments and mutations
-- While loops and imperative control flow
 - Monadic operators for composing effects
 - I/O operations and side effects
 - State management and mutations
@@ -560,18 +627,13 @@ The compiler enforces these restrictions with clear error messages:
 // ❌ This will cause a compile error:
 function invalidPure(): Int {
     var x: Int = 5;  // ERROR: Mutable variables can only be used in interaction functions
-    while (x < 10) { // ERROR: While loops can only be used in interaction functions  
-        x = x + 1;
-    }
     return x;
 }
 
 // ✅ This is the correct way:
 interaction validInteraction(): Int {
     var x: Int = 5;  // OK: Mutable variables allowed in interactions
-    while (x < 10) { // OK: While loops allowed in interactions
-        x = x + 1;
-    }
+    x = x + 1;
     return x;
 }
 
@@ -1057,25 +1119,19 @@ foreign c "sqlite3" {
 // Usage
 import { sqlite3Open, sqlite3Prepare, sqlite3Step, sqlite3ColumnText, sqlite3Close, SQLiteDB } from "./native-bindings";
 
-interaction queryDatabase(dbPath: String, query: String) -> Result<Array<String>, String> {
+interaction queryOneRow(dbPath: String, query: String) -> Result<Option<String>, String> {
     do {
         db <- sqlite3Open(dbPath);
         stmt <- sqlite3Prepare(db, query);
-        
-        var results: Array<String> = [];
-        while (true) {
-            stepResult <- sqlite3Step(stmt);
-            match stepResult {
-                Ok(100) => { // SQLITE_ROW
-                    let value = sqlite3ColumnText(stmt, 0);
-                    results = results.append(value);
-                },
-                Ok(101) => break, // SQLITE_DONE
-                Err(e) => return Err(e)
-            }
+        stepResult <- sqlite3Step(stmt);
+        match stepResult {
+            Ok(100) => { // SQLITE_ROW
+                let value = sqlite3ColumnText(stmt, 0);
+                return Ok(Some(value));
+            },
+            Ok(101) => return Ok(None), // SQLITE_DONE
+            Err(e) => return Err(e)
         }
-        
-        return Ok(results);
     }
 }
 ```

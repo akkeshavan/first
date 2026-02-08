@@ -11,6 +11,8 @@
 namespace first {
 namespace semantic {
 
+static ast::Type* getEffectiveType(ast::Type* type);
+
 bool TypeChecker::check(ast::Program* program) {
     if (!program) {
         errorReporter_.error(SourceLocation(), "Cannot type check null program");
@@ -28,6 +30,25 @@ bool TypeChecker::check(ast::Program* program) {
 }
 
 void TypeChecker::checkProgram(ast::Program* program) {
+    typeDecls_.clear();
+    typeDeclParams_.clear();
+    constructorToADT_.clear();
+    currentFunction_ = nullptr;
+    currentInteraction_ = nullptr;
+    for (const auto& typeDecl : program->getTypeDecls()) {
+        if (!typeDecl || !typeDecl->getType()) continue;
+        const std::string& name = typeDecl->getTypeName();
+        ast::Type* ty = typeDecl->getType();
+        typeDecls_[name] = ty;
+        if (typeDecl->isGeneric()) {
+            typeDeclParams_[name] = typeDecl->getTypeParams();
+        }
+        if (auto* adt = dynamic_cast<ast::ADTType*>(ty)) {
+            for (const auto& c : adt->getConstructors()) {
+                if (c) constructorToADT_[c->getName()] = adt;
+            }
+        }
+    }
     // First pass: collect all top-level declarations into symbol table
     for (const auto& func : program->getFunctions()) {
         auto symbol = std::make_unique<FunctionSymbol>(
@@ -65,7 +86,12 @@ void TypeChecker::checkProgram(ast::Program* program) {
 
 void TypeChecker::checkFunction(ast::FunctionDecl* func) {
     if (!func) return;
+
+    // Generic params must appear in at least one parameter type (no separate return-only generic)
+    checkGenericParamsAppearInParameterTypes(func);
     
+    currentFunction_ = func;
+    currentInteraction_ = nullptr;
     // Enter function scope
     symbolTable_.enterScope();
     
@@ -96,11 +122,17 @@ void TypeChecker::checkFunction(ast::FunctionDecl* func) {
     
     // Exit function scope
     symbolTable_.exitScope();
+    currentFunction_ = nullptr;
 }
 
 void TypeChecker::checkInteraction(ast::InteractionDecl* interaction) {
     if (!interaction) return;
+
+    // Generic params must appear in at least one parameter type (no separate return-only generic)
+    checkGenericParamsAppearInParameterTypes(interaction);
     
+    currentFunction_ = nullptr;
+    currentInteraction_ = interaction;
     // Similar to function checking
     symbolTable_.enterScope();
     
@@ -128,6 +160,180 @@ void TypeChecker::checkInteraction(ast::InteractionDecl* interaction) {
     }
     
     symbolTable_.exitScope();
+    currentInteraction_ = nullptr;
+}
+
+void TypeChecker::collectTypeParamNamesInType(ast::Type* type, std::set<std::string>& out) {
+    if (!type) return;
+    if (auto* gen = dynamic_cast<ast::GenericType*>(type)) {
+        out.insert(gen->getName());
+        return;
+    }
+    if (auto* arr = dynamic_cast<ast::ArrayType*>(type)) {
+        collectTypeParamNamesInType(arr->getElementType(), out);
+        return;
+    }
+    if (auto* param = dynamic_cast<ast::ParameterizedType*>(type)) {
+        for (const auto& arg : param->getTypeArgs()) {
+            collectTypeParamNamesInType(arg.get(), out);
+        }
+        return;
+    }
+    if (auto* func = dynamic_cast<ast::FunctionType*>(type)) {
+        for (const auto& pt : func->getParamTypes()) {
+            collectTypeParamNamesInType(pt.get(), out);
+        }
+        collectTypeParamNamesInType(func->getReturnType(), out);
+        return;
+    }
+    if (auto* rec = dynamic_cast<ast::RecordType*>(type)) {
+        for (const auto& field : rec->getFields()) {
+            collectTypeParamNamesInType(field->getType(), out);
+        }
+        return;
+    }
+    if (auto* ref = dynamic_cast<ast::RefinementType*>(type)) {
+        collectTypeParamNamesInType(ref->getBaseType(), out);
+        return;
+    }
+    if (auto* idx = dynamic_cast<ast::IndexedType*>(type)) {
+        collectTypeParamNamesInType(idx->getBaseType(), out);
+        return;
+    }
+    if (auto* dep = dynamic_cast<ast::DependentFunctionType*>(type)) {
+        collectTypeParamNamesInType(dep->getParamType(), out);
+        collectTypeParamNamesInType(dep->getReturnType(), out);
+        return;
+    }
+    if (auto* sigma = dynamic_cast<ast::DependentPairType*>(type)) {
+        collectTypeParamNamesInType(sigma->getVarType(), out);
+        collectTypeParamNamesInType(sigma->getBodyType(), out);
+        return;
+    }
+    if (auto* forall = dynamic_cast<ast::ForallType*>(type)) {
+        collectTypeParamNamesInType(forall->getBodyType(), out);
+        return;
+    }
+    if (auto* ex = dynamic_cast<ast::ExistentialType*>(type)) {
+        collectTypeParamNamesInType(ex->getVarType(), out);
+        collectTypeParamNamesInType(ex->getBodyType(), out);
+        return;
+    }
+    // PrimitiveType, ADTType, etc. have no nested type parameters
+}
+
+void TypeChecker::checkGenericParamsAppearInParameterTypes(ast::FunctionDecl* func) {
+    const auto& genericParams = func->getGenericParams();
+    if (genericParams.empty()) return;
+    std::set<std::string> namesInParams;
+    for (const auto& param : func->getParameters()) {
+        if (param->getType()) {
+            collectTypeParamNamesInType(param->getType(), namesInParams);
+        }
+    }
+    for (const auto& gp : genericParams) {
+        const std::string& name = gp.name;
+        if (namesInParams.count(name) == 0) {
+            errorReporter_.error(
+                func->getLocation(),
+                "Generic type parameter '" + name + "' must appear in at least one parameter type (return-only generic not allowed)"
+            );
+        }
+    }
+}
+
+void TypeChecker::checkGenericParamsAppearInParameterTypes(ast::InteractionDecl* interaction) {
+    const auto& genericParams = interaction->getGenericParams();
+    if (genericParams.empty()) return;
+    std::set<std::string> namesInParams;
+    for (const auto& param : interaction->getParameters()) {
+        if (param->getType()) {
+            collectTypeParamNamesInType(param->getType(), namesInParams);
+        }
+    }
+    for (const auto& gp : genericParams) {
+        const std::string& name = gp.name;
+        if (namesInParams.count(name) == 0) {
+            errorReporter_.error(
+                interaction->getLocation(),
+                "Generic type parameter '" + name + "' must appear in at least one parameter type (return-only generic not allowed)"
+            );
+        }
+    }
+}
+
+bool TypeChecker::typeImplementsInterface(ast::Type* type, const std::string& interfaceName) {
+    if (!type) return false;
+    type = getEffectiveType(type);
+    // Type parameter with constraint: if we're inside a function that declares T : Interface, then T implements Interface
+    if (auto* gen = dynamic_cast<ast::GenericType*>(type)) {
+        const std::string& name = gen->getName();
+        if (currentFunction_) {
+            for (const auto& gp : currentFunction_->getGenericParams()) {
+                if (gp.name == name && gp.constraint == interfaceName)
+                    return true;
+            }
+        }
+        if (currentInteraction_) {
+            for (const auto& gp : currentInteraction_->getGenericParams()) {
+                if (gp.name == name && gp.constraint == interfaceName)
+                    return true;
+            }
+        }
+    }
+    // Built-in Eq and Ord for Int, Float, Bool, String — no user implementation required
+    if (interfaceName == "Eq" || interfaceName == "Ord") {
+        if (auto* prim = dynamic_cast<ast::PrimitiveType*>(type)) {
+            if (interfaceName == "Eq") {
+                switch (prim->getKind()) {
+                    case ast::PrimitiveType::Kind::Int:
+                    case ast::PrimitiveType::Kind::Float:
+                    case ast::PrimitiveType::Kind::Bool:
+                    case ast::PrimitiveType::Kind::String:
+                        return true;
+                    default: break;
+                }
+            }
+            if (interfaceName == "Ord") {
+                switch (prim->getKind()) {
+                    case ast::PrimitiveType::Kind::Int:
+                    case ast::PrimitiveType::Kind::Float:
+                    case ast::PrimitiveType::Kind::String:
+                        return true;
+                    default: break;
+                }
+            }
+        }
+    }
+    // Built-in Iterator for Array<T> — for-in over arrays works without user implementation
+    if (interfaceName == "Iterator") {
+        if (auto* arr = dynamic_cast<ast::ArrayType*>(type)) {
+            return true;  // Array<T> implements Iterator<T>
+        }
+        if (auto* param = dynamic_cast<ast::ParameterizedType*>(type)) {
+            if (param->getBaseName() == "Array" && param->getTypeArgs().size() == 1) {
+                return true;  // Array<T> implements Iterator<T>
+            }
+        }
+    }
+    // User-defined implementations from the program and from imported modules (e.g. Prelude)
+    auto checkImpls = [this, type, &interfaceName](ast::Program* program) {
+        if (!program) return false;
+        for (const auto& impl : program->getImplementations()) {
+            if (!impl || impl->getInterfaceName() != interfaceName) continue;
+            const auto& typeArgs = impl->getTypeArgs();
+            if (typeArgs.size() != 1) continue;
+            if (typesEqual(typeArgs[0].get(), type)) return true;
+        }
+        return false;
+    };
+    if (currentProgram_ && checkImpls(currentProgram_)) return true;
+    if (moduleResolver_) {
+        for (const std::string& modName : moduleResolver_->getLoadedModuleNames()) {
+            if (checkImpls(moduleResolver_->getModule(modName))) return true;
+        }
+    }
+    return false;
 }
 
 void TypeChecker::checkStatement(ast::Stmt* stmt) {
@@ -212,6 +418,29 @@ void TypeChecker::checkStatement(ast::Stmt* stmt) {
         if (exprStmt->getExpr()) {
             inferType(exprStmt->getExpr());
         }
+    } else if (auto* forIn = dynamic_cast<ast::ForInStmt*>(stmt)) {
+        ast::Type* elementType = getIterableElementType(forIn->getIterable());
+        if (!elementType) {
+            errorReporter_.error(
+                forIn->getIterable()->getLocation(),
+                "for-in requires an iterable (range 1..n or Array<T>)"
+            );
+            return;
+        }
+        symbolTable_.enterScope();
+        auto varType = copyType(elementType);
+        if (varType) {
+            symbolTable_.insert(std::make_unique<VariableSymbol>(
+                forIn->getVariableName(),
+                forIn->getLocation(),
+                std::move(varType),
+                false  // immutable in for-in
+            ));
+        }
+        for (const auto& s : forIn->getBody()) {
+            checkStatement(s.get());
+        }
+        symbolTable_.exitScope();
     }
 }
 
@@ -266,8 +495,21 @@ ast::Type* TypeChecker::inferExpression(ast::Expr* expr) {
             }
         }
         return createUnitType().release();
+    } else if (auto* arrayLit = dynamic_cast<ast::ArrayLiteralExpr*>(expr)) {
+        return inferArrayLiteral(arrayLit);
+    } else if (auto* arrayIndex = dynamic_cast<ast::ArrayIndexExpr*>(expr)) {
+        return inferArrayIndex(arrayIndex);
+    } else if (auto* recordLit = dynamic_cast<ast::RecordLiteralExpr*>(expr)) {
+        return inferRecordLiteral(recordLit);
+    } else if (auto* fieldAccess = dynamic_cast<ast::FieldAccessExpr*>(expr)) {
+        return inferFieldAccess(fieldAccess);
+    } else if (auto* blockExpr = dynamic_cast<ast::BlockExpr*>(expr)) {
+        return inferBlockExpr(blockExpr);
+    } else if (auto* ifExpr = dynamic_cast<ast::IfExpr*>(expr)) {
+        return inferIfExpr(ifExpr);
+    } else if (auto* rangeExpr = dynamic_cast<ast::RangeExpr*>(expr)) {
+        return inferRangeExpr(rangeExpr);
     }
-    // TODO: Add array literal inference, record construction, etc.
     
     return nullptr;
 }
@@ -283,7 +525,7 @@ ast::Type* TypeChecker::inferLiteral(ast::LiteralExpr* expr) {
         case ast::LiteralExpr::LiteralType::String:
             return createStringType().release();
         case ast::LiteralExpr::LiteralType::Null:
-            return nullptr; // Null type - will need proper handling later
+            return createNullType().release();
     }
     return nullptr;
 }
@@ -339,6 +581,42 @@ ast::Type* TypeChecker::inferBinary(ast::BinaryExpr* expr) {
         expr->getOp() == ast::BinaryExpr::Op::Ge ||
         expr->getOp() == ast::BinaryExpr::Op::Eq ||
         expr->getOp() == ast::BinaryExpr::Op::Ne) {
+        
+        // For == and !=, if both operands are the same generic type variable T, require T : Eq
+        const bool isEquality = (expr->getOp() == ast::BinaryExpr::Op::Eq ||
+                                 expr->getOp() == ast::BinaryExpr::Op::Ne);
+        if (isEquality) {
+            auto* leftGen = dynamic_cast<ast::GenericType*>(getEffectiveType(leftType));
+            auto* rightGen = dynamic_cast<ast::GenericType*>(getEffectiveType(rightType));
+            if (leftGen && rightGen && leftGen->getName() == rightGen->getName()) {
+                const std::string& tv = leftGen->getName();
+                ast::FunctionDecl* fn = currentFunction_;
+                ast::InteractionDecl* in = currentInteraction_;
+                bool hasEq = false;
+                if (fn) {
+                    for (const auto& gp : fn->getGenericParams()) {
+                        if (gp.name == tv) {
+                            hasEq = (gp.constraint == "Eq");
+                            break;
+                        }
+                    }
+                } else if (in) {
+                    for (const auto& gp : in->getGenericParams()) {
+                        if (gp.name == tv) {
+                            hasEq = (gp.constraint == "Eq");
+                            break;
+                        }
+                    }
+                }
+                if (!hasEq) {
+                    errorReporter_.error(
+                        expr->getLocation(),
+                        "Type parameter '" + tv + "' must implement Eq to use == or != (add constraint: " + tv + " : Eq)"
+                    );
+                    return nullptr;
+                }
+            }
+        }
         
         // Comparisons return Bool
         if (isAssignable(leftType, rightType) || isAssignable(rightType, leftType)) {
@@ -413,6 +691,188 @@ ast::Type* TypeChecker::inferUnary(ast::UnaryExpr* expr) {
         return nullptr;
     }
     
+    return nullptr;
+}
+
+ast::Type* TypeChecker::inferArrayLiteral(ast::ArrayLiteralExpr* expr) {
+    const auto& elements = expr->getElements();
+    if (elements.empty()) {
+        errorReporter_.error(
+            expr->getLocation(),
+            "Empty array literal requires explicit type annotation"
+        );
+        return nullptr;
+    }
+    ast::Type* elementType = inferType(elements[0].get());
+    if (!elementType) return nullptr;
+    for (size_t i = 1; i < elements.size(); ++i) {
+        ast::Type* elemType = inferType(elements[i].get());
+        if (!elemType) return nullptr;
+        if (!typesEqual(elementType, elemType)) {
+            reportTypeError(
+                elements[i]->getLocation(),
+                "Array elements must have the same type",
+                elemType,
+                elementType
+            );
+            return nullptr;
+        }
+    }
+    return createArrayType(copyType(elementType)).release();
+}
+
+ast::Type* TypeChecker::inferArrayIndex(ast::ArrayIndexExpr* expr) {
+    ast::Type* arrayType = inferType(expr->getArray());
+    if (!arrayType) return nullptr;
+    ast::Type* indexType = inferType(expr->getIndex());
+    if (!indexType) return nullptr;
+    if (!typesEqual(indexType, createIntType().get())) {
+        reportTypeError(
+            expr->getIndex()->getLocation(),
+            "Array index must be Int",
+            indexType
+        );
+        return nullptr;
+    }
+    auto* arrType = dynamic_cast<ast::ArrayType*>(arrayType);
+    if (arrType) {
+        return copyType(arrType->getElementType()).release();
+    }
+    auto* paramType = dynamic_cast<ast::ParameterizedType*>(arrayType);
+    if (paramType && paramType->getBaseName() == "Array" && paramType->getTypeArgs().size() == 1) {
+        return copyType(paramType->getTypeArgs()[0].get()).release();
+    }
+    reportTypeError(
+        expr->getArray()->getLocation(),
+        "Expected array type for indexing",
+        arrayType
+    );
+    return nullptr;
+}
+
+ast::Type* TypeChecker::inferRecordLiteral(ast::RecordLiteralExpr* expr) {
+    if (!expr || expr->getFields().empty()) {
+        return nullptr;
+    }
+    std::vector<std::unique_ptr<ast::RecordField>> fields;
+    for (const auto& f : expr->getFields()) {
+        if (!f.value) {
+            return nullptr;
+        }
+        ast::Type* fieldType = inferType(f.value.get());
+        if (!fieldType) {
+            return nullptr;
+        }
+        std::unique_ptr<ast::Type> fieldCopy = copyType(fieldType);
+        if (!fieldCopy) {
+            return nullptr;
+        }
+        fields.push_back(std::make_unique<ast::RecordField>(
+            f.value->getLocation(), f.name, std::move(fieldCopy)));
+    }
+    return new ast::RecordType(expr->getLocation(), std::move(fields));
+}
+
+ast::Type* TypeChecker::inferFieldAccess(ast::FieldAccessExpr* expr) {
+    ast::Type* baseType = inferType(expr->getRecord());
+    if (!baseType) return nullptr;
+    auto* recType = dynamic_cast<ast::RecordType*>(baseType);
+    if (recType) {
+        ast::RecordField* field = recType->getField(expr->getFieldName());
+        if (field) {
+            return copyType(field->getType()).release();
+        }
+    }
+    // Base might be ParameterizedType for a type alias - would need type alias resolution.
+    return nullptr;
+}
+
+ast::Type* TypeChecker::inferBlockExpr(ast::BlockExpr* expr) {
+    symbolTable_.enterScope();
+    for (const auto& stmt : expr->getStatements()) {
+        checkStatement(stmt.get());
+    }
+    ast::Type* resultType = nullptr;
+    if (expr->hasValueExpr()) {
+        resultType = inferType(expr->getValueExpr());
+    } else {
+        resultType = createUnitType().release();
+    }
+    symbolTable_.exitScope();
+    return resultType;
+}
+
+ast::Type* TypeChecker::inferIfExpr(ast::IfExpr* expr) {
+    if (!expr) return nullptr;
+    ast::Expr* thenBranch = expr->getThenBranch();
+    ast::Expr* elseBranch = expr->getElseBranch();
+    if (!elseBranch) {
+        errorReporter_.error(
+            expr->getLocation(),
+            "if expression requires an else branch");
+        return nullptr;
+    }
+    ast::Type* condType = inferType(expr->getCondition());
+    if (!condType) return nullptr;
+    ast::Type* thenType = thenBranch ? inferType(thenBranch) : nullptr;
+    if (!thenType) return nullptr;
+    ast::Type* elseType = inferType(elseBranch);
+    if (!elseType) return nullptr;
+    if (!typesEqual(thenType, elseType)) {
+        errorReporter_.error(
+            expr->getLocation(),
+            "if expression branches must have the same type"
+        );
+        return nullptr;
+    }
+    return copyType(thenType).release();
+}
+
+ast::Type* TypeChecker::inferRangeExpr(ast::RangeExpr* expr) {
+    ast::Type* startType = inferType(expr->getStart());
+    ast::Type* endType = inferType(expr->getEnd());
+    if (!startType || !endType) return nullptr;
+    if (!typesEqual(startType, createIntType().get()) ||
+        !typesEqual(endType, createIntType().get())) {
+        errorReporter_.error(
+            expr->getLocation(),
+            "Range bounds must be Int"
+        );
+        return nullptr;
+    }
+    if (expr->hasStepHint()) {
+        ast::Type* stepType = inferType(expr->getStepHint());
+        if (!stepType || !typesEqual(stepType, createIntType().get())) {
+            errorReporter_.error(
+                expr->getStepHint()->getLocation(),
+                "Range step hint (second value) must be Int"
+            );
+            return nullptr;
+        }
+    }
+    // Range implements Iterator<Int>; return opaque Range type
+    return std::make_unique<ast::ParameterizedType>(
+        expr->getLocation(), "Range", std::vector<std::unique_ptr<ast::Type>>{}
+    ).release();
+}
+
+ast::Type* TypeChecker::getIterableElementType(ast::Expr* iterable) {
+    if (!iterable) return nullptr;
+    // Range expression: element type is Int
+    if (dynamic_cast<ast::RangeExpr*>(iterable)) {
+        return createIntType().release();
+    }
+    // Array<T>: element type is T
+    ast::Type* iterType = inferType(iterable);
+    if (!iterType) return nullptr;
+    if (auto* arr = dynamic_cast<ast::ArrayType*>(iterType)) {
+        return copyType(arr->getElementType()).release();
+    }
+    if (auto* param = dynamic_cast<ast::ParameterizedType*>(iterType)) {
+        if (param->getBaseName() == "Array" && param->getTypeArgs().size() == 1) {
+            return copyType(param->getTypeArgs()[0].get()).release();
+        }
+    }
     return nullptr;
 }
 
@@ -582,6 +1042,35 @@ ast::Type* TypeChecker::inferStdlibCall(ast::FunctionCallExpr* expr) {
         if (!arg(0)) return nullptr;
         return createIntType().release();
     }
+    auto isArrayOfInt = [this](ast::Type* t) -> bool {
+        if (!t) return false;
+        if (auto* arr = dynamic_cast<ast::ArrayType*>(t))
+            return dynamic_cast<ast::PrimitiveType*>(arr->getElementType()) &&
+                   static_cast<ast::PrimitiveType*>(arr->getElementType())->getKind() == ast::PrimitiveType::Kind::Int;
+        if (auto* p = dynamic_cast<ast::ParameterizedType*>(t))
+            return p->getBaseName() == "Array" && p->getTypeArgs().size() == 1 &&
+                   dynamic_cast<ast::PrimitiveType*>(p->getTypeArgs()[0].get()) &&
+                   static_cast<ast::PrimitiveType*>(p->getTypeArgs()[0].get())->getKind() == ast::PrimitiveType::Kind::Int;
+        return false;
+    };
+    if (name == "arrayReduceIntSum") {
+        if (n != 1) return err("arrayReduceIntSum(arr) expects 1 argument");
+        if (!arg(0)) return nullptr;
+        if (!isArrayOfInt(arg(0))) return err("arrayReduceIntSum expects Array<Int>");
+        return createIntType().release();
+    }
+    if (name == "arrayMapIntDouble") {
+        if (n != 1) return err("arrayMapIntDouble(arr) expects 1 argument");
+        if (!arg(0)) return nullptr;
+        if (!isArrayOfInt(arg(0))) return err("arrayMapIntDouble expects Array<Int>");
+        return createArrayType(createIntType()).release();
+    }
+    if (name == "arrayFilterIntPositive") {
+        if (n != 1) return err("arrayFilterIntPositive(arr) expects 1 argument");
+        if (!arg(0)) return nullptr;
+        if (!isArrayOfInt(arg(0))) return err("arrayFilterIntPositive expects Array<Int>");
+        return createArrayType(createIntType()).release();
+    }
     // Socket
     if (name == "socketConnect") {
         if (n != 2) return err("socketConnect(host, port) expects 2 arguments");
@@ -671,8 +1160,63 @@ ast::Type* TypeChecker::inferStdlibCall(ast::FunctionCallExpr* expr) {
 }
 
 ast::Type* TypeChecker::inferFunctionCall(ast::FunctionCallExpr* expr) {
+    const std::string& name = expr->getName();
+    auto cit = constructorToADT_.find(name);
+    if (cit != constructorToADT_.end()) {
+        ast::ADTType* adt = cit->second;
+        ast::Constructor* constructor = nullptr;
+        for (const auto& c : adt->getConstructors()) {
+            if (c && c->getName() == name) { constructor = c.get(); break; }
+        }
+        if (!constructor) return nullptr;
+        const auto& expected = constructor->getArgumentTypes();
+        const auto& args = expr->getArgs();
+        if (args.size() != expected.size()) {
+            errorReporter_.error(expr->getLocation(),
+                "Constructor " + name + " expects " + std::to_string(expected.size()) +
+                " argument(s), got " + std::to_string(args.size()));
+            return nullptr;
+        }
+        std::string typeName;
+        for (const auto& p : typeDecls_) {
+            if (p.second == adt) { typeName = p.first; break; }
+        }
+        const bool isGeneric = !typeName.empty() && typeDeclParams_.count(typeName) && !typeDeclParams_[typeName].empty();
+        std::map<std::string, ast::Type*> inferredParams;
+        for (size_t i = 0; i < args.size(); ++i) {
+            ast::Type* argType = inferType(args[i].get());
+            if (!argType) return nullptr;
+            if (auto* gen = dynamic_cast<ast::GenericType*>(expected[i].get()))
+                inferredParams[gen->getName()] = argType;
+            std::unique_ptr<ast::Type> expectedCopy;
+            if (isGeneric && !inferredParams.empty())
+                expectedCopy = substituteType(expected[i].get(), inferredParams);
+            if (!expectedCopy)
+                expectedCopy = copyType(expected[i].get());
+            if (!expectedCopy || !isAssignable(argType, expectedCopy.get())) {
+                errorReporter_.error(args[i]->getLocation(),
+                    "Constructor " + name + " argument " + std::to_string(i + 1) + " type mismatch");
+                return nullptr;
+            }
+        }
+        if (isGeneric) {
+            const auto& params = typeDeclParams_[typeName];
+            std::vector<std::unique_ptr<ast::Type>> typeArgs;
+            for (const std::string& pname : params) {
+                auto it = inferredParams.find(pname);
+                if (it == inferredParams.end()) break;
+                auto a = copyType(it->second);
+                if (!a) break;
+                typeArgs.push_back(std::move(a));
+            }
+            if (typeArgs.size() == params.size())
+                return new ast::ParameterizedType(expr->getLocation(), typeName, std::move(typeArgs));
+        }
+        return copyType(adt).release();
+    }
+
     // Look up function
-    std::vector<Symbol*> functions = symbolTable_.lookupAll(expr->getName());
+    std::vector<Symbol*> functions = symbolTable_.lookupAll(name);
     
     if (functions.empty()) {
         // Try resolving as an imported symbol via module resolver, but only
@@ -804,8 +1348,71 @@ ast::Type* TypeChecker::inferFunctionCall(ast::FunctionCallExpr* expr) {
         return nullptr;
     }
     
+    // Check interface constraints at call site: for each generic param with constraint, type arg must implement it
+    const auto& params = matchedFunc->getParameters();
+    std::map<std::string, ast::Type*> subst;
+    for (size_t i = 0; i < params.size() && i < argTypes.size(); ++i) {
+        ast::Type* pt = params[i]->getType();
+        if (auto* gen = dynamic_cast<ast::GenericType*>(pt)) {
+            subst[gen->getName()] = argTypes[i];
+        }
+        // Infer from ParameterizedType vs ParameterizedType (e.g. List<T> vs List<Int> -> T = Int)
+        auto* pParam = dynamic_cast<ast::ParameterizedType*>(pt);
+        auto* pArg = dynamic_cast<ast::ParameterizedType*>(argTypes[i]);
+        if (pParam && pArg && pParam->getBaseName() == pArg->getBaseName()) {
+            const auto& paramArgs = pParam->getTypeArgs();
+            const auto& argArgs = pArg->getTypeArgs();
+            if (paramArgs.size() == argArgs.size()) {
+                for (size_t j = 0; j < paramArgs.size(); ++j) {
+                    if (paramArgs[j] && argArgs[j]) {
+                        if (auto* g = dynamic_cast<ast::GenericType*>(paramArgs[j].get())) {
+                            subst[g->getName()] = argArgs[j].get();
+                        }
+                    }
+                }
+            }
+        }
+    }
+    for (const auto& gp : matchedFunc->getGenericParams()) {
+        if (gp.constraint.empty()) continue;
+        auto it = subst.find(gp.name);
+        if (it == subst.end()) continue;
+        if (!typeImplementsInterface(it->second, gp.constraint)) {
+            errorReporter_.error(
+                expr->getLocation(),
+                "Type argument for '" + gp.name + "' does not implement " + gp.constraint
+            );
+            return nullptr;
+        }
+    }
+    
+    // Store inferred type arguments on the call for IR generation (monomorphization at call sites).
+    // Only set when we have concrete types from subst; recursive calls inside generic functions
+    // get type args from the current monomorphized body's substitution in the IR generator.
+    if (!subst.empty() && !matchedFunc->getGenericParams().empty()) {
+        std::vector<std::unique_ptr<ast::Type>> typeArgs;
+        for (const auto& gp : matchedFunc->getGenericParams()) {
+            auto it = subst.find(gp.name);
+            if (it == subst.end() || !it->second) break;
+            auto c = copyType(it->second);
+            if (!c) break;
+            typeArgs.push_back(std::move(c));
+        }
+        if (typeArgs.size() == matchedFunc->getGenericParams().size()) {
+            expr->setInferredTypeArgs(std::move(typeArgs));
+        }
+    }
+
     ast::Type* returnType = matchedFunc->getReturnType();
     if (returnType) {
+        // Substitute generic return type with inferred type args so e.g. cons(1, ...) has type List<Int>, not List<T>
+        if (!subst.empty()) {
+            auto st = substituteType(returnType, subst);
+            if (st) {
+                substitutedReturnTypes_.push_back(std::move(st));
+                return substitutedReturnTypes_.back().get();
+            }
+        }
         return returnType; // Non-owning pointer
     }
     
@@ -868,6 +1475,40 @@ bool TypeChecker::typesEqual(ast::Type* type1, ast::Type* type2) {
     }
     type1 = getEffectiveType(type1);
     type2 = getEffectiveType(type2);
+    // Resolve user-defined generic only when comparing to a non-parameterized type (avoids infinite recursion for recursive types like List<Int>)
+    if (auto* p1 = dynamic_cast<ast::ParameterizedType*>(type1)) {
+        auto* p2 = dynamic_cast<ast::ParameterizedType*>(type2);
+        if (!p2) {
+            auto r1 = resolveParameterizedType(p1);
+            if (r1) return typesEqual(r1.get(), type2);
+        }
+    }
+    if (auto* p2 = dynamic_cast<ast::ParameterizedType*>(type2)) {
+        auto* p1 = dynamic_cast<ast::ParameterizedType*>(type1);
+        if (!p1) {
+            auto r2 = resolveParameterizedType(p2);
+            if (r2) return typesEqual(type1, r2.get());
+        }
+    }
+    // Same type alias by name (avoids infinite recursion when comparing ADTs with recursive refs)
+    auto* alias1 = dynamic_cast<ast::GenericType*>(type1);
+    auto* alias2 = dynamic_cast<ast::GenericType*>(type2);
+    if (alias1 && alias2 && alias1->getName() == alias2->getName()) {
+        return true;
+    }
+    // Resolve one side when comparing type alias to concrete type
+    if (alias1) {
+        auto it = typeDecls_.find(alias1->getName());
+        if (it != typeDecls_.end() && it->second) {
+            return typesEqual(it->second, type2);
+        }
+    }
+    if (alias2) {
+        auto it = typeDecls_.find(alias2->getName());
+        if (it != typeDecls_.end() && it->second) {
+            return typesEqual(type1, it->second);
+        }
+    }
 
     // Compare primitive types
     auto* prim1 = dynamic_cast<ast::PrimitiveType*>(type1);
@@ -877,12 +1518,20 @@ bool TypeChecker::typesEqual(ast::Type* type1, ast::Type* type2) {
         return prim1->getKind() == prim2->getKind();
     }
     
-    // Compare array types
+    // Compare array types (ArrayType and ParameterizedType("Array", [T]))
     auto* arr1 = dynamic_cast<ast::ArrayType*>(type1);
     auto* arr2 = dynamic_cast<ast::ArrayType*>(type2);
+    auto* param1 = dynamic_cast<ast::ParameterizedType*>(type1);
+    auto* param2 = dynamic_cast<ast::ParameterizedType*>(type2);
     
     if (arr1 && arr2) {
         return typesEqual(arr1->getElementType(), arr2->getElementType());
+    }
+    if (arr1 && param2 && param2->getBaseName() == "Array" && param2->getTypeArgs().size() == 1) {
+        return typesEqual(arr1->getElementType(), param2->getTypeArgs()[0].get());
+    }
+    if (arr2 && param1 && param1->getBaseName() == "Array" && param1->getTypeArgs().size() == 1) {
+        return typesEqual(param1->getTypeArgs()[0].get(), arr2->getElementType());
     }
     
     // Compare indexed types (BaseType[indexList]): same base type and equal indices
@@ -957,10 +1606,7 @@ bool TypeChecker::typesEqual(ast::Type* type1, ast::Type* type2) {
         return gen1->getName() == gen2->getName();
     }
     
-    // Compare parameterized types
-    auto* param1 = dynamic_cast<ast::ParameterizedType*>(type1);
-    auto* param2 = dynamic_cast<ast::ParameterizedType*>(type2);
-    
+    // Compare parameterized types (param1, param2 already declared above for array comparison)
     if (param1 && param2) {
         if (param1->getBaseName() != param2->getBaseName()) {
             return false;
@@ -982,6 +1628,26 @@ bool TypeChecker::typesEqual(ast::Type* type1, ast::Type* type2) {
         return true;
     }
     
+    // Compare record types (structural: same field names and types in order)
+    auto* rec1 = dynamic_cast<ast::RecordType*>(type1);
+    auto* rec2 = dynamic_cast<ast::RecordType*>(type2);
+    if (rec1 && rec2) {
+        const auto& f1 = rec1->getFields();
+        const auto& f2 = rec2->getFields();
+        if (f1.size() != f2.size()) {
+            return false;
+        }
+        for (size_t i = 0; i < f1.size(); ++i) {
+            if (f1[i]->getName() != f2[i]->getName()) {
+                return false;
+            }
+            if (!typesEqual(f1[i]->getType(), f2[i]->getType())) {
+                return false;
+            }
+        }
+        return true;
+    }
+
     // Compare function types
     auto* func1 = dynamic_cast<ast::FunctionType*>(type1);
     auto* func2 = dynamic_cast<ast::FunctionType*>(type2);
@@ -1013,6 +1679,26 @@ bool TypeChecker::typesEqual(ast::Type* type1, ast::Type* type2) {
         
         return true;
     }
+
+    // Compare ADT types (by name and structure)
+    auto* adt1 = dynamic_cast<ast::ADTType*>(type1);
+    auto* adt2 = dynamic_cast<ast::ADTType*>(type2);
+    if (adt1 && adt2) {
+        if (adt1->getName() != adt2->getName()) return false;
+        const auto& c1 = adt1->getConstructors();
+        const auto& c2 = adt2->getConstructors();
+        if (c1.size() != c2.size()) return false;
+        for (size_t i = 0; i < c1.size(); ++i) {
+            if (!c1[i] || !c2[i] || c1[i]->getName() != c2[i]->getName()) return false;
+            const auto& a1 = c1[i]->getArgumentTypes();
+            const auto& a2 = c2[i]->getArgumentTypes();
+            if (a1.size() != a2.size()) return false;
+            for (size_t j = 0; j < a1.size(); ++j) {
+                if (!typesEqual(a1[j].get(), a2[j].get())) return false;
+            }
+        }
+        return true;
+    }
     
     return false;
 }
@@ -1023,6 +1709,57 @@ bool TypeChecker::isAssignable(ast::Type* from, ast::Type* to) {
     }
     from = getEffectiveType(from);
     to = getEffectiveType(to);
+    // null is assignable to any pointer-like or parameterized type (e.g. List<Int>) before resolution
+    if (auto* fromP = dynamic_cast<ast::PrimitiveType*>(from)) {
+        if (fromP->getKind() == ast::PrimitiveType::Kind::Null) {
+            if (dynamic_cast<ast::ADTType*>(to)) return true;
+            if (dynamic_cast<ast::RecordType*>(to)) return true;
+            if (dynamic_cast<ast::ArrayType*>(to)) return true;
+            if (dynamic_cast<ast::ParameterizedType*>(to)) return true;
+            if (auto* toP = dynamic_cast<ast::PrimitiveType*>(to))
+                if (toP->getKind() == ast::PrimitiveType::Kind::String) return true;
+        }
+    }
+    // ParameterizedType with same base: assignable when each type arg is assignable (e.g. List<Int> to List<T>)
+    auto* fromPT = dynamic_cast<ast::ParameterizedType*>(from);
+    auto* toPT = dynamic_cast<ast::ParameterizedType*>(to);
+    if (fromPT && toPT &&
+        fromPT->getBaseName() == toPT->getBaseName() &&
+        fromPT->getTypeArgs().size() == toPT->getTypeArgs().size()) {
+        for (size_t i = 0; i < fromPT->getTypeArgs().size(); ++i) {
+            if (!isAssignable(fromPT->getTypeArgs()[i].get(), toPT->getTypeArgs()[i].get()))
+                return false;
+        }
+        return true;
+    }
+    // Resolve user-defined generic types (e.g. List<Int> -> expanded ADT)
+    if (auto* pf = dynamic_cast<ast::ParameterizedType*>(from)) {
+        auto rf = resolveParameterizedType(pf);
+        if (rf) return isAssignable(rf.get(), to);
+    }
+    if (auto* pt = dynamic_cast<ast::ParameterizedType*>(to)) {
+        auto rt = resolveParameterizedType(pt);
+        if (rt) return isAssignable(from, rt.get());
+    }
+    // Resolve type alias (e.g. parameter type LexItem -> ADTType)
+    if (auto* toGen = dynamic_cast<ast::GenericType*>(to)) {
+        auto it = typeDecls_.find(toGen->getName());
+        if (it != typeDecls_.end() && it->second) {
+            return isAssignable(from, it->second);
+        }
+        // Type variable (generic param, not a type decl): allow concrete type so generic function matching succeeds
+        if (auto* fromGen = dynamic_cast<ast::GenericType*>(from)) {
+            return fromGen->getName() == toGen->getName();
+        }
+        return true;
+    }
+    // Resolve "from" when it is a type alias (e.g. pattern-bound variable type GenericType("Expr"))
+    if (auto* fromGen = dynamic_cast<ast::GenericType*>(from)) {
+        auto it = typeDecls_.find(fromGen->getName());
+        if (it != typeDecls_.end() && it->second) {
+            return isAssignable(it->second, to);
+        }
+    }
 
     // Exact type match
     if (typesEqual(from, to)) {
@@ -1041,12 +1778,22 @@ bool TypeChecker::isAssignable(ast::Type* from, ast::Type* to) {
     }
     
     // Array types: Array<T1> is assignable to Array<T2> only if T1 == T2 (no covariance)
-    // This is more restrictive but safer - we don't allow Array<Int> -> Array<Float>
     auto* fromArr = dynamic_cast<ast::ArrayType*>(from);
     auto* toArr = dynamic_cast<ast::ArrayType*>(to);
+    auto* fromParam = dynamic_cast<ast::ParameterizedType*>(from);
+    auto* toParam = dynamic_cast<ast::ParameterizedType*>(to);
     
     if (fromArr && toArr) {
         return typesEqual(fromArr->getElementType(), toArr->getElementType());
+    }
+    // Array literal yields ArrayType; annotation may be ParameterizedType("Array", [T])
+    if (fromArr && toParam && toParam->getBaseName() == "Array" &&
+        toParam->getTypeArgs().size() == 1) {
+        return typesEqual(fromArr->getElementType(), toParam->getTypeArgs()[0].get());
+    }
+    if (toArr && fromParam && fromParam->getBaseName() == "Array" &&
+        fromParam->getTypeArgs().size() == 1) {
+        return typesEqual(fromParam->getTypeArgs()[0].get(), toArr->getElementType());
     }
     
     // Indexed types: exact structural match (same base and same indices)
@@ -1153,6 +1900,10 @@ std::unique_ptr<ast::Type> TypeChecker::createUnitType() {
     return createPrimitiveType(ast::PrimitiveType::Kind::Unit);
 }
 
+std::unique_ptr<ast::Type> TypeChecker::createNullType() {
+    return createPrimitiveType(ast::PrimitiveType::Kind::Null);
+}
+
 std::unique_ptr<ast::Type> TypeChecker::createArrayType(std::unique_ptr<ast::Type> elementType) {
     return std::make_unique<ast::ArrayType>(SourceLocation(), std::move(elementType));
 }
@@ -1187,8 +1938,12 @@ std::unique_ptr<ast::Type> TypeChecker::copyType(ast::Type* type) {
         return std::make_unique<ast::ArrayType>(loc, std::move(elementCopy));
     }
     
-    // Copy generic types
+    // Copy generic types (resolve type alias / sum type name if declared)
     if (auto* gen = dynamic_cast<ast::GenericType*>(type)) {
+        auto it = typeDecls_.find(gen->getName());
+        if (it != typeDecls_.end() && it->second) {
+            return copyType(it->second);
+        }
         return std::make_unique<ast::GenericType>(loc, gen->getName());
     }
     
@@ -1270,6 +2025,46 @@ std::unique_ptr<ast::Type> TypeChecker::copyType(ast::Type* type) {
         );
     }
     
+    // Copy record types
+    if (auto* rec = dynamic_cast<ast::RecordType*>(type)) {
+        std::vector<std::unique_ptr<ast::RecordField>> fieldsCopy;
+        for (const auto& field : rec->getFields()) {
+            std::unique_ptr<ast::Type> fieldCopy = copyType(field->getType());
+            if (!fieldCopy) {
+                return nullptr;
+            }
+            fieldsCopy.push_back(std::make_unique<ast::RecordField>(
+                field->getLocation(), field->getName(), std::move(fieldCopy)));
+        }
+        return std::make_unique<ast::RecordType>(loc, std::move(fieldsCopy));
+    }
+
+    // Copy ADT types (sum types)
+    if (auto* adt = dynamic_cast<ast::ADTType*>(type)) {
+        std::vector<std::unique_ptr<ast::Constructor>> constructorsCopy;
+        for (const auto& c : adt->getConstructors()) {
+            if (!c) continue;
+            std::vector<std::unique_ptr<ast::Type>> argTypesCopy;
+            for (const auto& arg : c->getArgumentTypes()) {
+                std::unique_ptr<ast::Type> ac;
+                if (auto* gen = dynamic_cast<ast::GenericType*>(arg.get())) {
+                    if (gen->getName() == adt->getName()) {
+                        ac = std::make_unique<ast::GenericType>(loc, gen->getName());
+                    } else {
+                        ac = copyType(arg.get());
+                    }
+                } else {
+                    ac = copyType(arg.get());
+                }
+                if (!ac) return nullptr;
+                argTypesCopy.push_back(std::move(ac));
+            }
+            constructorsCopy.push_back(std::make_unique<ast::Constructor>(
+                c->getLocation(), c->getName(), std::move(argTypesCopy)));
+        }
+        return std::make_unique<ast::ADTType>(loc, adt->getName(), std::move(constructorsCopy));
+    }
+
     // Copy function types
     if (auto* func = dynamic_cast<ast::FunctionType*>(type)) {
         std::vector<std::unique_ptr<ast::Type>> paramTypesCopy;
@@ -1295,22 +2090,181 @@ std::unique_ptr<ast::Type> TypeChecker::copyType(ast::Type* type) {
     return nullptr;
 }
 
+std::unique_ptr<ast::Type> TypeChecker::substituteType(ast::Type* type,
+    const std::map<std::string, ast::Type*>& substitutions) {
+    if (!type) return nullptr;
+    SourceLocation loc = type->getLocation();
+    if (auto* gen = dynamic_cast<ast::GenericType*>(type)) {
+        auto it = substitutions.find(gen->getName());
+        if (it != substitutions.end())
+            return copyType(it->second);
+        return std::make_unique<ast::GenericType>(loc, gen->getName());
+    }
+    if (auto* param = dynamic_cast<ast::ParameterizedType*>(type)) {
+        std::vector<std::unique_ptr<ast::Type>> args;
+        for (const auto& arg : param->getTypeArgs()) {
+            auto a = substituteType(arg.get(), substitutions);
+            if (!a) return nullptr;
+            args.push_back(std::move(a));
+        }
+        return std::make_unique<ast::ParameterizedType>(loc, param->getBaseName(), std::move(args));
+    }
+    if (auto* arr = dynamic_cast<ast::ArrayType*>(type)) {
+        auto e = substituteType(arr->getElementType(), substitutions);
+        if (!e) return nullptr;
+        return std::make_unique<ast::ArrayType>(loc, std::move(e));
+    }
+    if (auto* rec = dynamic_cast<ast::RecordType*>(type)) {
+        std::vector<std::unique_ptr<ast::RecordField>> fields;
+        for (const auto& f : rec->getFields()) {
+            auto ft = substituteType(f->getType(), substitutions);
+            if (!ft) return nullptr;
+            fields.push_back(std::make_unique<ast::RecordField>(f->getLocation(), f->getName(), std::move(ft)));
+        }
+        return std::make_unique<ast::RecordType>(loc, std::move(fields));
+    }
+    if (auto* adt = dynamic_cast<ast::ADTType*>(type)) {
+        std::vector<std::unique_ptr<ast::Constructor>> constructors;
+        for (const auto& c : adt->getConstructors()) {
+            if (!c) continue;
+            std::vector<std::unique_ptr<ast::Type>> argTypes;
+            for (const auto& a : c->getArgumentTypes()) {
+                auto at = substituteType(a.get(), substitutions);
+                if (!at) return nullptr;
+                argTypes.push_back(std::move(at));
+            }
+            constructors.push_back(std::make_unique<ast::Constructor>(
+                c->getLocation(), c->getName(), std::move(argTypes)));
+        }
+        return std::make_unique<ast::ADTType>(loc, adt->getName(), std::move(constructors));
+    }
+    if (auto* func = dynamic_cast<ast::FunctionType*>(type)) {
+        std::vector<std::unique_ptr<ast::Type>> paramTypes;
+        for (const auto& p : func->getParamTypes()) {
+            auto pt = substituteType(p.get(), substitutions);
+            if (!pt) return nullptr;
+            paramTypes.push_back(std::move(pt));
+        }
+        auto ret = substituteType(func->getReturnType(), substitutions);
+        if (!ret) return nullptr;
+        return std::make_unique<ast::FunctionType>(
+            loc, std::move(paramTypes), std::move(ret), func->isInteraction());
+    }
+    return copyType(type);
+}
+
+std::unique_ptr<ast::Type> TypeChecker::resolveParameterizedType(ast::ParameterizedType* type) {
+    if (!type) return nullptr;
+    const std::string& baseName = type->getBaseName();
+    const auto& typeArgs = type->getTypeArgs();
+    auto it = typeDecls_.find(baseName);
+    if (it == typeDecls_.end() || !it->second) return nullptr;
+    auto pit = typeDeclParams_.find(baseName);
+    if (pit == typeDeclParams_.end() || pit->second.empty()) return nullptr;
+    const std::vector<std::string>& params = pit->second;
+    if (params.size() != typeArgs.size()) {
+        errorReporter_.error(
+            type->getLocation(),
+            "Type '" + baseName + "' expects " + std::to_string(params.size()) +
+            " type argument(s), got " + std::to_string(typeArgs.size()));
+        return nullptr;
+    }
+    std::map<std::string, ast::Type*> substitutions;
+    for (size_t i = 0; i < params.size(); ++i) {
+        ast::Type* arg = typeArgs[i] ? typeArgs[i].get() : nullptr;
+        if (!arg) return nullptr;
+        substitutions[params[i]] = arg;
+    }
+    return substituteType(it->second, substitutions);
+}
+
 ast::Type* TypeChecker::inferConstructor(ast::ConstructorExpr* expr) {
     if (!expr) {
         return nullptr;
     }
-    
-    // Look up constructor in symbol table
-    // For now, we'll need to track ADT types and their constructors
-    // TODO: Implement proper ADT constructor lookup
-    // This is a placeholder - will be implemented when ADT type declarations are added
-    
-    errorReporter_.error(
-        expr->getLocation(),
-        "Constructor type inference not yet implemented: " + expr->getConstructorName()
-    );
-    
-    return nullptr;
+    const std::string& name = expr->getConstructorName();
+    auto cit = constructorToADT_.find(name);
+    if (cit == constructorToADT_.end()) {
+        errorReporter_.error(
+            expr->getLocation(),
+            "Unknown constructor: " + name
+        );
+        return nullptr;
+    }
+    ast::ADTType* adt = cit->second;
+    ast::Constructor* constructor = nullptr;
+    for (const auto& c : adt->getConstructors()) {
+        if (c && c->getName() == name) {
+            constructor = c.get();
+            break;
+        }
+    }
+    if (!constructor) {
+        return nullptr;
+    }
+    std::string typeName;
+    for (const auto& p : typeDecls_) {
+        if (p.second == adt) {
+            typeName = p.first;
+            break;
+        }
+    }
+    const auto& expected = constructor->getArgumentTypes();
+    const auto& args = expr->getArguments();
+    if (args.size() != expected.size()) {
+        errorReporter_.error(expr->getLocation(),
+            "Constructor " + name + " expects " + std::to_string(expected.size()) +
+            " argument(s), got " + std::to_string(args.size()));
+        return nullptr;
+    }
+    const bool isGenericType = !typeName.empty() && typeDeclParams_.count(typeName) && !typeDeclParams_[typeName].empty();
+    std::set<std::string> typeParamNames;
+    if (isGenericType) {
+        for (const std::string& p : typeDeclParams_[typeName])
+            typeParamNames.insert(p);
+    }
+    std::map<std::string, ast::Type*> inferredParams;
+    for (size_t i = 0; i < args.size(); ++i) {
+        ast::Type* argType = inferType(args[i].get());
+        if (!argType) return nullptr;
+        ast::Type* expectedType = expected[i].get();
+        if (auto* gen = dynamic_cast<ast::GenericType*>(expectedType)) {
+            inferredParams[gen->getName()] = argType;
+            if (!isGenericType || typeParamNames.count(gen->getName()) == 0) {
+                auto it = typeDecls_.find(gen->getName());
+                if (it != typeDecls_.end() && it->second) expectedType = it->second;
+            }
+        }
+        // Do not infer type params from compound types (e.g. List<T>) to avoid inferring T from null
+        std::unique_ptr<ast::Type> expectedCopy;
+        if (!inferredParams.empty())
+            expectedCopy = substituteType(expectedType, inferredParams);
+        if (!expectedCopy)
+            expectedCopy = copyType(expectedType);
+        if (expectedCopy && !isAssignable(argType, expectedCopy.get())) {
+            errorReporter_.error(args[i]->getLocation(),
+                "Constructor " + name + " argument " + std::to_string(i + 1) + " type mismatch");
+            return nullptr;
+        }
+    }
+    // If this ADT is a generic type (e.g. List<T>), return ParameterizedType with inferred args
+    if (!typeName.empty()) {
+        auto pit = typeDeclParams_.find(typeName);
+        if (pit != typeDeclParams_.end() && !pit->second.empty()) {
+            const auto& params = pit->second;
+            std::vector<std::unique_ptr<ast::Type>> typeArgs;
+            for (const std::string& pname : params) {
+                auto it = inferredParams.find(pname);
+                if (it == inferredParams.end()) break;
+                std::unique_ptr<ast::Type> a = copyType(it->second);
+                if (!a) break;
+                typeArgs.push_back(std::move(a));
+            }
+            if (typeArgs.size() == params.size())
+                return new ast::ParameterizedType(expr->getLocation(), typeName, std::move(typeArgs));
+        }
+    }
+    return copyType(adt).release();
 }
 
 ast::Type* TypeChecker::inferMatch(ast::MatchExpr* expr) {
@@ -1323,9 +2277,11 @@ ast::Type* TypeChecker::inferMatch(ast::MatchExpr* expr) {
     if (!matchedType) {
         return nullptr;
     }
-    
+
     // Check that all patterns match the matched expression type
     // Infer return type from case bodies (should all be the same)
+    // Keep a copy of the first body type so we don't hold a pointer into a scope that gets exited.
+    matchReturnType_.reset();
     ast::Type* returnType = nullptr;
     
     for (const auto& matchCase : expr->getCases()) {
@@ -1356,26 +2312,68 @@ ast::Type* TypeChecker::inferMatch(ast::MatchExpr* expr) {
             }
         }
         
-        // Infer body type
+        // Enter scope and bind pattern variables so the body can reference them
+        symbolTable_.enterScope();
+        bindPatternVariables(matchCase->getPattern(), matchedType);
+        // Infer body type (may point into current scope's symbols)
         ast::Type* bodyType = inferType(matchCase->getBody());
-        if (!bodyType) {
+        // Copy before exiting scope so we don't use-after-free
+        std::unique_ptr<ast::Type> bodyTypeCopy = bodyType ? copyType(bodyType) : nullptr;
+        symbolTable_.exitScope();
+        if (!bodyTypeCopy) {
             continue;
         }
         
         if (!returnType) {
-            returnType = bodyType;
+            matchReturnType_ = std::move(bodyTypeCopy);
+            returnType = matchReturnType_.get();
         } else {
-            // All case bodies should have the same type
-            if (!typesEqual(returnType, bodyType)) {
-                errorReporter_.error(
-                    matchCase->getBody()->getLocation(),
-                    "Match case body type mismatch"
-                );
+            // All case bodies should have the same type, or unify as optional (T | null)
+            if (!typesEqual(returnType, bodyTypeCopy.get())) {
+                auto isNull = [](ast::Type* t) {
+                    auto* p = dynamic_cast<ast::PrimitiveType*>(t);
+                    return p && p->getKind() == ast::PrimitiveType::Kind::Null;
+                };
+                auto isOptionalWithNull = [](ast::Type* t) {
+                    auto* param = dynamic_cast<ast::ParameterizedType*>(t);
+                    if (!param || param->getBaseName() != "|" || param->getTypeArgs().size() != 2) return false;
+                    for (const auto& a : param->getTypeArgs())
+                        if (a.get()) {
+                            auto* prim = dynamic_cast<ast::PrimitiveType*>(a.get());
+                            if (prim && prim->getKind() == ast::PrimitiveType::Kind::Null) return true;
+                        }
+                    return false;
+                };
+                if (isNull(bodyTypeCopy.get())) {
+                    if (isOptionalWithNull(returnType)) {
+                        // Already T | null, null branch is fine
+                    } else {
+                        std::vector<std::unique_ptr<ast::Type>> args;
+                        args.push_back(copyType(returnType));
+                        args.push_back(std::make_unique<ast::PrimitiveType>(returnType->getLocation(), ast::PrimitiveType::Kind::Null));
+                        matchReturnType_ = std::make_unique<ast::ParameterizedType>(returnType->getLocation(), "|", std::move(args));
+                        returnType = matchReturnType_.get();
+                    }
+                } else if (isNull(returnType)) {
+                    std::vector<std::unique_ptr<ast::Type>> args;
+                    args.push_back(std::move(bodyTypeCopy));
+                    args.push_back(std::make_unique<ast::PrimitiveType>(matchCase->getBody()->getLocation(), ast::PrimitiveType::Kind::Null));
+                    matchReturnType_ = std::make_unique<ast::ParameterizedType>(matchCase->getBody()->getLocation(), "|", std::move(args));
+                    returnType = matchReturnType_.get();
+                    bodyTypeCopy = nullptr; // moved
+                } else {
+                    errorReporter_.error(
+                        matchCase->getBody()->getLocation(),
+                        "Match case body type mismatch"
+                    );
+                }
             }
         }
     }
     
-    // Exhaustiveness: if matched type is ADT, ensure all constructors are covered
+    // Exhaustiveness: if matched type is ADT
+    // - "Sum of records" (each constructor has one arg that is a record type): require a default case.
+    // - "Case class" style: require all constructors covered (catch-all also satisfies).
     if (auto* adtType = dynamic_cast<ast::ADTType*>(matchedType)) {
         std::set<std::string> covered;
         bool hasCatchAll = false;
@@ -1404,20 +2402,157 @@ ast::Type* TypeChecker::inferMatch(ast::MatchExpr* expr) {
                 }
             }
         }
-        if (!hasCatchAll) {
-            for (const auto& c : adtType->getConstructors()) {
-                if (covered.find(c->getName()) == covered.end()) {
-                    errorReporter_.error(
-                        expr->getLocation(),
-                        "Non-exhaustive match: constructor '" + c->getName() + "' is not covered"
-                    );
+        bool allConstructorsTakeRecord = true;
+        for (const auto& c : adtType->getConstructors()) {
+            if (c->getArgumentTypes().size() != 1) { allConstructorsTakeRecord = false; break; }
+            ast::Type* arg = c->getArgumentTypes()[0].get();
+            if (auto* gen = dynamic_cast<ast::GenericType*>(arg)) {
+                auto it = typeDecls_.find(gen->getName());
+                if (it == typeDecls_.end() || !dynamic_cast<ast::RecordType*>(it->second)) {
+                    allConstructorsTakeRecord = false;
                     break;
+                }
+            } else if (!dynamic_cast<ast::RecordType*>(arg)) {
+                allConstructorsTakeRecord = false;
+                break;
+            }
+        }
+        if (allConstructorsTakeRecord) {
+            // Sum-of-records: require default case only when not exhaustive
+            if (!hasCatchAll && covered.size() < adtType->getConstructors().size()) {
+                errorReporter_.error(
+                    expr->getLocation(),
+                    "Match on sum-of-records type requires a default case (variable or _ pattern) or all constructors covered"
+                );
+            }
+        } else {
+            if (!hasCatchAll) {
+                for (const auto& c : adtType->getConstructors()) {
+                    if (covered.find(c->getName()) == covered.end()) {
+                        errorReporter_.error(
+                            expr->getLocation(),
+                            "Non-exhaustive match: constructor '" + c->getName() + "' is not covered"
+                        );
+                        break;
+                    }
                 }
             }
         }
     }
 
     return returnType;
+}
+
+void TypeChecker::bindPatternVariables(ast::Pattern* pattern, ast::Type* matchedType) {
+    if (!pattern || !matchedType) {
+        return;
+    }
+    // Resolve type alias (GenericType) so record/constructor pattern binding sees concrete types
+    if (auto* gen = dynamic_cast<ast::GenericType*>(matchedType)) {
+        auto it = typeDecls_.find(gen->getName());
+        if (it != typeDecls_.end() && it->second) {
+            matchedType = it->second;
+        }
+    }
+    if (auto* vp = dynamic_cast<ast::VariablePattern*>(pattern)) {
+        std::unique_ptr<ast::Type> typeCopy = copyType(matchedType);
+        if (typeCopy) {
+            symbolTable_.insert(std::make_unique<VariableSymbol>(
+                vp->getName(), vp->getLocation(), std::move(typeCopy)));
+        }
+        return;
+    }
+    if (auto* rp = dynamic_cast<ast::RecordPattern*>(pattern)) {
+        auto* recType = dynamic_cast<ast::RecordType*>(matchedType);
+        if (!recType) {
+            return;
+        }
+        for (const auto& fp : rp->getFields()) {
+            ast::RecordField* field = recType->getField(fp.name);
+            if (field && fp.pattern) {
+                bindPatternVariables(fp.pattern.get(), field->getType());
+            }
+        }
+        return;
+    }
+    if (auto* ap = dynamic_cast<ast::AsPattern*>(pattern)) {
+        std::unique_ptr<ast::Type> typeCopy = copyType(matchedType);
+        if (typeCopy) {
+            symbolTable_.insert(std::make_unique<VariableSymbol>(
+                ap->getName(), ap->getLocation(), std::move(typeCopy)));
+        }
+        if (ap->getPattern()) {
+            bindPatternVariables(ap->getPattern(), matchedType);
+        }
+        return;
+    }
+    if (auto* cp = dynamic_cast<ast::ConstructorPattern*>(pattern)) {
+        ast::Type* typeForCtor = matchedType;
+        if (auto* param = dynamic_cast<ast::ParameterizedType*>(matchedType)) {
+            // Use AST ADT for constructor lookup; substitute each arg type into local copies
+            // so we never hold a pointer to a temporary resolved ADT (avoids use-after-free in dynamic_cast).
+            const std::string& baseName = param->getBaseName();
+            const auto& typeArgs = param->getTypeArgs();
+            auto it = typeDecls_.find(baseName);
+            auto pit = typeDeclParams_.find(baseName);
+            if (it != typeDecls_.end() && it->second && pit != typeDeclParams_.end() &&
+                !pit->second.empty() && pit->second.size() == typeArgs.size()) {
+                ast::Type* baseType = it->second;
+                if (!baseType) { typeForCtor = matchedType; }
+                else {
+                    auto* astADT = dynamic_cast<ast::ADTType*>(baseType);
+                    if (astADT) {
+                        std::map<std::string, ast::Type*> subs;
+                        for (size_t i = 0; i < pit->second.size(); ++i)
+                            if (typeArgs[i]) subs[pit->second[i]] = typeArgs[i].get();
+                        ast::Constructor* ctor = nullptr;
+                        for (const auto& c : astADT->getConstructors()) {
+                            if (c && c->getName() == cp->getConstructorName()) {
+                                ctor = c.get();
+                                break;
+                            }
+                        }
+                        if (ctor) {
+                            const auto& argTypes = ctor->getArgumentTypes();
+                            const auto& argPatterns = cp->getArguments();
+                            std::vector<std::unique_ptr<ast::Type>> substitutedArgTypes;
+                            for (size_t i = 0; i < argTypes.size() && i < argPatterns.size(); ++i) {
+                                if (!argPatterns[i] || !argTypes[i]) continue;
+                                ast::Type* argTy = argTypes[i].get();
+                                if (!argTy) continue;
+                                auto sub = substituteType(argTy, subs);
+                                if (sub)
+                                    substitutedArgTypes.push_back(std::move(sub));
+                            }
+                            if (substitutedArgTypes.size() == argPatterns.size()) {
+                                for (size_t i = 0; i < substitutedArgTypes.size(); ++i)
+                                    bindPatternVariables(argPatterns[i].get(), substitutedArgTypes[i].get());
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        auto* adtType = dynamic_cast<ast::ADTType*>(typeForCtor);
+        if (!adtType) return;
+        ast::Constructor* constructor = nullptr;
+        for (const auto& c : adtType->getConstructors()) {
+            if (c && c->getName() == cp->getConstructorName()) {
+                constructor = c.get();
+                break;
+            }
+        }
+        if (!constructor) return;
+        const auto& argTypes = constructor->getArgumentTypes();
+        const auto& argPatterns = cp->getArguments();
+        for (size_t i = 0; i < argTypes.size() && i < argPatterns.size(); ++i) {
+            if (argPatterns[i] && argTypes[i])
+                bindPatternVariables(argPatterns[i].get(), argTypes[i].get());
+        }
+        return;
+    }
+    // WildcardPattern, LiteralPattern: no variable bindings
 }
 
 bool TypeChecker::matchFunctionSignature(ast::FunctionDecl* func, const std::vector<ast::Type*>& argTypes) {

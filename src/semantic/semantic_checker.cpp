@@ -56,6 +56,17 @@ void SemanticChecker::checkStatement(ast::Stmt* stmt) {
                 checkStatement(branch->getStatement());
             }
         }
+    } else if (auto* forIn = dynamic_cast<ast::ForInStmt*>(stmt)) {
+        if (inPureFunction_) {
+            errorReporter_.error(
+                forIn->getLocation(),
+                "for-in loops are only allowed in interaction functions"
+            );
+        }
+        checkExpression(forIn->getIterable());
+        for (const auto& s : forIn->getBody()) {
+            checkStatement(s.get());
+        }
     }
 }
 
@@ -101,6 +112,29 @@ void SemanticChecker::checkExpression(ast::Expr* expr) {
                 checkStatement(branch->getStatement());
             }
         }
+    } else if (auto* blockExpr = dynamic_cast<ast::BlockExpr*>(expr)) {
+        for (const auto& stmt : blockExpr->getStatements()) {
+            checkStatement(stmt.get());
+        }
+        if (blockExpr->getValueExpr()) {
+            checkExpression(blockExpr->getValueExpr());
+        }
+    } else if (auto* ifExpr = dynamic_cast<ast::IfExpr*>(expr)) {
+        checkExpression(ifExpr->getCondition());
+        if (auto* thenBlock = dynamic_cast<ast::BlockExpr*>(ifExpr->getThenBranch())) {
+            checkNoReturnInIfBranchBlock(thenBlock);
+        }
+        if (auto* elseBlock = dynamic_cast<ast::BlockExpr*>(ifExpr->getElseBranch())) {
+            checkNoReturnInIfBranchBlock(elseBlock);
+        }
+        checkExpression(ifExpr->getThenBranch());
+        checkExpression(ifExpr->getElseBranch());
+    } else if (auto* rangeExpr = dynamic_cast<ast::RangeExpr*>(expr)) {
+        checkExpression(rangeExpr->getStart());
+        checkExpression(rangeExpr->getEnd());
+        if (rangeExpr->hasStepHint()) {
+            checkExpression(rangeExpr->getStepHint());
+        }
     }
 }
 
@@ -117,10 +151,7 @@ void SemanticChecker::checkVariableDecl(ast::VariableDecl* varDecl) {
 }
 
 void SemanticChecker::checkWhileLoop(ast::Stmt* stmt) {
-    // TODO: Implement when WhileStmt AST node is added
-    // if (inPureFunction_ && dynamic_cast<ast::WhileStmt*>(stmt)) {
-    //     reportViolation(stmt->getLocation(), "While loops can only be used in interaction functions");
-    // }
+    (void)stmt;
 }
 
 void SemanticChecker::checkMonadicOperators(ast::Expr* expr) {
@@ -162,6 +193,20 @@ bool SemanticChecker::isIOOperation(const std::string& name) {
     };
     
     return std::find(ioOperations.begin(), ioOperations.end(), name) != ioOperations.end();
+}
+
+void SemanticChecker::checkNoReturnInIfBranchBlock(ast::BlockExpr* block) {
+    if (!block) return;
+    for (const auto& stmt : block->getStatements()) {
+        if (dynamic_cast<ast::ReturnStmt*>(stmt.get())) {
+            reportViolation(
+                stmt->getLocation(),
+                "return is not allowed inside if-expression branches; "
+                "return the result of the whole if-expression instead "
+                "(e.g. return if (...) { ... } else { ... };)"
+            );
+        }
+    }
 }
 
 void SemanticChecker::reportViolation(const SourceLocation& loc, const std::string& message) {

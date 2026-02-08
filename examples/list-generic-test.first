@@ -1,0 +1,7 @@
+// Test user-defined generic type List<T> (empty = null)
+type List<T> = Cons(T, List<T>);
+
+function main() -> Int {
+    let xs: List<Int> = Cons(1, Cons(2, null));
+    return 0;
+}

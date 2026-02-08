@@ -1,0 +1,20 @@
+// Minimal test: no Prelude import, generic list and length
+type List<T> = Cons(T, List<T>) | Nil;
+
+function cons<T:Eq>(x: T, xs: List<T>) -> List<T> {
+    return Cons(x, xs);
+}
+function length<T:Eq>(xs: List<T>) -> Int {
+    return lengthAcc(xs, 0);
+}
+function lengthAcc<T:Eq>(xs: List<T>, acc: Int) -> Int {
+    return match xs {
+        Cons(h, t) => lengthAcc(t, acc + 1),
+        Nil => acc
+    };
+}
+
+interaction main() -> Unit {
+    let xs: List<Int> = cons(1, cons(2, cons(3, Nil())));
+    println("length = " + intToString(length(xs)));
+}

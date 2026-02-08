@@ -16,6 +16,12 @@ namespace ast {
 class Stmt;
 class Parameter;
 
+// Generic parameter with optional interface constraint (e.g. T or T : Eq)
+struct GenericParam {
+    std::string name;
+    std::string constraint;  // interface name, empty if unconstrained
+};
+
 // Function parameter
 class Parameter : public ASTNode {
 public:
@@ -44,7 +50,7 @@ class FunctionDecl : public ASTNode {
 public:
     FunctionDecl(const SourceLocation& location,
                  const std::string& name,
-                 std::vector<std::string> genericParams,
+                 std::vector<GenericParam> genericParams,
                  std::vector<std::unique_ptr<Parameter>> parameters,
                  std::unique_ptr<Type> returnType,
                  std::vector<std::unique_ptr<Stmt>> body,
@@ -54,7 +60,12 @@ public:
           body_(std::move(body)), isExported_(isExported) {}
 
     const std::string& getName() const { return name_; }
-    const std::vector<std::string>& getGenericParams() const { return genericParams_; }
+    const std::vector<GenericParam>& getGenericParams() const { return genericParams_; }
+    std::vector<std::string> getGenericParamNames() const {
+        std::vector<std::string> names;
+        for (const auto& p : genericParams_) names.push_back(p.name);
+        return names;
+    }
     const std::vector<std::unique_ptr<Parameter>>& getParameters() const { return parameters_; }
     Type* getReturnType() const { return returnType_.get(); }
     const std::vector<std::unique_ptr<Stmt>>& getBody() const { return body_; }
@@ -69,7 +80,7 @@ public:
 
 private:
     std::string name_;
-    std::vector<std::string> genericParams_;
+    std::vector<GenericParam> genericParams_;
     std::vector<std::unique_ptr<Parameter>> parameters_;
     std::unique_ptr<Type> returnType_;
     std::vector<std::unique_ptr<Stmt>> body_;
@@ -81,7 +92,7 @@ class InteractionDecl : public ASTNode {
 public:
     InteractionDecl(const SourceLocation& location,
                     const std::string& name,
-                    std::vector<std::string> genericParams,
+                    std::vector<GenericParam> genericParams,
                     std::vector<std::unique_ptr<Parameter>> parameters,
                     std::unique_ptr<Type> returnType,
                     std::vector<std::unique_ptr<Stmt>> body,
@@ -91,7 +102,12 @@ public:
           body_(std::move(body)), isExported_(isExported) {}
 
     const std::string& getName() const { return name_; }
-    const std::vector<std::string>& getGenericParams() const { return genericParams_; }
+    const std::vector<GenericParam>& getGenericParams() const { return genericParams_; }
+    std::vector<std::string> getGenericParamNames() const {
+        std::vector<std::string> names;
+        for (const auto& p : genericParams_) names.push_back(p.name);
+        return names;
+    }
     const std::vector<std::unique_ptr<Parameter>>& getParameters() const { return parameters_; }
     Type* getReturnType() const { return returnType_.get(); }
     const std::vector<std::unique_ptr<Stmt>>& getBody() const { return body_; }
@@ -105,29 +121,144 @@ public:
 
 private:
     std::string name_;
-    std::vector<std::string> genericParams_;
+    std::vector<GenericParam> genericParams_;
     std::vector<std::unique_ptr<Parameter>> parameters_;
     std::unique_ptr<Type> returnType_;
     std::vector<std::unique_ptr<Stmt>> body_;
     bool isExported_;
 };
 
-// Type declaration
+// Type declaration: type Name = Type; or type Name<T,...> = Type; (alias or sum type)
 class TypeDecl : public ASTNode {
 public:
-    TypeDecl(const SourceLocation& location, bool isExported = false)
-        : ASTNode(location), isExported_(isExported) {}
-    
+    TypeDecl(const SourceLocation& location,
+             const std::string& typeName,
+             std::unique_ptr<Type> type,
+             bool isExported = false,
+             std::vector<std::string> typeParams = {})
+        : ASTNode(location), typeName_(typeName), type_(std::move(type)),
+          isExported_(isExported), typeParams_(std::move(typeParams)) {}
+
+    const std::string& getTypeName() const { return typeName_; }
+    Type* getType() const { return type_.get(); }
+    const std::vector<std::string>& getTypeParams() const { return typeParams_; }
+    bool isGeneric() const { return !typeParams_.empty(); }
+
     bool isExported() const { return isExported_; }
-    
+
     void accept(ASTVisitor& visitor) override {
         visitor.visitTypeDecl(this);
     }
-    
+
     std::string getNodeType() const override { return "TypeDecl"; }
 
 private:
+    std::string typeName_;
+    std::unique_ptr<Type> type_;
     bool isExported_;
+    std::vector<std::string> typeParams_;
+};
+
+// Interface member: name and type (e.g. show: function(T) -> String)
+class InterfaceMember {
+public:
+    InterfaceMember(const SourceLocation& location,
+                    const std::string& name,
+                    std::unique_ptr<Type> type)
+        : location_(location), name_(name), type_(std::move(type)) {}
+
+    const SourceLocation& getLocation() const { return location_; }
+    const std::string& getName() const { return name_; }
+    Type* getType() const { return type_.get(); }
+
+private:
+    SourceLocation location_;
+    std::string name_;
+    std::unique_ptr<Type> type_;
+};
+
+// Interface declaration (typeclass-style): interface Name<T> { member: Type; ... }
+class InterfaceDecl : public ASTNode {
+public:
+    InterfaceDecl(const SourceLocation& location,
+                  const std::string& name,
+                  std::vector<std::string> genericParams,
+                  std::vector<std::unique_ptr<InterfaceMember>> members)
+        : ASTNode(location), name_(name), genericParams_(std::move(genericParams)),
+          members_(std::move(members)) {}
+
+    const std::string& getName() const { return name_; }
+    const std::vector<std::string>& getGenericParams() const { return genericParams_; }
+    const std::vector<std::unique_ptr<InterfaceMember>>& getMembers() const { return members_; }
+
+    InterfaceMember* getMember(const std::string& name) const {
+        for (const auto& m : members_) {
+            if (m->getName() == name) return m.get();
+        }
+        return nullptr;
+    }
+
+    void accept(ASTVisitor& visitor) override {
+        visitor.visitInterfaceDecl(this);
+    }
+
+    std::string getNodeType() const override { return "InterfaceDecl"; }
+
+private:
+    std::string name_;
+    std::vector<std::string> genericParams_;
+    std::vector<std::unique_ptr<InterfaceMember>> members_;
+};
+
+// Implementation member: name = expression (method implementation)
+class ImplementationMember {
+public:
+    ImplementationMember(const SourceLocation& location,
+                         const std::string& name,
+                         std::unique_ptr<Expr> value)
+        : location_(location), name_(name), value_(std::move(value)) {}
+
+    const SourceLocation& getLocation() const { return location_; }
+    const std::string& getName() const { return name_; }
+    Expr* getValue() const { return value_.get(); }
+
+private:
+    SourceLocation location_;
+    std::string name_;
+    std::unique_ptr<Expr> value_;
+};
+
+// Implementation declaration: implementation Interface<Type> { member = value; ... }
+class ImplementationDecl : public ASTNode {
+public:
+    ImplementationDecl(const SourceLocation& location,
+                       const std::string& interfaceName,
+                       std::vector<std::unique_ptr<Type>> typeArgs,
+                       std::vector<std::unique_ptr<ImplementationMember>> members)
+        : ASTNode(location), interfaceName_(interfaceName), typeArgs_(std::move(typeArgs)),
+          members_(std::move(members)) {}
+
+    const std::string& getInterfaceName() const { return interfaceName_; }
+    const std::vector<std::unique_ptr<Type>>& getTypeArgs() const { return typeArgs_; }
+    const std::vector<std::unique_ptr<ImplementationMember>>& getMembers() const { return members_; }
+
+    ImplementationMember* getMember(const std::string& name) const {
+        for (const auto& m : members_) {
+            if (m->getName() == name) return m.get();
+        }
+        return nullptr;
+    }
+
+    void accept(ASTVisitor& visitor) override {
+        visitor.visitImplementationDecl(this);
+    }
+
+    std::string getNodeType() const override { return "ImplementationDecl"; }
+
+private:
+    std::string interfaceName_;
+    std::vector<std::unique_ptr<Type>> typeArgs_;
+    std::vector<std::unique_ptr<ImplementationMember>> members_;
 };
 
 // Import declaration

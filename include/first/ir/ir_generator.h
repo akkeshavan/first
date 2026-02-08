@@ -1,5 +1,6 @@
 #pragma once
 
+#include "first/ast/declarations.h"
 #include "first/ast/program.h"
 #include "first/ast/types.h"
 #include "first/ast/visitor.h"
@@ -14,6 +15,7 @@
 #include <utility>
 #include <unordered_map>
 #include <map>
+#include <set>
 
 namespace first {
 namespace semantic {
@@ -64,6 +66,7 @@ public:
     void visitUnaryExpr(ast::UnaryExpr* node) override;
     void visitVariableExpr(ast::VariableExpr* node) override;
     void visitFunctionCallExpr(ast::FunctionCallExpr* node) override;
+    void visitRangeExpr(ast::RangeExpr* node) override;
     void visitArrayLiteralExpr(ast::ArrayLiteralExpr* node) override;
     void visitArrayIndexExpr(ast::ArrayIndexExpr* node) override;
     void visitRecordLiteralExpr(ast::RecordLiteralExpr* node) override;
@@ -76,12 +79,14 @@ public:
     void visitSpawnExpr(ast::SpawnExpr* node) override;
     void visitJoinExpr(ast::JoinExpr* node) override;
     void visitSelectExpr(ast::SelectExpr* node) override;
+    void visitBlockExpr(ast::BlockExpr* node) override;
+    void visitIfExpr(ast::IfExpr* node) override;
     void visitVariableDecl(ast::VariableDecl* node) override;
     void visitReturnStmt(ast::ReturnStmt* node) override;
     void visitExprStmt(ast::ExprStmt* node) override;
     void visitIfStmt(ast::IfStmt* node) override;
-    void visitWhileStmt(ast::WhileStmt* node) override;
     void visitAssignmentStmt(ast::AssignmentStmt* node) override;
+    void visitForInStmt(ast::ForInStmt* node) override;
     void visitSelectStmt(ast::SelectStmt* node) override;
     void visitImportDecl(ast::ImportDecl* node) override;
     void visitTypeDecl(ast::TypeDecl* node) override;
@@ -117,6 +122,9 @@ private:
     
     // Current function being generated
     llvm::Function* currentFunction_;
+    // Current AST function/interaction (for converting generic type params to erased LLVM type)
+    ast::FunctionDecl* currentFunctionDecl_ = nullptr;
+    ast::InteractionDecl* currentInteractionDecl_ = nullptr;
     
     // Symbol table for local variables (maps variable name to stack slot)
     std::unordered_map<std::string, llvm::AllocaInst*> localVars_;
@@ -143,6 +151,10 @@ private:
     
     // Current return value (for expressions)
     llvm::Value* currentValue_;
+
+    // True when evaluating an expression whose value will be returned with no further computation
+    // (return expr, or case body / then/else of if in return position). Enables TCO for calls.
+    bool inTailContext_ = false;
     
     // Helper methods
     void enterFunction(llvm::Function* func);
@@ -167,15 +179,18 @@ private:
     llvm::Value* evaluateFieldAccess(ast::FieldAccessExpr* expr);
     llvm::Value* evaluateConstructor(ast::ConstructorExpr* expr);
     llvm::Value* evaluateMatch(ast::MatchExpr* expr);
-    
+    llvm::Value* evaluateBlockExpr(ast::BlockExpr* expr);
+    llvm::Value* evaluateIfExpr(ast::IfExpr* expr);
+    llvm::Value* evaluateRangeExpr(ast::RangeExpr* expr);
+
     // Statement generation helpers
     void generateStatement(ast::Stmt* stmt);
     void generateVariableDecl(ast::VariableDecl* stmt);
     void generateReturnStmt(ast::ReturnStmt* stmt);
     void generateExprStmt(ast::ExprStmt* stmt);
     void generateIfStmt(ast::IfStmt* stmt);
-    void generateWhileStmt(ast::WhileStmt* stmt);
     void generateAssignmentStmt(ast::AssignmentStmt* stmt);
+    void generateForInStmt(ast::ForInStmt* stmt);
     void generateSelectStmt(ast::SelectStmt* stmt);
     
     // Short-circuit evaluation helpers
@@ -202,9 +217,15 @@ private:
     std::unique_ptr<ast::Type> copyType(ast::Type* type);
     llvm::Function* monomorphizeFunction(ast::FunctionDecl* func,
                                           const std::vector<ast::Type*>& typeArgs);
+    void generateMonomorphizedBody(ast::FunctionDecl* astFunc,
+                                  const std::vector<ast::Type*>& typeArgs,
+                                  llvm::Function* monoFunc);
     
     // Module/import helpers
     void generateExternalDeclaration(const std::string& symbolName, const std::string& moduleName);
+
+    // Runtime allocator for heap-allocated ADTs (so they outlive the stack frame)
+    llvm::Function* getOrCreateFirstAlloc();
 
     // ADT constructor index map: constructor name -> (ADTType*, index)
     void buildConstructorIndexMap(ast::Program* program);
@@ -213,7 +234,18 @@ private:
     std::pair<ast::ADTType*, size_t> getConstructorIndex(const std::string& name) const;
 
     ast::Program* currentProgram_;
+    // When generating a monomorphized function body, maps generic param name -> concrete type for convertType
+    std::map<std::string, ast::Type*>* currentTypeSubst_ = nullptr;
+    // Functions currently being generated (to avoid infinite recursion on recursive monomorphized calls)
+    std::set<llvm::Function*> generatingMonomorphized_;
+    // Types currently being converted (to break convertType recursion cycles when substituting)
+    std::set<ast::Type*> convertingTypes_;
     std::map<std::string, std::pair<ast::ADTType*, size_t>> constructorIndexMap_;
+    size_t nextConstructorTag_ = 0;  // unique tag per constructor (avoids Cons/Nil collision across ADTs)
+    // Type name -> declared type (for resolving GenericType in params/returns)
+    std::map<std::string, ast::Type*> typeDeclsMap_;
+    // For generic types (e.g. List<T>): type name -> type parameter names
+    std::map<std::string, std::vector<std::string>> typeDeclParamsMap_;
 };
 
 } // namespace ir

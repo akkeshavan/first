@@ -21,7 +21,7 @@ TEST(ast_parameter) {
 TEST(ast_function_decl) {
     first::SourceLocation loc(1, 1);
     
-    std::vector<std::string> genericParams;
+    std::vector<first::ast::GenericParam> genericParams;
     std::vector<std::unique_ptr<first::ast::Parameter>> parameters;
     
     auto paramType = std::make_unique<first::ast::PrimitiveType>(
@@ -71,7 +71,7 @@ TEST(ast_function_signature) {
     first::ast::FunctionDecl func(
         loc,
         "forwardDecl",
-        std::vector<std::string>(),
+        std::vector<first::ast::GenericParam>(),
         std::move(parameters),
         std::move(returnType),
         std::move(body)
@@ -100,7 +100,7 @@ TEST(ast_interaction_decl) {
     first::ast::InteractionDecl interaction(
         loc,
         "main",
-        std::vector<std::string>(),
+        std::vector<first::ast::GenericParam>(),
         std::move(parameters),
         std::move(returnType),
         std::move(body)
@@ -113,7 +113,7 @@ TEST(ast_interaction_decl) {
 TEST(ast_function_with_generics) {
     first::SourceLocation loc(1, 1);
     
-    std::vector<std::string> genericParams = {"T"};
+    std::vector<first::ast::GenericParam> genericParams = {{"T", ""}};
     std::vector<std::unique_ptr<first::ast::Parameter>> parameters;
     parameters.push_back(std::make_unique<first::ast::Parameter>(
         loc, "x", std::make_unique<first::ast::GenericType>(loc, "T")
@@ -132,5 +132,5 @@ TEST(ast_function_with_generics) {
     );
     
     ASSERT_EQ(func.getGenericParams().size(), 1, "Should have 1 generic parameter");
-    ASSERT_EQ(func.getGenericParams()[0], "T", "Generic parameter should be 'T'");
+    ASSERT_EQ(func.getGenericParams()[0].name, "T", "Generic parameter should be 'T'");
 }

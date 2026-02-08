@@ -5,6 +5,7 @@
 #include <fstream>
 #include <filesystem>
 #include <algorithm>
+#include <cstdlib>
 #include <sstream>
 #include <iostream>
 #include <unordered_map>
@@ -162,6 +163,19 @@ std::string ModuleResolver::findModulePath(const std::string& moduleName) {
     std::replace(pathName.begin(), pathName.end(), '.', '/');
     pathsToTry.push_back(pathName + ".first");
     pathsToTry.push_back(pathName + "/module.first");
+    
+    // Pattern 4: Standard library (lib/Module.first) so Prelude and other libs are findable
+    pathsToTry.push_back("lib/" + cleanName + ".first");
+    pathsToTry.push_back("lib/" + pathName + ".first");
+    
+    // Pattern 5: FIRST_LIB_PATH (e.g. fir sets this so "Prelude" is found from any cwd)
+    const char* libPath = std::getenv("FIRST_LIB_PATH");
+    if (libPath && libPath[0] != '\0') {
+        std::string base(libPath);
+        if (base.back() != '/' && base.back() != '\\') base += '/';
+        pathsToTry.push_back(base + cleanName + ".first");
+        pathsToTry.push_back(base + pathName + ".first");
+    }
     
     // Check if any of these files exist
     for (const auto& path : pathsToTry) {

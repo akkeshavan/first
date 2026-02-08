@@ -50,6 +50,9 @@ private:
     
     // Report semantic violation
     void reportViolation(const SourceLocation& loc, const std::string& message);
+
+    // Check that a block (used as if-expr branch) contains no return statements
+    void checkNoReturnInIfBranchBlock(ast::BlockExpr* block);
 };
 
 } // namespace semantic

@@ -104,6 +104,8 @@ extern void test_type_checker_function_vs_interaction_type();
 extern void test_type_checker_function_call_argument_matching();
 extern void test_type_checker_function_call_with_promotion();
 extern void test_type_checker_higher_order_function_type();
+extern void test_type_checker_generic_params_must_appear_in_parameter_types();
+extern void test_type_checker_generic_params_in_parameter_types_allowed();
 extern void test_semantic_checker_mutable_var_in_pure_function();
 extern void test_semantic_checker_mutable_var_in_interaction();
 extern void test_semantic_checker_io_in_pure_function();
@@ -130,7 +132,6 @@ extern void test_function_calls();
 extern void test_complex_expression();
 extern void test_if_statement();
 extern void test_if_without_else();
-extern void test_while_loop();
 extern void test_nested_if();
 extern void test_short_circuit_and();
 extern void test_short_circuit_or();
@@ -318,6 +319,8 @@ void run_all_tests() {
     test_type_checker_function_call_argument_matching();
     test_type_checker_function_call_with_promotion();
     test_type_checker_higher_order_function_type();
+    test_type_checker_generic_params_must_appear_in_parameter_types();
+    test_type_checker_generic_params_in_parameter_types_allowed();
     
     std::cout << "Testing Semantic Restrictions...\n";
     test_semantic_checker_mutable_var_in_pure_function();
@@ -354,7 +357,6 @@ void run_all_tests() {
     std::cout << "Testing Control Flow IR Generation...\n";
     test_if_statement();
     test_if_without_else();
-    test_while_loop();
     test_nested_if();
     test_short_circuit_and();
     test_short_circuit_or();

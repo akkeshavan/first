@@ -28,6 +28,7 @@
 #include <llvm/TargetParser/Triple.h>
 #include <llvm/MC/TargetRegistry.h>
 #include <llvm/Target/TargetMachine.h>
+#include <llvm/IR/Verifier.h>
 #include <llvm/Target/TargetOptions.h>
 #include <llvm/IR/LegacyPassManager.h>
 #include <system_error>
@@ -54,8 +55,9 @@ void runOptimizationPasses(llvm::Module& module) {
     PB.registerLoopAnalyses(LAM);
     PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
 
+    // O2 triggers EarlyCSE getTypeSizeInBits crash on recursive ADT IR; O0 is safe.
     llvm::ModulePassManager MPM =
-        PB.buildPerModuleDefaultPipeline(llvm::OptimizationLevel::O2);
+        PB.buildPerModuleDefaultPipeline(llvm::OptimizationLevel::O0);
     MPM.run(module, MAM);
 }
 
@@ -181,9 +183,6 @@ bool Compiler::compileFromStringNoModules(const std::string& source, const std::
                 if (tokenText == "var") {
                     reporter_.addNote("'var' is only allowed in interaction functions");
                     reporter_.addHelp("Use 'let' for immutable bindings, or mark the function as 'interaction'");
-                } else if (tokenText == "while") {
-                    reporter_.addNote("'while' loops are only allowed in interaction functions");
-                    reporter_.addHelp("Use recursion or mark the function as 'interaction'");
                 } else if (tokenText == ">>=" || tokenText == ">>" || tokenText == "<$>" || tokenText == "<*>") {
                     reporter_.addNote("Monadic operators are only allowed in interaction functions");
                     reporter_.addHelp("Mark the function as 'interaction' to use monadic operators");
@@ -461,6 +460,17 @@ bool Compiler::writeObjectToFile(const std::string& filename) {
         return false;
     }
 
+    // Verify module before codegen; invalid IR can cause crashes in optimization passes
+    std::string verifyErrors;
+    llvm::raw_string_ostream verifyOS(verifyErrors);
+    if (llvm::verifyModule(*irModule_, &verifyOS)) {
+        errorReporter_->error(
+            SourceLocation(1, 1, filename),
+            "Invalid LLVM IR: " + verifyOS.str()
+        );
+        delete targetMachine;
+        return false;
+    }
     llvm::legacy::PassManager pass;
     if (targetMachine->addPassesToEmitFile(
             pass, dest, nullptr, llvm::CodeGenFileType::ObjectFile)) {
@@ -514,7 +524,9 @@ bool Compiler::linkToExecutable(const std::string& objectPath,
     gcLib = " -L/opt/homebrew/lib -lgc";
 #endif
 #endif
-    std::string cmd = "clang++ " + objectPath + " " + libFlag + gcLib + " -o " + outputPath + " 2>&1";
+    // If libfirst_runtime was built with AddressSanitizer, link -fsanitize=address so ___asan_* symbols resolve.
+    std::string sanitizerFlags = " -fsanitize=address";
+    std::string cmd = "clang++ " + objectPath + " " + libFlag + gcLib + sanitizerFlags + " -o " + outputPath + " 2>&1";
     int ret = std::system(cmd.c_str());
     if (ret != 0) {
         errorReporter_->error(

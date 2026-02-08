@@ -9,6 +9,7 @@ namespace ast {
     class UnaryExpr;
     class VariableExpr;
     class FunctionCallExpr;
+    class RangeExpr;
     class ArrayLiteralExpr;
     class ArrayIndexExpr;
     class RecordLiteralExpr;
@@ -21,16 +22,20 @@ namespace ast {
     class SpawnExpr;
     class JoinExpr;
     class SelectExpr;
+    class BlockExpr;
+    class IfExpr;
     class VariableDecl;
     class ReturnStmt;
     class ExprStmt;
     class IfStmt;
-    class WhileStmt;
     class AssignmentStmt;
+    class ForInStmt;
     class SelectStmt;
     class FunctionDecl;
     class InteractionDecl;
     class TypeDecl;
+    class InterfaceDecl;
+    class ImplementationDecl;
     class ImportDecl;
     class Program;
 }
@@ -50,6 +55,7 @@ public:
     virtual void visitUnaryExpr(UnaryExpr* node) {}
     virtual void visitVariableExpr(VariableExpr* node) {}
     virtual void visitFunctionCallExpr(FunctionCallExpr* node) {}
+    virtual void visitRangeExpr(RangeExpr* node) {}
     virtual void visitArrayLiteralExpr(ArrayLiteralExpr* node) {}
     virtual void visitArrayIndexExpr(ArrayIndexExpr* node) {}
     virtual void visitRecordLiteralExpr(RecordLiteralExpr* node) {}
@@ -62,20 +68,24 @@ public:
     virtual void visitSpawnExpr(SpawnExpr* node) {}
     virtual void visitJoinExpr(JoinExpr* node) {}
     virtual void visitSelectExpr(SelectExpr* node) {}
-    
+    virtual void visitBlockExpr(BlockExpr* node) {}
+    virtual void visitIfExpr(IfExpr* node) {}
+
     // Statement nodes
     virtual void visitVariableDecl(VariableDecl* node) {}
     virtual void visitReturnStmt(ReturnStmt* node) {}
     virtual void visitExprStmt(ExprStmt* node) {}
     virtual void visitIfStmt(IfStmt* node) {}
-    virtual void visitWhileStmt(WhileStmt* node) {}
     virtual void visitAssignmentStmt(AssignmentStmt* node) {}
+    virtual void visitForInStmt(ForInStmt* node) {}
     virtual void visitSelectStmt(SelectStmt* node) {}
     
     // Declaration nodes
     virtual void visitFunctionDecl(FunctionDecl* node) {}
     virtual void visitInteractionDecl(InteractionDecl* node) {}
     virtual void visitTypeDecl(TypeDecl* node) {}
+    virtual void visitInterfaceDecl(InterfaceDecl* node) {}
+    virtual void visitImplementationDecl(ImplementationDecl* node) {}
     virtual void visitImportDecl(ImportDecl* node) {}
     
     // Top-level nodes

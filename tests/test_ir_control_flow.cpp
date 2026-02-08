@@ -12,11 +12,11 @@ void test_if_statement() {
     
     std::string source = R"(
         function test(x: Int) -> Int {
-            if (x > 0) {
-                return 1;
+            return if (x > 0) {
+                1
             } else {
-                return 0;
-            }
+                0
+            };
         }
     )";
     
@@ -42,10 +42,11 @@ void test_if_without_else() {
     
     std::string source = R"(
         function test(x: Int) -> Int {
-            if (x > 0) {
-                return x;
-            }
-            return 0;
+            return if (x > 0) {
+                x
+            } else {
+                0
+            };
         }
     )";
     
@@ -66,50 +67,20 @@ void test_if_without_else() {
     std::cout << "✓ If statement without else IR generation works\n";
 }
 
-void test_while_loop() {
-    first::Compiler compiler;
-    
-    std::string source = R"(
-        interaction test() -> Int {
-            var i = 0;
-            while (i < 10) {
-                i = i + 1;
-            }
-            return i;
-        }
-    )";
-    
-    bool success = compiler.compileFromString(source, "test_while.first");
-    ASSERT(success, "Compilation should succeed");
-    
-    auto* ast = compiler.getAST();
-    ASSERT(ast != nullptr, "AST should be created");
-    
-    first::ir::IRGenerator irGen(compiler.getErrorReporter(), "test_while_module");
-    bool irSuccess = irGen.generate(ast);
-    ASSERT(irSuccess, "IR generation should succeed");
-    ASSERT(!compiler.getErrorReporter().hasErrors(), "No errors should occur");
-    
-    llvm::Module* module = irGen.getModule();
-    ASSERT(module != nullptr, "Module should exist");
-    
-    std::cout << "✓ While loop IR generation works\n";
-}
-
 void test_nested_if() {
     first::Compiler compiler;
     
     std::string source = R"(
         function test(x: Int, y: Int) -> Int {
-            if (x > 0) {
+            return if (x > 0) {
                 if (y > 0) {
-                    return 1;
+                    1
                 } else {
-                    return 2;
+                    2
                 }
             } else {
-                return 0;
-            }
+                0
+            };
         }
     )";
     

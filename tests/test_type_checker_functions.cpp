@@ -3,6 +3,7 @@
 #include "first/ast/declarations.h"
 #include "first/ast/expressions.h"
 #include "first/ast/statements.h"
+#include "first/ast/program.h"
 #include "first/error_reporter.h"
 #include "first/source_location.h"
 #include "test_framework.h"
@@ -81,7 +82,7 @@ TEST(type_checker_function_call_argument_matching) {
     std::vector<std::unique_ptr<ast::Stmt>> body;
     
     auto func = std::make_unique<ast::FunctionDecl>(
-        loc, "add", std::vector<std::string>(), std::move(params),
+        loc, "add", std::vector<ast::GenericParam>(), std::move(params),
         std::move(returnType), std::move(body)
     );
     
@@ -133,7 +134,7 @@ TEST(type_checker_function_call_with_promotion) {
     std::vector<std::unique_ptr<ast::Stmt>> body;
     
     auto func = std::make_unique<ast::FunctionDecl>(
-        loc, "add", std::vector<std::string>(), std::move(params),
+        loc, "add", std::vector<ast::GenericParam>(), std::move(params),
         std::move(returnType), std::move(body)
     );
     
@@ -182,4 +183,49 @@ TEST(type_checker_higher_order_function_type) {
     
     bool equal = checker.typesEqual(outerFuncType.get(), outerFuncType2.get());
     ASSERT(equal, "Higher-order function types should be equal if signatures match");
+}
+
+// Generic params must appear in at least one parameter type (no return-only generic)
+TEST(type_checker_generic_params_must_appear_in_parameter_types) {
+    ErrorReporter reporter;
+    SourceLocation loc(1, 1);
+
+    // Build program with function bad<V>(x: Int) -> V (V only in return type - invalid)
+    std::vector<std::unique_ptr<ast::Parameter>> params;
+    params.push_back(std::make_unique<ast::Parameter>(
+        loc, "x", std::make_unique<ast::PrimitiveType>(loc, ast::PrimitiveType::Kind::Int)));
+    auto returnType = std::make_unique<ast::GenericType>(loc, "V");
+    std::vector<std::unique_ptr<ast::Stmt>> body;
+    ast::Program program(loc);
+    program.addFunction(std::make_unique<ast::FunctionDecl>(
+        loc, "bad", std::vector<ast::GenericParam>{{"V", ""}}, std::move(params),
+        std::move(returnType), std::move(body), false));
+
+    semantic::TypeChecker checker(reporter);
+    checker.check(&program);
+    ASSERT(reporter.hasErrors(),
+           "Generic type parameter V only in return type should be rejected");
+}
+
+// Generic param in parameter type is allowed (F<T,U>(x:T, y:U) -> T | Null style)
+TEST(type_checker_generic_params_in_parameter_types_allowed) {
+    ErrorReporter reporter;
+    SourceLocation loc(1, 1);
+
+    std::vector<std::unique_ptr<ast::Parameter>> params;
+    params.push_back(std::make_unique<ast::Parameter>(
+        loc, "x", std::make_unique<ast::GenericType>(loc, "T")));
+    params.push_back(std::make_unique<ast::Parameter>(
+        loc, "y", std::make_unique<ast::GenericType>(loc, "U")));
+    auto returnType = std::make_unique<ast::GenericType>(loc, "T");  // T from param
+    std::vector<std::unique_ptr<ast::Stmt>> body;
+    ast::Program program(loc);
+    program.addFunction(std::make_unique<ast::FunctionDecl>(
+        loc, "f", std::vector<ast::GenericParam>{{"T", ""}, {"U", ""}}, std::move(params),
+        std::move(returnType), std::move(body), false));
+
+    semantic::TypeChecker checker(reporter);
+    checker.check(&program);
+    ASSERT(!reporter.hasErrors(),
+           "Generic params T and U in parameter types should be allowed");
 }

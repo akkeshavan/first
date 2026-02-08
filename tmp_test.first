@@ -1,0 +1,11 @@
+type LexItem = Term(Int) | Operator(String) | BinaryExpression(Int, Int, Int);
+function showItem(v: LexItem) -> String {
+    return match v {
+        Term(value) => "expr: " + intToString(value),
+        Operator(op) => "op: " + op,
+        BinaryExpression(a, b, c) => "bin"
+    };
+}
+interaction main() -> Unit {
+    println(showItem(Term(42)));
+}

@@ -33,6 +33,7 @@ public:
     std::unique_ptr<Expr> buildExpression(FirstParser::LogicalAndExprContext* ctx);
     std::unique_ptr<Expr> buildExpression(FirstParser::EqualityExprContext* ctx);
     std::unique_ptr<Expr> buildExpression(FirstParser::ComparisonExprContext* ctx);
+    std::unique_ptr<Expr> buildExpression(FirstParser::RangeExprContext* ctx);
     std::unique_ptr<Expr> buildExpression(FirstParser::AdditiveExprContext* ctx);
     std::unique_ptr<Expr> buildExpression(FirstParser::MultiplicativeExprContext* ctx);
     std::unique_ptr<Expr> buildExpression(FirstParser::MonadicExprContext* ctx);
@@ -56,8 +57,10 @@ public:
     std::unique_ptr<ASTNode> buildVariableDeclNode(FirstParser::VarDeclContext* ctx); // Helper for testing
     std::unique_ptr<ReturnStmt> buildReturnStmt(FirstParser::ReturnStmtContext* ctx);
     std::unique_ptr<IfStmt> buildIfStmt(FirstParser::IfStmtContext* ctx);
-    std::unique_ptr<WhileStmt> buildWhileStmt(FirstParser::WhileStmtContext* ctx);
     std::unique_ptr<AssignmentStmt> buildAssignmentStmt(FirstParser::AssignmentContext* ctx);
+    std::unique_ptr<ForInStmt> buildForInStmt(FirstParser::ForStmtContext* ctx);
+    std::unique_ptr<InterfaceDecl> buildInterfaceDecl(FirstParser::InterfaceDeclContext* ctx);
+    std::unique_ptr<ImplementationDecl> buildImplementationDecl(FirstParser::ImplementationDeclContext* ctx);
 
 private:
     ErrorReporter& errorReporter_;

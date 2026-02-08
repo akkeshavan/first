@@ -108,7 +108,7 @@ regexExtract("Price: $42.50", "\\$([0-9.]+)", 1)  // "42.50"
 - `first-book/chapter-04-basic-types-expressions-type-inference.md` - Added sections on string comparison and regex
 
 ### Examples
-- `examples/chapter-4-basic-expressions-types/src/main.first` - Added string comparison and regex demonstrations
+- `examples/chapter-04-basic-expressions-types/src/main.first` - Added string comparison and regex demonstrations
 
 ## Building
 
@@ -125,7 +125,7 @@ cmake --build build --target first_runtime
 Run the updated chapter 4 example:
 
 ```bash
-cd examples/chapter-4-basic-expressions-types
+cd examples/chapter-04-basic-expressions-types
 fir run
 ```
 

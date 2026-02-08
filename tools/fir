@@ -113,15 +113,18 @@ cmd_build() {
   fi
 
   mkdir -p "$dir/build"
-  # firstc finds libfirst_runtime.a relative to its cwd; run from prefix (build/ or install prefix)
+  # firstc finds modules via cwd or FIRST_LIB_PATH. Set FIRST_LIB_PATH to repo lib/ so Prelude is found.
   local prefix="$(firstc_prefix)"
   if [[ -z "$prefix" ]]; then
     echo "fir: cannot find firstc runtime prefix"
     exit 1
   fi
   export_library_path
+  export FIRST_LIB_PATH="${PROJECT_ROOT}/lib"
   echo "Building $name..."
-  if (cd "$prefix" && "$firstc" "$(cd "$dir" && pwd)/$main" -o "$(cd "$dir" && pwd)/build/$name"); then
+  local main_abs="$(cd "$dir" && pwd)/$main"
+  local out_abs="$(cd "$dir" && pwd)/build/$name"
+  if (cd "$prefix" && "$firstc" "$main_abs" -o "$out_abs"); then
     echo "Built: $dir/build/$name"
   else
     exit 1

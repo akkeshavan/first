@@ -31,7 +31,8 @@ public:
         Float,
         Bool,
         String,
-        Unit
+        Unit,
+        Null
     };
 
     PrimitiveType(const SourceLocation& location, Kind kind)

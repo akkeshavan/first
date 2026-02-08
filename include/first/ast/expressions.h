@@ -1,6 +1,7 @@
 #pragma once
 
 #include "first/ast/node.h"
+#include "first/ast/types.h"
 #include "first/ast/visitor.h"
 #include <string>
 #include <vector>
@@ -14,7 +15,6 @@ class Pattern;
 class MatchCase;
 class Parameter;
 class Stmt;
-class Type;
 
 // Base class for expressions
 class Expr : public ASTNode {
@@ -131,7 +131,14 @@ public:
 
     const std::string& getName() const { return name_; }
     const std::vector<std::unique_ptr<Expr>>& getArgs() const { return args_; }
-    
+
+    /** Inferred type arguments for generic calls (set by type checker). Empty if not a generic call. */
+    const std::vector<std::unique_ptr<Type>>& getInferredTypeArgs() const { return inferredTypeArgs_; }
+    void setInferredTypeArgs(std::vector<std::unique_ptr<Type>> args) {
+        inferredTypeArgs_ = std::move(args);
+    }
+    bool hasInferredTypeArgs() const { return !inferredTypeArgs_.empty(); }
+
     void accept(ASTVisitor& visitor) override {
         visitor.visitFunctionCallExpr(this);
     }
@@ -141,6 +148,7 @@ public:
 private:
     std::string name_;
     std::vector<std::unique_ptr<Expr>> args_;
+    std::vector<std::unique_ptr<Type>> inferredTypeArgs_;
 };
 
 // Constructor call expression (for ADT constructors)
@@ -184,6 +192,37 @@ public:
 private:
     std::unique_ptr<Expr> matchedExpr_;
     std::vector<std::unique_ptr<MatchCase>> cases_;
+};
+
+// Range expression: start..end (step 1) or start, second..end (step = second - first). Haskell-style.
+// .. = exclusive end, ..= = inclusive end.
+class RangeExpr : public Expr {
+public:
+    RangeExpr(const SourceLocation& location,
+              std::unique_ptr<Expr> start,
+              std::unique_ptr<Expr> end,
+              bool inclusive,
+              std::unique_ptr<Expr> stepHint = nullptr)
+        : Expr(location), start_(std::move(start)), end_(std::move(end)), inclusive_(inclusive),
+          stepHint_(std::move(stepHint)) {}
+
+    Expr* getStart() const { return start_.get(); }
+    Expr* getEnd() const { return end_.get(); }
+    bool isInclusive() const { return inclusive_; }
+    /// If set, step = stepHint - start (Haskell first, second..last). Otherwise step = 1.
+    Expr* getStepHint() const { return stepHint_.get(); }
+    bool hasStepHint() const { return stepHint_ != nullptr; }
+
+    void accept(ASTVisitor& visitor) override {
+        visitor.visitRangeExpr(this);
+    }
+    std::string getNodeType() const override { return "RangeExpr"; }
+
+private:
+    std::unique_ptr<Expr> start_;
+    std::unique_ptr<Expr> end_;
+    bool inclusive_;
+    std::unique_ptr<Expr> stepHint_;
 };
 
 // Array literal expression: [expr1, expr2, ...]
@@ -387,6 +426,29 @@ public:
     std::string getNodeType() const override { return "SelectExpr"; }
 private:
     std::vector<std::unique_ptr<SelectBranch>> branches_;
+};
+
+// If expression (Rust-style): if (cond) thenBranch else elseBranch — value is branch value
+// elseBranch can be another IfExpr (else if) or BlockExpr or any Expr
+class IfExpr : public Expr {
+public:
+    IfExpr(const SourceLocation& location,
+           std::unique_ptr<Expr> condition,
+           std::unique_ptr<Expr> thenBranch,
+           std::unique_ptr<Expr> elseBranch)
+        : Expr(location), condition_(std::move(condition)),
+          thenBranch_(std::move(thenBranch)), elseBranch_(std::move(elseBranch)) {}
+
+    Expr* getCondition() const { return condition_.get(); }
+    Expr* getThenBranch() const { return thenBranch_.get(); }
+    Expr* getElseBranch() const { return elseBranch_.get(); }
+
+    void accept(ASTVisitor& visitor) override { visitor.visitIfExpr(this); }
+    std::string getNodeType() const override { return "IfExpr"; }
+private:
+    std::unique_ptr<Expr> condition_;
+    std::unique_ptr<Expr> thenBranch_;
+    std::unique_ptr<Expr> elseBranch_;
 };
 
 } // namespace ast

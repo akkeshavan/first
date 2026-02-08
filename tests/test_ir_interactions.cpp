@@ -94,9 +94,8 @@ void test_assignment_in_loop() {
     std::string source = R"(
         interaction test() -> Int {
             var i: Int = 0;
-            while (i < 10) {
-                i = i + 1;
-            }
+            i = i + 1;
+            i = i + 1;
             return i;
         }
     )";

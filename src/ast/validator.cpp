@@ -30,6 +30,14 @@ bool ASTValidator::validate(Program* program) {
     for (const auto& typeDecl : program->getTypeDecls()) {
         validateNode(typeDecl.get(), "type declaration");
     }
+
+    for (const auto& iface : program->getInterfaces()) {
+        validateNode(iface.get(), "interface declaration");
+    }
+
+    for (const auto& impl : program->getImplementations()) {
+        validateNode(impl.get(), "implementation declaration");
+    }
     
     return errorCount_ == 0;
 }

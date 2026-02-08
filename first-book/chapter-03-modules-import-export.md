@@ -78,7 +78,7 @@ import "Math";
 
 ## Small project: Math, Compute, and Main
 
-The example project **examples/chapter-3-modules** has three modules:
+The example project **examples/chapter-03-modules** has three modules:
 
 1. **Math** – a small library that exports **square** and **add**.
 2. **compute** – a module in **compute.first** that imports **Math** and exports **compute()** (3² + 4²).
@@ -144,9 +144,9 @@ So when you run **firstc**, the working directory must be one that contains **Ma
 From the repository root:
 
 ```bash
-cd examples/chapter-3-modules
+cd examples/chapter-03-modules
 ./build.sh
-./build/chapter-3-modules
+./build/chapter-03-modules
 ```
 
 **build.sh** copies **Math.first**, **compute.first**, and **src/main.first** into the repo’s **build** directory and runs **firstc** from there so that:

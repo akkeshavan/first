@@ -1,0 +1,63 @@
+// =============================================================================
+// Chapter 8: Recursion and tail-call optimization
+// =============================================================================
+// Examples:
+//   1. factorial(n)       — ordinary recursion (stack grows with n)
+//   2. factTail(n, acc)   — tail-recursive factorial (TCO keeps stack flat)
+//   3. sumTo(n) / sumAcc  — tail-recursive sum 1+2+...+n (TCO keeps stack flat)
+// =============================================================================
+
+// -----------------------------------------------------------------------------
+// Example 1: Ordinary recursion — stack grows with n
+// factorial(n) = n * factorial(n-1); each call waits for the next, so the
+// call stack has one frame per recursive call.
+// -----------------------------------------------------------------------------
+function factorial(n: Int) -> Int {
+    return if (n <= 1) {
+        1
+    } else {
+        n * factorial(n - 1)
+    };
+}
+
+// -----------------------------------------------------------------------------
+// Example 2: Tail-recursive factorial — accumulator carries the result
+// The recursive call is the last thing we do (tail position), so the compiler
+// can optimize it to a loop and the stack does not grow.
+// -----------------------------------------------------------------------------
+function factTail(n: Int, acc: Int) -> Int {
+    return if (n <= 1) {
+        acc
+    } else {
+        factTail(n - 1, n * acc)
+    };
+}
+function factorialTail(n: Int) -> Int {
+    return factTail(n, 1);
+}
+
+// -----------------------------------------------------------------------------
+// Example 3: Tail-recursive sum 1 + 2 + ... + n
+// sumAcc(n, acc) = sumAcc(n-1, acc+n); again the recursive call is in tail
+// position, so TCO applies and the stack stays bounded.
+// -----------------------------------------------------------------------------
+function sumAcc(n: Int, acc: Int) -> Int {
+    return if (n <= 0) {
+        acc
+    } else {
+        sumAcc(n - 1, acc + n)
+    };
+}
+function sumTo(n: Int) -> Int {
+    return sumAcc(n, 0);
+}
+
+// -----------------------------------------------------------------------------
+// Demo
+// -----------------------------------------------------------------------------
+interaction main() -> Unit {
+    let n = 10;
+    println("factorial(" + intToString(n) + ") = " + intToString(factorial(n)));
+    println("factorialTail(" + intToString(n) + ") = " + intToString(factorialTail(n)));
+    println("sumTo(" + intToString(n) + ") = 1+...+n = " + intToString(sumTo(n)));
+}

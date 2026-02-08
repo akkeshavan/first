@@ -38,7 +38,6 @@ FUNCTION: 'function';
 INTERACTION: 'interaction';
 IF: 'if';
 ELSE: 'else';
-WHILE: 'while';
 RETURN: 'return';
 LET: 'let';
 VAR: 'var';
@@ -225,8 +224,9 @@ functionBody: LBRACE statement* RBRACE;
 // Interaction declaration
 interactionDecl: INTERACTION IDENTIFIER genericParams? LPAREN parameterList? RPAREN returnType? functionBody;
 
-// Generic type parameters
-genericParams: LT IDENTIFIER (COMMA IDENTIFIER)* GT;
+// Generic type parameters (optional constraint: T : Eq)
+genericParams: LT genericParam (COMMA genericParam)* GT;
+genericParam: IDENTIFIER (COLON IDENTIFIER)?;
 
 // Parameter list
 parameterList: parameter (COMMA parameter)*;
@@ -415,13 +415,13 @@ typeList: type_ (COMMA type_)*;
 typeConstraintList: typeConstraint (COMMA typeConstraint)*;
 typeConstraint: IDENTIFIER COLON type_;
 
-// Statements
+// Statements (if as statement kept for ANTLR builder; hand-written parser uses if-expr)
 statement
-    : varDecl
+    : forStmt
+    | varDecl
     | assignment
     | compoundAssignment
     | ifStmt
-    | whileStmt
     | returnStmt
     | matchStmt
     | blockStmt
@@ -430,6 +430,8 @@ statement
     | selectStmt
     ;
 
+forStmt: FOR IDENTIFIER IN expression LBRACE statement* RBRACE;
+
 varDecl: (LET | VAR) IDENTIFIER (COLON type_)? (ASSIGN expression)? SEMICOLON;
 
 assignment: expression ASSIGN expression SEMICOLON;
@@ -437,8 +439,6 @@ assignment: expression ASSIGN expression SEMICOLON;
 compoundAssignment: expression (PLUS_ASSIGN | MINUS_ASSIGN | MUL_ASSIGN | DIV_ASSIGN) expression SEMICOLON;
 
 ifStmt: IF LPAREN expression RPAREN statement (ELSE statement)?;
-
-whileStmt: WHILE LPAREN expression RPAREN statement;
 
 returnStmt: RETURN expression? SEMICOLON;
 
@@ -499,7 +499,7 @@ logicalAndExpr: equalityExpr (AND equalityExpr)*;
 
 equalityExpr: comparisonExpr ((EQ | NE) comparisonExpr)*;
 
-comparisonExpr: additiveExpr ((LT | LE | GT | GE) additiveExpr)*;
+comparisonExpr: rangeExpr ((LT | LE | GT | GE) rangeExpr)*;
 
 additiveExpr: multiplicativeExpr ((PLUS | MINUS) multiplicativeExpr)*;
 
@@ -528,6 +528,7 @@ primaryExpr
     | constructorCall
     | lambdaExpr
     | conditionalExpr
+    | blockExpr
     | asyncExpr
     | awaitExpr
     | spawnExpr
@@ -538,7 +539,9 @@ primaryExpr
 lambdaExpr: LPAREN parameterList? RPAREN FAT_ARROW (expression | functionBody)
     | FUNCTION LPAREN parameterList? RPAREN returnType? functionBody;
 
-conditionalExpr: IF LPAREN expression RPAREN expression ELSE expression;
+// Rust-style if expression: value is last expression in the chosen block
+blockExpr: LBRACE statement* expression? RBRACE;
+conditionalExpr: IF LPAREN expression RPAREN (blockExpr | expression) ELSE (conditionalExpr | blockExpr | expression);
 
 asyncExpr: ASYNC primaryExpr;
 
@@ -557,6 +560,10 @@ recordLiteralFieldList: recordLiteralField (COMMA recordLiteralField)*;
 recordLiteralField: IDENTIFIER COLON expression;
 
 arrayLiteral: LBRACKET expressionList? RBRACKET;
+
+// Range expression (Haskell-style): start..end (step 1) or start, second..end (step = second - first)
+// .. = exclusive end, ..= = inclusive end
+rangeExpr: additiveExpr (COMMA additiveExpr (RANGE_OP | RANGE_INCLUSIVE) additiveExpr | (RANGE_OP | RANGE_INCLUSIVE) additiveExpr)?;
 
 constructorCall: IDENTIFIER (LPAREN expressionList? RPAREN)?;
 

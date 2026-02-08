@@ -87,7 +87,7 @@ Output: `Hello, First!`
 
 **greet** is pure (string concatenation only). **main** is an interaction so it can call **println** and **greet**.
 
-A runnable version of this pattern is in **examples/chapter-2-functions-and-interactions**.
+A runnable version of this pattern is in **examples/chapter-02-functions-and-interactions**.
 
 ---
 
@@ -105,7 +105,7 @@ A runnable version of this pattern is in **examples/chapter-2-functions-and-inte
 From the repo root, run the chapter example:
 
 ```bash
-cd examples/chapter-2-functions-and-interactions
+cd examples/chapter-02-functions-and-interactions
 fir run
 ```
 

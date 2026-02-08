@@ -1,0 +1,85 @@
+// =============================================================================
+// Chapter 7: A Haskell-like List library with generic List<T>
+// =============================================================================
+// This example introduces:
+//   - Generic data types (type List<T> = ...)
+//   - Interfaces (Eq) and constrained generics (T : Eq)
+//   - Building a small list library with Haskell-style names:
+//     isEmpty (Haskell: null), length, elem, head, tail, cons
+// =============================================================================
+
+// Eq, Ord, Iterator are defined in the standard library (lib/Prelude.first).
+// Built-in types Int, Float, Bool, String implement Eq (and Ord where applicable);
+// Array<T> implements Iterator. For other types T, implement the interface:
+//   implementation Eq<MyType> { eq = ... }
+import * "Prelude";
+
+// -----------------------------------------------------------------------------
+// Generic list type: empty list is Nil, non-empty is Cons(head, tail)
+// -----------------------------------------------------------------------------
+type List<T> = Cons(T, List<T>) | Nil;
+
+// -----------------------------------------------------------------------------
+// Haskell-style list functions (all generic over List<T>)
+// -----------------------------------------------------------------------------
+
+// cons :: a -> [a] -> [a]
+function cons<T>(x: T, xs: List<T>) -> List<T> {
+    return Cons(x, xs);
+}
+
+// isEmpty :: [a] -> Bool  (Haskell: null — True if the list is empty; "null" is a keyword in First)
+function isEmpty<T>(xs: List<T>) -> Bool {
+    return match xs {
+        Cons(h, t) => false,
+        Nil => true
+    };
+}
+
+// length :: [a] -> Int  (tail-recursive via lengthAcc)
+function length<T>(xs: List<T>) -> Int {
+    return lengthAcc(xs, 0);
+}
+function lengthAcc<T>(xs: List<T>, acc: Int) -> Int {
+    return match xs {
+        Cons(h, t) => lengthAcc(t, acc + 1),
+        Nil => acc
+    };
+}
+
+// elem :: (Eq a) => a -> [a] -> Bool  (is x in the list?)
+function elem<T:Eq>(x: T, xs: List<T>) -> Bool {
+    return match xs {
+        Cons(h, t) => (h == x) || elem(x, t),
+        Nil => false
+    };
+}
+
+// head :: [a] -> a  (first element; default used when list is empty)
+function head<T>(xs: List<T>) -> T | null {
+    return match xs {
+        Cons(h, t) => h,
+        Nil => null
+    };
+}
+
+// tail :: [a] -> [a]  (all but the first element; empty list returns Nil)
+function tail<T:Eq>(xs: List<T>) -> List<T> {
+    return match xs {
+        Cons(h, t) => t,
+        Nil => Nil()
+    };
+}
+
+// -----------------------------------------------------------------------------
+// Demo: build List<Int> and use the Haskell-named functions
+// -----------------------------------------------------------------------------
+interaction main() -> Unit {
+    let xs: List<Int> = cons(1, cons(2, cons(3, Nil())));
+    let emptyStr = if (isEmpty(xs)) { "true" } else { "false" };
+    println("List [1,2,3]: isEmpty = " + emptyStr + ", length = " + intToString(length(xs)));
+    let has2 = if (elem(2, xs)) { "true" } else { "false" };
+    println("head(xs) = " + intToString(head(xs)) + ", elem(2, xs) = " + has2);
+    let rest = tail(xs);
+    println("tail(xs) length = " + intToString(length(rest)));
+}

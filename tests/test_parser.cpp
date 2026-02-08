@@ -1,4 +1,5 @@
 #include "first/compiler.h"
+#include "first/ast/program.h"
 #include "first/error_reporter.h"
 #include "test_framework.h"
 #include <fstream>
@@ -86,11 +87,11 @@ TEST(parser_control_flow) {
     
     std::string source = R"(
         function factorial(n: Int) -> Int {
-            if (n <= 1) {
-                return 1;
+            return if (n <= 1) {
+                1
             } else {
-                return n * factorial(n - 1);
-            }
+                n * factorial(n - 1)
+            };
         }
     )";
     
@@ -126,7 +127,7 @@ TEST(parser_interfaces) {
         
         implementation Show<Int> {
             show = function(x: Int) -> String {
-                return x.toString();
+                return "ok";
             };
         };
     )";
@@ -134,6 +135,12 @@ TEST(parser_interfaces) {
     bool result = compiler.compileFromString(source);
     ASSERT(!compiler.getErrorReporter().hasErrors(),
            "Interfaces and implementations should parse correctly");
+    ASSERT(result, "Compilation should succeed");
+    ASSERT(compiler.getAST() != nullptr, "AST should be non-null");
+    ASSERT(compiler.getAST()->getInterfaces().size() == 1u,
+           "Program should have one interface");
+    ASSERT(compiler.getAST()->getImplementations().size() == 1u,
+           "Program should have one implementation");
 }
 
 TEST(parser_test_files) {

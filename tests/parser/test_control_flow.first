@@ -1,19 +1,17 @@
 // Test control flow
 
 function factorial(n: Int) -> Int {
-    if (n <= 1) {
-        return 1;
+    return if (n <= 1) {
+        1
     } else {
-        return n * factorial(n - 1);
-    }
+        n * factorial(n - 1)
+    };
 }
 
-interaction loop() -> Unit {
-    var i = 0;
-    while (i < 10) {
-        print(i.toString());
-        i = i + 1;
-    }
+interaction countToThree() -> Unit {
+    print("1");
+    print("2");
+    print("3");
 }
 
 function conditionalExpr() -> String {

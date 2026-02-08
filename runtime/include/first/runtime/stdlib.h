@@ -34,8 +34,11 @@ double first_string_to_float(const char* s);
 char* first_int_to_string(int64_t n);   // caller must free
 char* first_float_to_string(double x);  // caller must free
 
-// --- Array (length: compiler intrinsic; map/filter/reduce require closures - stub) ---
+// --- Array (length: compiler intrinsic; map/reduce/filter for Int arrays) ---
 int64_t first_array_length(const void* arr, int64_t known_len);  // identity: returns known_len for ABI
+int64_t first_array_reduce_int_sum(const int64_t* arr, int64_t len);  // sum of elements
+int64_t* first_array_map_int_double(const int64_t* arr, int64_t len);  // new array: each element * 2; caller/GC frees
+int64_t* first_array_filter_int_positive(const int64_t* arr, int64_t len, int64_t* out_len);  // new array: elements > 0; out_len set to result length
 
 // --- Socket (minimal TCP) ---
 int64_t first_socket_connect(const char* host, int64_t port);  // returns fd or -1

@@ -76,7 +76,7 @@ We’ll create a small “Hello” project inside the repo’s **examples** dire
    fir init hello
    ```
 
-   This creates **examples/chapter-1-hello/** with:
+   This creates **examples/chapter-01-hello/** with:
 
    - **fir.json** – project name and entry point
    - **src/main.first** – main source file
@@ -103,7 +103,7 @@ We’ll create a small “Hello” project inside the repo’s **examples** dire
    Hello from First!
    ```
 
-The source for this program is **examples/chapter-1-hello/src/main.first**. You can edit it and run `fir run` again to see changes.
+The source for this program is **examples/chapter-01-hello/src/main.first**. You can edit it and run `fir run` again to see changes.
 
 ---
 
@@ -159,19 +159,19 @@ Line 2
 Col1    Col2
 ```
 
-A full runnable example is in **examples/chapter-1-print-and-println**. From the repo root:
+A full runnable example is in **examples/chapter-01-print-and-println**. From the repo root:
 
 ```bash
-cd examples/chapter-1-print-and-println
+cd examples/chapter-01-print-and-println
 fir run
 ```
 
-You can also try the snippets above in **examples/chapter-1-hello** by editing **src/main.first** and running `fir run`.
+You can also try the snippets above in **examples/chapter-01-hello** by editing **src/main.first** and running `fir run`.
 
 ---
 
 ## What’s next
 
-- Change **examples/chapter-1-hello/src/main.first** to use `println` instead of `print` and add more `print`/`println` calls.
+- Change **examples/chapter-01-hello/src/main.first** to use `println` instead of `print` and add more `print`/`println` calls.
 - Explore other examples under **examples/** (each subdirectory is a fir project).
 - Continue with the next chapters for types, functions, and more of the language.

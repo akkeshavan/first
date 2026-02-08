@@ -1,6 +1,6 @@
 # Chapter 4: Basic Types, Expressions, and Type Inference
 
-First is statically typed: every expression has a type, and the compiler checks that types line up. This chapter covers the **basic types**, how **expressions** get their types, and **type inference**—when you can omit type annotations and let the compiler figure them out. Arrays and records are covered in Chapter 5.
+First is statically typed: every expression has a type, and the compiler checks that types line up. This chapter covers the **basic types**, how **expressions** get their types, and **type inference**—when you can omit type annotations and let the compiler figure them out. Control flow (if expressions, for-in, ranges) is covered in Chapter 5.
 
 ---
 
@@ -278,9 +278,9 @@ Function and interaction **parameters** and **return types** are always annotate
 
 ---
 
-## Runnable example: chapter-4-basic-expressions-types
+## Runnable example: chapter-04-basic-expressions-types
 
-The project **examples/chapter-4-basic-expressions-types** defines one pure function per expression kind and **interaction main()** calls each and prints the result:
+The project **examples/chapter-04-basic-expressions-types** defines one pure function per expression kind and **interaction main()** calls each and prints the result:
 
 - **Arithmetic (Int)**: **addInt**, **subInt**, **mulInt**, **divInt**, **modInt**
 - **Arithmetic (Float)**: **addFloat**, **mulFloat**
@@ -294,7 +294,7 @@ The project **examples/chapter-4-basic-expressions-types** defines one pure func
 From the repo root:
 
 ```bash
-cd examples/chapter-4-basic-expressions-types
+cd examples/chapter-04-basic-expressions-types
 fir run
 ```
 
@@ -344,12 +344,12 @@ interaction main() -> Unit {
 6. **Type inference**: in **let** / **var**, you can omit the type and the compiler infers it from the initializer; you can still add a type for checking.
 7. Function parameters and return types are always annotated; inference applies to locals and expressions.
 
-Arrays and records (and their literals) are covered in **Chapter 5**.
+Control flow and the **for-in** loop over ranges are covered in **Chapter 5**.
 
 ---
 
 ## Try it
 
-- Run **examples/chapter-4-basic-expressions-types** with `fir run` and edit **src/main.first** to add more calls (e.g. **divInt(20, 4)**, **notBool(false)**).
-- In **examples/chapter-2-functions-and-interactions**, add **let** bindings with and without type annotations (e.g. **let n = 7;** and **let n: Int = 7;**), and use **+**, **\***, **==**, **&&** in expressions.
+- Run **examples/chapter-04-basic-expressions-types** with `fir run` and edit **src/main.first** to add more calls (e.g. **divInt(20, 4)**, **notBool(false)**).
+- In **examples/chapter-02-functions-and-interactions**, add **let** bindings with and without type annotations (e.g. **let n = 7;** and **let n: Int = 7;**), and use **+**, **\***, **==**, **&&** in expressions.
 - Use **floatToString** with a **Float** variable and **println** to see Float inference and conversion.

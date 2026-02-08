@@ -22,6 +22,14 @@ include_directories(${CMAKE_SOURCE_DIR}/include)
 include_directories(${CMAKE_BINARY_DIR}/generated)
 
 # Find required packages
+# Hint for LLVM when not set (e.g. Homebrew on macOS)
+if(NOT LLVM_DIR)
+  if(EXISTS "/opt/homebrew/opt/llvm/lib/cmake/llvm/LLVMConfig.cmake")
+    set(LLVM_DIR "/opt/homebrew/opt/llvm/lib/cmake/llvm")
+  elseif(EXISTS "/usr/local/opt/llvm/lib/cmake/llvm/LLVMConfig.cmake")
+    set(LLVM_DIR "/usr/local/opt/llvm/lib/cmake/llvm")
+  endif()
+endif()
 find_package(LLVM REQUIRED CONFIG)
 find_package(antlr4-runtime REQUIRED)
 
@@ -156,6 +164,8 @@ target_link_libraries(firstc
     ${ANTLR4_LIBRARY}
     ${llvm_libs}
 )
+# Ensure first_runtime is built when building firstc (needed for fir build / linking user programs)
+add_dependencies(firstc first_runtime)
 
 # Test suite
 if(BUILD_TESTS)

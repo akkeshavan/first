@@ -30,11 +30,16 @@ std::unique_ptr<Program> ASTBuilder::buildProgram(FirstParser::ProgramContext* c
         return s;
     };
 
-    auto buildGenericParams = [](FirstParser::GenericParamsContext* gctx) -> std::vector<std::string> {
-        std::vector<std::string> params;
+    auto buildGenericParams = [](FirstParser::GenericParamsContext* gctx) -> std::vector<GenericParam> {
+        std::vector<GenericParam> params;
         if (!gctx) return params;
-        for (auto* id : gctx->IDENTIFIER()) {
-            if (id) params.push_back(id->getText());
+        for (auto* gpc : gctx->genericParam()) {
+            if (!gpc) continue;
+            GenericParam p;
+            auto ids = gpc->IDENTIFIER();
+            if (ids.size() >= 1) p.name = ids[0]->getText();
+            if (ids.size() >= 2) p.constraint = ids[1]->getText();
+            params.push_back(std::move(p));
         }
         return params;
     };
@@ -72,7 +77,7 @@ std::unique_ptr<Program> ASTBuilder::buildProgram(FirstParser::ProgramContext* c
         if (!fctx || !fctx->IDENTIFIER()) return nullptr;
         SourceLocation floc = getLocation(fctx);
         std::string name = fctx->IDENTIFIER()->getText();
-        std::vector<std::string> generics = buildGenericParams(fctx->genericParams());
+        std::vector<GenericParam> generics = buildGenericParams(fctx->genericParams());
         std::vector<std::unique_ptr<Parameter>> params = buildParameters(fctx->parameterList());
         std::unique_ptr<Type> ret = nullptr;
         if (fctx->returnType()) {
@@ -157,9 +162,78 @@ std::unique_ptr<Program> ASTBuilder::buildProgram(FirstParser::ProgramContext* c
             }
             continue;
         }
+
+        if (auto* iface = top->interfaceDecl()) {
+            if (auto decl = buildInterfaceDecl(iface)) {
+                program->addInterface(std::move(decl));
+            }
+            continue;
+        }
+
+        if (auto* impl = top->implementationDecl()) {
+            if (auto decl = buildImplementationDecl(impl)) {
+                program->addImplementation(std::move(decl));
+            }
+            continue;
+        }
     }
     
     return program;
+}
+
+std::unique_ptr<InterfaceDecl> ASTBuilder::buildInterfaceDecl(FirstParser::InterfaceDeclContext* ctx) {
+    if (!ctx || !ctx->IDENTIFIER()) return nullptr;
+    SourceLocation loc = getLocation(ctx);
+    std::string name = ctx->IDENTIFIER()->getText();
+    std::vector<std::string> genericParams;
+    if (auto* gp = ctx->genericParams()) {
+        for (auto* id : gp->IDENTIFIER()) {
+            if (id) genericParams.push_back(id->getText());
+        }
+    }
+    std::vector<std::unique_ptr<InterfaceMember>> members;
+    for (auto* mctx : ctx->interfaceMember()) {
+        if (!mctx || !mctx->IDENTIFIER() || !mctx->type_()) continue;
+        SourceLocation mloc = getLocation(mctx);
+        std::string mname = mctx->IDENTIFIER()->getText();
+        auto mtype = buildType(mctx->type_());
+        if (mtype) {
+            members.push_back(std::make_unique<InterfaceMember>(mloc, mname, std::move(mtype)));
+        }
+    }
+    return std::make_unique<InterfaceDecl>(loc, name, std::move(genericParams), std::move(members));
+}
+
+std::unique_ptr<ImplementationDecl> ASTBuilder::buildImplementationDecl(FirstParser::ImplementationDeclContext* ctx) {
+    if (!ctx || !ctx->IDENTIFIER() || !ctx->typeList()) return nullptr;
+    SourceLocation loc = getLocation(ctx);
+    std::string interfaceName = ctx->IDENTIFIER()->getText();
+    std::vector<std::unique_ptr<Type>> typeArgs;
+    for (auto* tctx : ctx->typeList()->type_()) {
+        auto ty = buildType(tctx);
+        if (ty) typeArgs.push_back(std::move(ty));
+    }
+    std::vector<std::unique_ptr<ImplementationMember>> members;
+    for (auto* mctx : ctx->implementationMember()) {
+        if (!mctx || !mctx->IDENTIFIER()) continue;
+        SourceLocation mloc = getLocation(mctx);
+        std::string mname = mctx->IDENTIFIER()->getText();
+        std::unique_ptr<Expr> value;
+        if (mctx->functionBody()) {
+            std::vector<std::unique_ptr<Stmt>> body;
+            for (auto* sctx : mctx->functionBody()->statement()) {
+                auto stmt = buildStatement(sctx);
+                if (stmt) body.push_back(std::move(stmt));
+            }
+            value = std::make_unique<BlockExpr>(mloc, std::move(body), nullptr);
+        } else if (mctx->expression()) {
+            value = buildExpression(mctx->expression());
+        }
+        if (value) {
+            members.push_back(std::make_unique<ImplementationMember>(mloc, mname, std::move(value)));
+        }
+    }
+    return std::make_unique<ImplementationDecl>(loc, interfaceName, std::move(typeArgs), std::move(members));
 }
 
 std::unique_ptr<LiteralExpr> ASTBuilder::buildLiteral(FirstParser::LiteralContext* ctx) {
@@ -350,7 +424,7 @@ std::unique_ptr<Expr> ASTBuilder::buildExpression(FirstParser::ComparisonExprCon
         return nullptr;
     }
     
-    auto exprs = ctx->additiveExpr(); // Returns by value
+    auto exprs = ctx->rangeExpr(); // Returns by value
     if (exprs.empty()) {
         return nullptr;
     }
@@ -386,6 +460,34 @@ std::unique_ptr<Expr> ASTBuilder::buildExpression(FirstParser::ComparisonExprCon
     }
     
     return result;
+}
+
+std::unique_ptr<Expr> ASTBuilder::buildExpression(FirstParser::RangeExprContext* ctx) {
+    if (!ctx) {
+        return nullptr;
+    }
+    auto exprs = ctx->additiveExpr();
+    if (exprs.empty()) return nullptr;
+    auto start = buildExpression(exprs[0]);
+    if (!start) return nullptr;
+    bool hasRangeOp = (ctx->RANGE_OP().size() > 0 || ctx->RANGE_INCLUSIVE().size() > 0);
+    if (!hasRangeOp) return start;
+    bool inclusive = (ctx->RANGE_INCLUSIVE().size() > 0);
+    // Haskell-style: start..end (2 exprs) or start, second..end (3 exprs, step = second - first)
+    if (exprs.size() == 2) {
+        auto end = buildExpression(exprs[1]);
+        if (!end) return start;
+        SourceLocation loc = getLocation(ctx);
+        return std::make_unique<RangeExpr>(loc, std::move(start), std::move(end), inclusive, nullptr);
+    }
+    if (exprs.size() >= 3) {
+        auto stepHint = buildExpression(exprs[1]);
+        auto end = buildExpression(exprs[2]);
+        if (!stepHint || !end) return start;
+        SourceLocation loc = getLocation(ctx);
+        return std::make_unique<RangeExpr>(loc, std::move(start), std::move(end), inclusive, std::move(stepHint));
+    }
+    return start;
 }
 
 std::unique_ptr<Expr> ASTBuilder::buildExpression(FirstParser::AdditiveExprContext* ctx) {
@@ -836,14 +938,14 @@ std::unique_ptr<Stmt> ASTBuilder::buildStatement(FirstParser::StatementContext* 
         return buildReturnStmt(ctx->returnStmt());
     }
     
+    // Check for for-in statement
+    if (ctx->forStmt()) {
+        return buildForInStmt(ctx->forStmt());
+    }
+    
     // Check for if statement
     if (ctx->ifStmt()) {
         return buildIfStmt(ctx->ifStmt());
-    }
-    
-    // Check for while statement
-    if (ctx->whileStmt()) {
-        return buildWhileStmt(ctx->whileStmt());
     }
     
     // Check for assignment statement
@@ -949,26 +1051,18 @@ std::unique_ptr<IfStmt> ASTBuilder::buildIfStmt(FirstParser::IfStmtContext* ctx)
     return std::make_unique<IfStmt>(loc, std::move(condition), std::move(thenBranch), std::move(elseBranch));
 }
 
-std::unique_ptr<WhileStmt> ASTBuilder::buildWhileStmt(FirstParser::WhileStmtContext* ctx) {
-    if (!ctx) {
-        return nullptr;
-    }
-    
+std::unique_ptr<ForInStmt> ASTBuilder::buildForInStmt(FirstParser::ForStmtContext* ctx) {
+    if (!ctx || !ctx->IDENTIFIER() || !ctx->expression()) return nullptr;
     SourceLocation loc = getLocation(ctx);
-    
-    // Build condition expression
-    auto condition = buildExpression(ctx->expression());
-    if (!condition) {
-        return nullptr;
+    std::string varName = ctx->IDENTIFIER()->getText();
+    auto iterable = buildExpression(ctx->expression());
+    if (!iterable) return nullptr;
+    std::vector<std::unique_ptr<Stmt>> body;
+    for (auto* stmtCtx : ctx->statement()) {
+        auto stmt = buildStatement(stmtCtx);
+        if (stmt) body.push_back(std::move(stmt));
     }
-    
-    // Build body statement
-    auto body = buildStatement(ctx->statement());
-    if (!body) {
-        return nullptr;
-    }
-    
-    return std::make_unique<WhileStmt>(loc, std::move(condition), std::move(body));
+    return std::make_unique<ForInStmt>(loc, varName, std::move(iterable), std::move(body));
 }
 
 std::unique_ptr<AssignmentStmt> ASTBuilder::buildAssignmentStmt(FirstParser::AssignmentContext* ctx) {

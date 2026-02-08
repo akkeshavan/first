@@ -89,9 +89,9 @@ void test_record_pattern_match() {
         function test() -> Int {
             let rec = {x: 1, y: 2};
             let v = match rec {
-                {x: 1, y: _} => 10,
-                {x: _, y: _} => 20,
-                _ => 0
+                {x: 1, y: 2} => 10,
+                {x: a, y: b} => 20,
+                r => 0
             };
             return v;
         }
@@ -104,9 +104,6 @@ void test_record_pattern_match() {
     ASSERT(ast != nullptr, "AST should exist");
     first::ir::IRGenerator irGen(compiler.getErrorReporter(), "test_record_pattern_match_module");
     bool irSuccess = irGen.generate(ast);
-    if (!irSuccess || compiler.getErrorReporter().hasErrors()) {
-        compiler.getErrorReporter().printErrors();
-    }
     ASSERT(irSuccess, "IR generation should succeed for record pattern match");
     ASSERT(!compiler.getErrorReporter().hasErrors(), "No errors expected");
     llvm::Module* module = irGen.getModule();
