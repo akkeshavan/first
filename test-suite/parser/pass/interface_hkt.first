@@ -1,0 +1,3 @@
+interface Functor<F<_>> {
+  map: forall A B. function(F<A>, function(A) -> B) -> F<B>;
+}

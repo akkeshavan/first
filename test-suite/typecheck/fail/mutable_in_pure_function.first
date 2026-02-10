@@ -1,0 +1,4 @@
+function f() -> Int {
+  var x: Int = 10;
+  return x;
+}

@@ -1,0 +1,4 @@
+interaction main() -> Unit {
+  println("hello");
+  return;
+}

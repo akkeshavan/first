@@ -1,0 +1,4 @@
+function f() -> Unit {
+  let x: Int = "hello";
+  return;
+}

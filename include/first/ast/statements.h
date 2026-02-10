@@ -138,6 +138,9 @@ private:
     std::unique_ptr<Expr> value_;
 };
 
+// Kind of iterable in for-in (set by type checker)
+enum class IterableKind { Range, Array, ArrayBuf };
+
 // For-in statement: for x in iterable { body }
 class ForInStmt : public Stmt {
 public:
@@ -146,11 +149,14 @@ public:
               std::unique_ptr<Expr> iterable,
               std::vector<std::unique_ptr<Stmt>> body)
         : Stmt(location), variableName_(variableName),
-          iterable_(std::move(iterable)), body_(std::move(body)) {}
+          iterable_(std::move(iterable)), body_(std::move(body)),
+          iterableKind_(IterableKind::Array) {}
 
     const std::string& getVariableName() const { return variableName_; }
     Expr* getIterable() const { return iterable_.get(); }
     const std::vector<std::unique_ptr<Stmt>>& getBody() const { return body_; }
+    IterableKind getIterableKind() const { return iterableKind_; }
+    void setIterableKind(IterableKind k) { iterableKind_ = k; }
 
     void accept(ASTVisitor& visitor) override {
         visitor.visitForInStmt(this);
@@ -161,6 +167,7 @@ private:
     std::string variableName_;
     std::unique_ptr<Expr> iterable_;
     std::vector<std::unique_ptr<Stmt>> body_;
+    IterableKind iterableKind_;
 };
 
 // Select statement: select { receive/send/else branches }

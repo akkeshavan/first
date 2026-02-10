@@ -1,0 +1,5 @@
+function f() -> Int { return 42; }
+function g() -> Float { return 3.14; }
+function h() -> Bool { return true; }
+function i() -> String { return "ok"; }
+function j() -> Unit { return; }

@@ -20,11 +20,29 @@ All example code lives in the repository’s **examples** directory. You can run
 
 6. **[Custom Record Types and Pattern Matching](chapter-06-records-and-pattern-matching.md)** – Record types (inline `{ field: Type, ... }`), record literals, field access, and **match** with record patterns (destructuring, literals, wildcards).
 
+7. **[Intro to Generic Types](chapter-07-Intro-to-generic-types.md)** – Generic data types, interfaces, and a Haskell-like list.
+
+8–10. *(Further chapters in the repo; see examples.)*
+
+11. **[Date functions](chapter-11-date-functions.md)** – The **Date** library: now, format, parse, getters (year, month, day, time), and addSeconds.
+
+12. **[Math functions](chapter-12-math-functions.md)** – The **Math** library: trigonometry, sqrt, pow, exp/log, rounding, min/max, and constants pi/e.
+
+13. **[ArrayBuf](chapter-13-arraybuf.md)** – Mutable buffers (interaction-only).
+
+14. **[Higher-kinded types](chapter-14-higher-kinded-types.md)** – **Functor&lt;F&lt;_&gt;&gt;** and implementing it for **Option**.
+
+15. **[Monadic operators in interactions](chapter-15-monadic-operators-in-interactions.md)** – **>>=**, **>>**, **<\$>**, **<\*>** only in interactions; three examples (then, bind, fmap) invoked from **main**.
+
+16. **[Type reference](chapter-16-type-reference.md)** – All types supported by First: primitives, arrays, records, function types, type aliases, generic types, **ADTs** (with many examples), union types, interfaces, and **type-level programming** (constrained generics, higher-kinded **F&lt;_&gt;**). Refinement and dependent types are not covered in this chapter.
+
+17. **[Concurrency and async model](chapter-17-concurrency-and-async.md)** – **async**/ **await** (promises), **spawn**/ **join** (tasks), and **select** (channel receive/send). **Spawn/join** and **async/await** run work in a separate thread; join/await block for the result. Runnable example in **examples/chapter-17-concurrency-async**.
+
 ---
 
 ## Chapters and examples
 
-The book has **Chapters 1–6**; the **examples** folder has matching projects for each:
+The **examples** folder has matching projects for each chapter:
 
 | Chapter | Book chapter | Example project(s) |
 |--------|---------------|--------------------|
@@ -34,8 +52,17 @@ The book has **Chapters 1–6**; the **examples** folder has matching projects f
 | 4 | Basic Types, Expressions, and Type Inference | **examples/chapter-04-basic-expressions-types** |
 | 5 | Control Flow | **examples/chapter-05-control-flow** |
 | 6 | Custom Record Types and Pattern Matching | **examples/chapter-06-records-pattern-matching** (sum types), **examples/chapter-06-shapes-record-literals** (record literals) |
+| 7 | Intro to Generic Types | **examples/chapter-07-Intro-to-generic-types** |
+| 10 | Array functions | **examples/chapter-10-Array-functions** |
+| 11 | Date functions | **examples/chapter-11-Date-functions** |
+| 12 | Math functions | **examples/chapter-12-Math-functions** |
+| 13 | ArrayBuf | **examples/chapter-13-ArrayBuf** |
+| 14 | Higher-kinded types | **examples/chapter-14-HKT** |
+| 15 | Monadic operators in interactions | **examples/chapter-15-monadic-operators** |
+| 16 | Type reference | **examples/chapter-16-type-reference** |
+| 17 | Concurrency and async model | **examples/chapter-17-concurrency-async** |
 
-From the repo root, run an example with: `cd examples/chapter-N-... && fir run`.
+From the repo root, run an example with: `cd examples/chapter-N-... && fir run` (or use the **build-and-run-all.sh** script in examples).
 
 ---
 

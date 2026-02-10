@@ -1,0 +1,6 @@
+import * "Prelude"
+function sortTwo<T : Ord>(a: T, b: T) -> Unit { return; }
+type NotOrd = { x: Int };
+function f() -> Unit {
+  return sortTwo({ x: 1 }, { x: 2 });
+}

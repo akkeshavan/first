@@ -73,6 +73,7 @@ FLOAT: 'Float';
 BOOL: 'Bool';
 STRING: 'String';
 UNIT: 'Unit';
+ARRAYBUF: 'ArrayBuf';
 ARRAY: 'Array';
 
 // Boolean literals
@@ -224,9 +225,10 @@ functionBody: LBRACE statement* RBRACE;
 // Interaction declaration
 interactionDecl: INTERACTION IDENTIFIER genericParams? LPAREN parameterList? RPAREN returnType? functionBody;
 
-// Generic type parameters (optional constraint: T : Eq)
+// Generic type parameters (optional constraint: T : Eq or kind: F : * -> *)
 genericParams: LT genericParam (COMMA genericParam)* GT;
-genericParam: IDENTIFIER (COLON IDENTIFIER)?;
+genericParam: IDENTIFIER (COLON (IDENTIFIER | kindAnnotation))?;
+kindAnnotation: MUL ARROW MUL;  // * -> * for higher-kinded type parameter
 
 // Parameter list
 parameterList: parameter (COMMA parameter)*;
@@ -372,6 +374,7 @@ builtinType
     | BOOL
     | STRING
     | UNIT
+    | ARRAYBUF
     ;
 
 arrayType: ARRAY LT type_ GT;

@@ -40,7 +40,9 @@ set(RUNTIME_SOURCES
     src/runtime/regex.cpp
     src/runtime/io.cpp
     src/runtime/gc_alloc.cpp
+    src/runtime/date.cpp
     src/runtime/stdlib.cpp
+    src/runtime/task.cpp
 )
 
 # Create runtime library

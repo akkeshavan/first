@@ -183,6 +183,7 @@ extern void test_compliance_hello_full_pipeline();
 extern void test_compliance_simple_first_compiles();
 extern void test_compliance_semantic_restriction_pure_io();
 extern void test_compliance_error_messages_undefined_function();
+extern void test_test_suite_parser_and_typecheck();
 
 // Run a single test by name (e.g. "multimodule_end_to_end_linking").
 // Returns true if the test was found and run, false if unknown name.
@@ -223,6 +224,10 @@ static bool run_single_test(const char* name) {
     }
     if (std::strcmp(name, "compliance_error_messages_undefined_function") == 0) {
         test_compliance_error_messages_undefined_function();
+        return true;
+    }
+    if (std::strcmp(name, "test_suite_parser_and_typecheck") == 0) {
+        test_test_suite_parser_and_typecheck();
         return true;
     }
     return false;
@@ -426,4 +431,7 @@ void run_all_tests() {
     test_compliance_simple_first_compiles();
     test_compliance_semantic_restriction_pure_io();
     test_compliance_error_messages_undefined_function();
+
+    std::cout << "Testing test-suite (parser + typecheck)...\n";
+    test_test_suite_parser_and_typecheck();
 }

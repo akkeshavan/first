@@ -1,0 +1,4 @@
+import * "Prelude"
+function eqInt(a: Int, b: Int) -> Bool { return a == b; }
+function elem<T : Eq>(x: T, y: T) -> Bool { return x == y; }
+function f() -> Bool { return elem(1, 2); }

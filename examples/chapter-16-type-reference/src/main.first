@@ -1,0 +1,91 @@
+// Chapter 16: Type reference — primitives, arrays, records, ADTs, type-level (Functor)
+// Run: fir run
+import * "Prelude"
+
+// -----------------------------------------------------------------------------
+// 1. Type alias and record type
+// -----------------------------------------------------------------------------
+type Point = { x: Float, y: Float };
+
+function pointToString(p: Point) -> String {
+  return "(" + floatToString(p.x) + ", " + floatToString(p.y) + ")";
+}
+
+// -----------------------------------------------------------------------------
+// 2. Generic ADT with two type parameters (both inferred from constructor args)
+// -----------------------------------------------------------------------------
+type Pair<A, B> = Pair(A, B);
+
+function swap<A, B>(p: Pair<A, B>) -> Pair<B, A> {
+  return match p {
+    Pair(a, b) => Pair(b, a)
+  };
+}
+
+// -----------------------------------------------------------------------------
+// 3. ADT: simple expression tree (multiple constructors)
+// -----------------------------------------------------------------------------
+type Expr = Lit(Int) | Add(Expr, Expr);
+
+function evalExpr(e: Expr) -> Int {
+  return match e {
+    Lit(n) => n,
+    Add(a, b) => evalExpr(a) + evalExpr(b)
+  };
+}
+
+// -----------------------------------------------------------------------------
+// 4. Higher-kinded type: Functor<F<_>> and implementation for Option
+// -----------------------------------------------------------------------------
+interface Functor<F<_>> {
+  map: forall A B. function(F<A>, function(A) -> B) -> F<B>;
+}
+
+function optionMap<A, B>(opt: Option<A>, f: function(A) -> B) -> Option<B> {
+  return match opt {
+    None => none(),
+    Some(x) => some(f(x))
+  };
+}
+
+implementation Functor<Option> {
+  map = optionMap;
+}
+
+// -----------------------------------------------------------------------------
+// main: demonstrate primitives, Array, records, Option, Result, Expr, Functor
+// -----------------------------------------------------------------------------
+interaction main() -> Unit {
+  // Primitives
+  let n: Int = 42;
+  let x: Float = 3.14;
+  let ok: Bool = true;
+  let s: String = "types";
+
+  // Array<Int>
+  let xs: Array<Int> = [1, 2, 3];
+
+  // Record (Point)
+  let p: Point = { x: 1.0, y: 2.0 };
+  println("Point: " + pointToString(p));
+
+  // Option<Int> (ADT from Prelude)
+  let o: Option<Int> = some(42);
+  let dbl = function(k: Int) -> Int { return k * 2; };
+  let mapped: Option<Int> = o.map(dbl);
+  match mapped {
+    Some(v) => println("Option: some(42).map(*2) = Some(" + intToString(v) + ")"),
+    None => println("Option: None")
+  };
+
+  // Pair<A, B> (generic ADT with 2 type parameters inferred from constructor args)
+  let pr: Pair<Int, String> = Pair(7, "seven");
+  let sw = swap(pr);
+  match sw {
+    Pair(a, b) => println("Pair swap: (" + a + ", " + intToString(b) + ")")
+  };
+
+  // Expr ADT
+  let e: Expr = Add(Lit(1), Add(Lit(2), Lit(3)));
+  println("Expr: 1+2+3 = " + intToString(evalExpr(e)));
+}

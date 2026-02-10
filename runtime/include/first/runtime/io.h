@@ -56,5 +56,8 @@ extern "C" void println(const char* s);
 // Refinement failure: report message to stderr and abort (C linkage for compiler-generated calls)
 extern "C" void __first_refinement_fail(const char* message);
 
+// Sleep for the given number of milliseconds (blocks current thread). Like JS setTimeout(0) / sleep.
+extern "C" void first_sleep(int64_t ms);
+
 } // namespace runtime
 } // namespace first

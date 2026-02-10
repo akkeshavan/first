@@ -1,0 +1,274 @@
+## Standard Library Functions (Runtime)
+
+This document lists the **built‑in stdlib functions** that are available **without importing any module**. These are implemented in the C++ runtime and wired directly by the compiler.
+
+Types used below:
+- **Int**: 64‑bit integer
+- **Float**: 64‑bit floating point
+- **Bool**: boolean
+- **String**: immutable UTF‑8 string
+- **Unit**: `()` (no meaningful value)
+- **Array<T>**: immutable array of `T`
+- **ArrayBuf**: mutable byte buffer (interaction‑only)
+
+> **Note**: Some operations are **restricted to interactions** (because they touch I/O, time, or mutable buffers). These are marked as **interaction‑only**.
+
+---
+
+## I/O and Files
+
+- **print(s: String) -> Unit**  
+  Prints `s` to stdout (no newline).
+
+- **println(s: String) -> Unit**  
+  Prints `s` to stdout followed by a newline.
+
+- **sleep(ms: Int) -> Unit** *(interaction‑only)*  
+  Blocks the **current thread** for `ms` milliseconds. Used to simulate latency or delay execution.
+
+- **readLine() -> String**  
+  Reads a single line from stdin (without the trailing newline).
+
+- **readFile(filename: String) -> String**  
+  Reads the entire contents of a text file into a `String`.  
+  On failure it currently reports an error via the runtime (no `Result` type yet at this layer).
+
+- **writeFile(filename: String, content: String) -> Unit**  
+  Writes `content` to `filename`, overwriting any existing file.
+
+---
+
+## Math (Float)
+
+All of these take and/or return **Float**:
+
+- **sin(x: Float) -> Float**
+- **cos(x: Float) -> Float**
+- **tan(x: Float) -> Float**
+- **sqrt(x: Float) -> Float**
+- **abs(x: Float) -> Float**
+- **floor(x: Float) -> Float**
+- **ceil(x: Float) -> Float**
+- **exp(x: Float) -> Float**
+- **log(x: Float) -> Float**  (natural log)
+- **log10(x: Float) -> Float**
+- **round(x: Float) -> Float**
+- **sign(x: Float) -> Float**  (`-1.0`, `0.0`, or `1.0`)
+
+Binary float functions:
+
+- **pow(base: Float, exp: Float) -> Float**
+- **min(x: Float, y: Float) -> Float**
+- **max(x: Float, y: Float) -> Float**
+
+Integer helpers:
+
+- **minInt(x: Int, y: Int) -> Int**
+- **maxInt(x: Int, y: Int) -> Int**
+
+Math constants:
+
+- **pi() -> Float**
+- **e() -> Float**
+
+---
+
+## Date / Time
+
+Dates are represented as an **opaque Int handle**. You should treat the `Int` as a token; only the functions below should operate on it.
+
+- **now() -> Int**  
+  Returns the current date‑time as an opaque handle.
+
+- **format(d: Int, fmt: String) -> String**  
+  Formats `d` using a C‑style format string (e.g. `"%Y-%m-%d %H:%M:%S"`).
+
+- **parse(s: String) -> Int**  
+  Parses a date string into an opaque handle (same representation as `now()`).
+
+- **getYear(d: Int) -> Int**  
+- **getMonth(d: Int) -> Int**
+- **getDay(d: Int) -> Int**
+- **getHours(d: Int) -> Int**
+- **getMinutes(d: Int) -> Int**
+- **getSeconds(d: Int) -> Int**
+
+- **addSeconds(d: Int, seconds: Int) -> Int**  
+  Returns a new date handle offset by `seconds`.
+
+---
+
+## Binary I/O and ArrayBuf
+
+`ArrayBuf` is a **mutable byte buffer**, only allowed inside **interactions**.
+
+- **arrayBufCreate(length: Int) -> ArrayBuf** *(interaction‑only)*  
+  Allocates a new buffer of `length` bytes.
+
+- **arrayBufLength(buf: ArrayBuf) -> Int**  
+  Returns the buffer length in bytes.
+
+- **arrayBufGet(buf: ArrayBuf, index: Int) -> Int**  
+  Reads the byte at `index` (0‑based) as an `Int` in range \[0, 255\].
+
+- **arrayBufSet(buf: ArrayBuf, index: Int, value: Int) -> Unit**  
+  Writes `value` (low 8 bits) into `buf[index]`.
+
+- **readFileBytes(filename: String) -> ArrayBuf** *(interaction‑only)*  
+  Reads an entire file as raw bytes into an `ArrayBuf`.
+
+- **writeFileBytes(filename: String, data: ArrayBuf) -> Unit**  
+  Writes the buffer contents to a file.
+
+- **base64Encode(buf: ArrayBuf) -> String**  
+  Returns a Base64 string for the given bytes.
+
+- **base64Decode(s: String) -> ArrayBuf** *(interaction‑only)*  
+  Decodes Base64 text into bytes.
+
+- **arrayBufToString(buf: ArrayBuf) -> String**  
+  Interprets the bytes as UTF‑8 and returns a `String`.
+
+---
+
+## String utilities and conversions
+
+- **stringLength(s: String) -> Int**
+- **stringConcat(s1: String, s2: String) -> String**
+- **stringSlice(s: String, start: Int, end: Int) -> String**
+
+Parsing:
+
+- **stringToInt(s: String) -> Int**
+- **stringToFloat(s: String) -> Float**
+
+Formatting / conversions:
+
+- **intToString(x: Int) -> String**
+- **floatToString(x: Float) -> String**
+- **boolToString(x: Bool) -> String**
+- **unitToString(x: Unit) -> String**
+
+Interface‑based:
+
+- **toString(x: T) -> String**  
+  Works when `T` implements the `ToString` interface. The compiler will resolve the correct implementation.
+
+---
+
+## String comparison and Regular Expressions
+
+Basic comparison:
+
+- **stringEquals(s1: String, s2: String) -> Bool**
+- **stringCompare(s1: String, s2: String) -> Int**  
+  Returns `< 0`, `0`, or `> 0` depending on lexicographic ordering.
+
+Regex functions (see `docs/STRING_COMPARISON_AND_REGEX.md` for details):
+
+- **regexMatches(str: String, pattern: String) -> Int**  
+  Returns `1` (match), `0` (no match), or `-1` (error).
+
+- **regexSearch(str: String, pattern: String) -> Int**  
+  Returns the first match index or `-1` if not found.
+
+- **regexReplace(str: String, pattern: String, replacement: String) -> String**
+
+- **regexReplaceAll(str: String, pattern: String, replacement: String) -> String**
+
+- **regexExtract(str: String, pattern: String, groupIndex: Int) -> String**  
+  Returns the given capture group or an empty string if no match.
+
+---
+
+## Arrays and numeric helpers
+
+These are available without importing any module and are backed by the runtime / compiler intrinsics.
+
+- **arrayLength(a: Array<T>) -> Int**  
+  Returns the number of elements.
+
+Int‑specific helpers:
+
+- **arrayReduceIntSum(a: Array<Int>) -> Int**  
+  Sums all elements.
+
+- **arrayMapIntDouble(a: Array<Int>) -> Array<Int>**  
+  Example intrinsic for mapping `Array<Int>`; used by the book/examples.
+
+- **arrayFilterIntPositive(a: Array<Int>) -> Array<Int>**  
+  Keeps only positive integers.
+
+Generic operation:
+
+- **insertAt<T>(a: Array<T>, value: T, position: Int) -> Option<Array<T>>**  
+  Returns a new array with `value` inserted at `position`, or `None` if the index is out of range.
+
+---
+
+## Networking: Sockets
+
+Low‑level TCP socket helpers:
+
+- **socketConnect(hostPort: String, timeoutMs: Int) -> Int**  
+  Opens a connection and returns a socket handle (Int) or a negative error code.
+
+- **socketSend(sock: Int, data: String) -> Int**  
+  Sends data, returns number of bytes written or an error code.
+
+- **socketRecv(sock: Int) -> String**  
+  Receives data from the socket as a `String`.
+
+- **socketClose(sock: Int) -> Unit**
+
+---
+
+## HTTP Client and Server
+
+HTTP client:
+
+- **httpGet(url: String) -> String**
+- **httpPost(url: String, body: String) -> String**
+
+- **httpRequest(method: String, url: String, headersJson: String, queryJson: String, paramsJson: String, body: String) -> Int**  
+  Lower‑level request helper returning an opaque handle/status code (internal details may evolve).
+
+HTTP server:
+
+- **httpServerCreate(host: String, port: Int) -> Int**  
+  Creates a server and returns a server handle.
+
+- **httpServerGet(server: Int, path: String, handlerId: Int) -> Unit**
+- **httpServerPost(server: Int, path: String, handlerId: Int) -> Unit**
+
+- **httpServerListen(server: Int) -> Unit**
+- **httpServerClose(server: Int) -> Unit**
+
+Request helpers (from within a handler):
+
+- **httpReqMethod(req: Int) -> String**
+- **httpReqPath(req: Int) -> String**
+- **httpReqParamsJson(req: Int) -> String**
+- **httpReqQueryJson(req: Int) -> String**
+- **httpReqHeadersJson(req: Int) -> String**
+- **httpReqBody(req: Int) -> String**
+
+Response helpers:
+
+- **httpResponseCreate(status: Int, headersJson: String, body: String) -> Int**
+- **httpRespStatus(resp: Int) -> Int**
+- **httpRespHeadersJson(resp: Int) -> String**
+- **httpRespBody(resp: Int) -> String**
+
+---
+
+## JSON helpers
+
+- **jsonPrettify(json: String) -> String**  
+  Formats JSON with indentation and newlines.
+
+- **jsonStringifyString(s: String) -> String**
+- **jsonStringifyInt(x: Int) -> String**
+- **jsonStringifyFloat(x: Float) -> String**  
+  JSON‑encodes the given primitive value as a JSON string.
+

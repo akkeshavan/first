@@ -1,0 +1,10 @@
+import * "Prelude"
+function f(o: Option<Option<Int> >) -> Int {
+  return match o {
+    Some(inner) => match inner {
+      Some(n) => n,
+      None => 0
+    },
+    None => 0
+  };
+}

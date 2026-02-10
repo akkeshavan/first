@@ -1,0 +1,7 @@
+import * "Prelude"
+function f(opt: Option<Int>) -> Int {
+  return match opt {
+    Some(x) => x,
+    None => "zero"
+  };
+}

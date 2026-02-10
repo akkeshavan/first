@@ -147,6 +147,10 @@ public:
     }
     bool hasInferredTypeArgs() const { return !inferredTypeArgs_.empty(); }
 
+    /** True when this call was produced by desugaring >>=, >>, <$>, <*> (parser sets this). */
+    bool isDesugaredMonadicOp() const { return isDesugaredMonadicOp_; }
+    void setDesugaredMonadicOp(bool b) { isDesugaredMonadicOp_ = b; }
+
     void accept(ASTVisitor& visitor) override {
         visitor.visitFunctionCallExpr(this);
     }
@@ -157,6 +161,7 @@ private:
     std::string name_;
     std::vector<std::unique_ptr<Expr>> args_;
     std::vector<std::unique_ptr<Type>> inferredTypeArgs_;
+    bool isDesugaredMonadicOp_ = false;
 };
 
 // Constructor call expression (for ADT constructors)
@@ -190,6 +195,9 @@ public:
     
     Expr* getMatchedExpr() const;
     const std::vector<std::unique_ptr<MatchCase>>& getCases() const;
+    // Set by type checker for IR: concrete scrutinee type (e.g. Option<Int>) so payload types can be resolved
+    Type* getScrutineeType() const { return scrutineeType_.get(); }
+    void setScrutineeType(std::unique_ptr<Type> t) { scrutineeType_ = std::move(t); }
     
     void accept(ASTVisitor& visitor) override {
         visitor.visitMatchExpr(this);
@@ -200,6 +208,7 @@ public:
 private:
     std::unique_ptr<Expr> matchedExpr_;
     std::vector<std::unique_ptr<MatchCase>> cases_;
+    std::unique_ptr<Type> scrutineeType_;
 };
 
 // Range expression: start..end (step 1) or start, second..end (step = second - first). Haskell-style.
@@ -343,6 +352,11 @@ public:
     }
     bool hasInferredTypeArgs() const { return !inferredTypeArgs_.empty(); }
 
+    /** Resolved implementation function name (e.g. "optionMap" for map on Option). Set by type checker; IR uses this for dispatch. */
+    const std::string& getImplFunctionName() const { return implFunctionName_; }
+    void setImplFunctionName(std::string name) { implFunctionName_ = std::move(name); }
+    bool hasImplFunctionName() const { return !implFunctionName_.empty(); }
+
     void accept(ASTVisitor& visitor) override {
         visitor.visitMethodCallExpr(this);
     }
@@ -354,6 +368,7 @@ private:
     std::string methodName_;
     std::vector<std::unique_ptr<Expr>> args_;
     std::vector<std::unique_ptr<Type>> inferredTypeArgs_;
+    std::string implFunctionName_;
 };
 
 // Lambda expression (closure): (params) => body or function(params) body

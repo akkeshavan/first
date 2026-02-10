@@ -1,0 +1,1 @@
+function f() -> Float { return 3.14; }

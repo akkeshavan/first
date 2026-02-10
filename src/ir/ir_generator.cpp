@@ -122,7 +122,33 @@ void IRGenerator::visitProgram(ast::Program* node) {
                 typeDeclParamsMap_[typeDecl->getTypeName()] = typeDecl->getTypeParams();
         }
     }
+    // Merge type decls from loaded modules (e.g. Prelude's Option) so pattern match and convertType work
+    if (moduleResolver_) {
+        for (const std::string& modName : moduleResolver_->getLoadedModuleNames()) {
+            ast::Program* mod = moduleResolver_->getModule(modName);
+            if (!mod) continue;
+            for (const auto& typeDecl : mod->getTypeDecls()) {
+                if (!typeDecl || !typeDecl->getType()) continue;
+                const std::string& name = typeDecl->getTypeName();
+                if (typeDeclsMap_.find(name) != typeDeclsMap_.end()) continue;
+                typeDeclsMap_[name] = typeDecl->getType();
+                if (typeDecl->isGeneric())
+                    typeDeclParamsMap_[name] = typeDecl->getTypeParams();
+            }
+        }
+    }
     buildConstructorIndexMap(node);
+    // Register ADT constructors from loaded modules' type decls (e.g. Option -> Some, None) so match works
+    if (moduleResolver_) {
+        for (const std::string& modName : moduleResolver_->getLoadedModuleNames()) {
+            ast::Program* mod = moduleResolver_->getModule(modName);
+            if (!mod) continue;
+            for (const auto& typeDecl : mod->getTypeDecls()) {
+                if (!typeDecl || !typeDecl->getType()) continue;
+                registerADTFromType(typeDecl->getType());
+            }
+        }
+    }
 
     // Set module name for this IR generation
     std::string moduleName = node->getModuleName();
@@ -550,8 +576,10 @@ void IRGenerator::visitMethodCallExpr(ast::MethodCallExpr* node) {
         }
         args.push_back(argVal);
     }
-    currentValue_ = evaluateCallWithValues(node->getMethodName(), args,
-        &node->getInferredTypeArgs(), nullptr, node->getLocation(), false);
+    // Use resolved implementation function (e.g. optionMap) when set by type checker
+    std::string funcName = node->hasImplFunctionName() ? node->getImplFunctionName() : node->getMethodName();
+    currentValue_ = evaluateCallWithValues(funcName, args,
+        &node->getInferredTypeArgs(), &node->getArgs(), node->getLocation(), false);
 }
 
 void IRGenerator::visitRangeExpr(ast::RangeExpr* node) {
@@ -587,23 +615,43 @@ void IRGenerator::visitLambdaExpr(ast::LambdaExpr* node) {
 }
 
 void IRGenerator::visitAsyncExpr(ast::AsyncExpr* node) {
-    // async expr: evaluate operand (stub: pass through; full impl would wrap in Promise)
-    currentValue_ = evaluateExpr(node->getOperand());
+    llvm::Function* thunk = createTaskThunk(node->getOperand());
+    if (thunk) {
+        llvm::Function* spawnFn = getOrCreateTaskSpawn();
+        llvm::Value* fnPtr = builder_->CreateBitCast(thunk, llvm::PointerType::get(context_, 0), "async.fnptr");
+        currentValue_ = builder_->CreateCall(spawnFn, {fnPtr}, "async.handle");
+    } else {
+        currentValue_ = evaluateExpr(node->getOperand());
+    }
 }
 
 void IRGenerator::visitAwaitExpr(ast::AwaitExpr* node) {
-    // await expr: evaluate operand (stub: pass through; full impl would unwrap Promise)
-    currentValue_ = evaluateExpr(node->getOperand());
+    llvm::Value* handle = evaluateExpr(node->getOperand());
+    if (!handle) return;
+    llvm::Function* joinFn = getOrCreateTaskJoin();
+    llvm::Value* raw = builder_->CreateCall(joinFn, {handle}, "await.raw");
+    llvm::Type* i64 = llvm::Type::getInt64Ty(context_);
+    currentValue_ = builder_->CreatePtrToInt(raw, i64, "await.result");
 }
 
 void IRGenerator::visitSpawnExpr(ast::SpawnExpr* node) {
-    // spawn expr: evaluate operand (stub: pass through; full impl would run in task)
-    currentValue_ = evaluateExpr(node->getOperand());
+    llvm::Function* thunk = createTaskThunk(node->getOperand());
+    if (thunk) {
+        llvm::Function* spawnFn = getOrCreateTaskSpawn();
+        llvm::Value* fnPtr = builder_->CreateBitCast(thunk, llvm::PointerType::get(context_, 0), "spawn.fnptr");
+        currentValue_ = builder_->CreateCall(spawnFn, {fnPtr}, "spawn.handle");
+    } else {
+        currentValue_ = evaluateExpr(node->getOperand());
+    }
 }
 
 void IRGenerator::visitJoinExpr(ast::JoinExpr* node) {
-    // join expr: evaluate operand (stub: pass through; full impl would wait for Task)
-    currentValue_ = evaluateExpr(node->getOperand());
+    llvm::Value* handle = evaluateExpr(node->getOperand());
+    if (!handle) return;
+    llvm::Function* joinFn = getOrCreateTaskJoin();
+    llvm::Value* raw = builder_->CreateCall(joinFn, {handle}, "join.raw");
+    llvm::Type* i64 = llvm::Type::getInt64Ty(context_);
+    currentValue_ = builder_->CreatePtrToInt(raw, i64, "join.result");
 }
 
 void IRGenerator::visitSelectExpr(ast::SelectExpr* node) {
@@ -697,11 +745,8 @@ llvm::Type* IRGenerator::convertType(ast::Type* type) {
                 }
             }
         }
-        errorReporter_.error(
-            type->getLocation(),
-            "Generic type parameter '" + genType->getName() + "' not substituted"
-        );
-        return nullptr;
+        // Unsubstituted generic (e.g. when generating external decl for some<T>, optionMap<A,B>): use opaque ptr
+        return llvm::PointerType::get(context_, 0);
     } else if (auto* paramType = dynamic_cast<ast::ParameterizedType*>(type)) {
         return convertParameterizedType(paramType);
     } else if (auto* refType = dynamic_cast<ast::RefinementType*>(type)) {
@@ -741,9 +786,21 @@ llvm::Type* IRGenerator::convertType(ast::Type* type) {
             return nullptr;
         }
         return createStructTypeSafe(context_, std::vector<llvm::Type*>{varTy, bodyTy});
+    } else if (auto* funcType = dynamic_cast<ast::FunctionType*>(type)) {
+        // function(A) -> B: function pointer (opaque ptr for simplicity; params/return may contain generics)
+        std::vector<llvm::Type*> paramTys;
+        for (const auto& p : funcType->getParamTypes()) {
+            if (!p) continue;
+            llvm::Type* pt = convertType(p.get());
+            if (!pt) return nullptr;
+            paramTys.push_back(pt);
+        }
+        llvm::Type* retTy = funcType->getReturnType() ? convertType(funcType->getReturnType()) : llvm::Type::getVoidTy(context_);
+        if (!retTy) return nullptr;
+        (void)llvm::FunctionType::get(retTy, paramTys, false);
+        return llvm::PointerType::get(context_, 0);
     }
     
-    // TODO: Handle other types (FunctionType, etc.)
     errorReporter_.error(
         type->getLocation(),
         "Unsupported type for IR generation"
@@ -767,6 +824,8 @@ llvm::Type* IRGenerator::convertPrimitiveType(ast::PrimitiveType* type) {
             return llvm::Type::getVoidTy(context_);
         case ast::PrimitiveType::Kind::Null:
             return llvm::PointerType::get(context_, 0);  // null is represented as null pointer
+        case ast::PrimitiveType::Kind::ArrayBuf:
+            return llvm::PointerType::get(context_, 0);  // pointer to [length][data] block
         default:
             return nullptr;
     }
@@ -864,12 +923,8 @@ llvm::Type* IRGenerator::convertParameterizedType(ast::ParameterizedType* type) 
         }
     }
     if (!allConcrete) {
-        errorReporter_.error(
-            type->getLocation(),
-            "Cannot instantiate parameterized type '" + baseName +
-            "' with generic type parameters - type arguments must be concrete"
-        );
-        return nullptr;
+        // Generic args (e.g. Option<B>): use opaque pointer so external decls and calls work; layout is same as concrete Option<T>
+        return llvm::PointerType::get(context_, 0);
     }
     // Use ptr to match constructor convention (struct built in alloca, returned as ptr)
     return llvm::PointerType::get(context_, 0);
@@ -945,6 +1000,91 @@ llvm::Function* IRGenerator::getOrCreateFirstAlloc() {
         llvm::Function::ExternalLinkage,
         "first_alloc",
         module_.get());
+}
+
+llvm::Function* IRGenerator::getOrCreateTaskSpawn() {
+    llvm::Function* f = module_->getFunction("first_task_spawn");
+    if (f) return f;
+    llvm::Type* i8ptr = llvm::PointerType::get(context_, 0);
+    return llvm::Function::Create(
+        llvm::FunctionType::get(i8ptr, {i8ptr}, false),
+        llvm::Function::ExternalLinkage,
+        "first_task_spawn",
+        module_.get());
+}
+
+llvm::Function* IRGenerator::getOrCreateTaskJoin() {
+    llvm::Function* f = module_->getFunction("first_task_join");
+    if (f) return f;
+    llvm::Type* i8ptr = llvm::PointerType::get(context_, 0);
+    return llvm::Function::Create(
+        llvm::FunctionType::get(i8ptr, {i8ptr}, false),
+        llvm::Function::ExternalLinkage,
+        "first_task_join",
+        module_.get());
+}
+
+llvm::Function* IRGenerator::createTaskThunk(ast::Expr* operand) {
+    ast::FunctionCallExpr* call = dynamic_cast<ast::FunctionCallExpr*>(operand);
+    if (!call || !call->getArgs().empty()) {
+        return nullptr;
+    }
+    const std::string& name = call->getName();
+    llvm::Function* callee = module_->getFunction(name);
+    if (!callee || callee->isDeclaration()) {
+        return nullptr;
+    }
+    ast::Type* returnAstType = nullptr;
+    if (currentProgram_) {
+        for (const auto& in : currentProgram_->getInteractions()) {
+            if (in && in->getName() == name) {
+                returnAstType = in->getReturnType();
+                break;
+            }
+        }
+        if (!returnAstType) {
+            for (const auto& fn : currentProgram_->getFunctions()) {
+                if (fn && fn->getName() == name) {
+                    returnAstType = fn->getReturnType();
+                    break;
+                }
+            }
+        }
+    }
+    if (!returnAstType) {
+        return nullptr;
+    }
+    llvm::Type* retLlvm = convertType(returnAstType);
+    if (!retLlvm) {
+        return nullptr;
+    }
+    llvm::Type* i8ptr = llvm::PointerType::get(context_, 0);
+    llvm::FunctionType* thunkType = llvm::FunctionType::get(i8ptr, {}, false);
+    std::string thunkName = "__first_spawn_thunk_" + std::to_string(spawnThunkCounter_++);
+    llvm::Function* thunk = llvm::Function::Create(
+        thunkType,
+        llvm::Function::PrivateLinkage,
+        thunkName,
+        module_.get());
+    llvm::BasicBlock* savedBlock = builder_->GetInsertBlock();
+    llvm::BasicBlock* entry = llvm::BasicBlock::Create(context_, "entry", thunk);
+    builder_->SetInsertPoint(entry);
+    llvm::Value* callResult = builder_->CreateCall(callee, {}, "thunk.call");
+    llvm::Value* asPtr = nullptr;
+    if (retLlvm->isIntegerTy(64)) {
+        asPtr = builder_->CreateIntToPtr(callResult, i8ptr, "thunk.asptr");
+    } else if (retLlvm->isVoidTy()) {
+        asPtr = llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(i8ptr));
+    } else if (retLlvm->isPointerTy()) {
+        asPtr = builder_->CreateBitCast(callResult, i8ptr, "thunk.asptr");
+    } else {
+        thunk->eraseFromParent();
+        builder_->SetInsertPoint(savedBlock);
+        return nullptr;
+    }
+    builder_->CreateRet(asPtr);
+    builder_->SetInsertPoint(savedBlock);
+    return thunk;
 }
 
 void IRGenerator::emitRefinementChecksForParams(const std::vector<ast::Parameter*>& params, llvm::Function* func, llvm::BasicBlock* entryBlock) {
@@ -1592,6 +1732,7 @@ llvm::Value* IRGenerator::evaluateCallWithValues(const std::string& funcName,
                     case ast::PrimitiveType::Kind::Bool:  name = "boolToString"; break;
                     case ast::PrimitiveType::Kind::String: return args[0];  // identity
                     case ast::PrimitiveType::Kind::Unit:  name = "unitToString"; break;
+                    case ast::PrimitiveType::Kind::ArrayBuf: name = "arrayBufToString"; break;
                     default: break;
                 }
             } else if (auto* gen = dynamic_cast<ast::GenericType*>(argType)) {
@@ -1616,6 +1757,54 @@ llvm::Value* IRGenerator::evaluateCallWithValues(const std::string& funcName,
         }
     }
 
+    // Call via closure when the name is a local variable (e.g. parameter f in optionMap body)
+    llvm::AllocaInst* calleeAlloca = getVariable(name);
+    if (calleeAlloca && calleeAlloca->getAllocatedType()->isPointerTy()) {
+        llvm::Value* closure = builder_->CreateLoad(calleeAlloca->getAllocatedType(), calleeAlloca, name + ".load");
+        // Determine the closure's return type from the AST type of the variable.
+        // Previously this was hard-coded to i64, which breaks when calling closures
+        // that return non-i64 values (e.g. Option<T> represented as ptr).
+        llvm::Type* retTy = nullptr;
+        auto getVarAstType = [&](const std::string& var) -> ast::Type* {
+            if (currentFunctionDecl_) {
+                for (const auto& p : currentFunctionDecl_->getParameters()) {
+                    if (p && p->getName() == var) return p->getType();
+                }
+            }
+            if (currentInteractionDecl_) {
+                for (const auto& p : currentInteractionDecl_->getParameters()) {
+                    if (p && p->getName() == var) return p->getType();
+                }
+            }
+            return nullptr;
+        };
+        ast::Type* varAstType = getVarAstType(name);
+        std::unique_ptr<ast::Type> varAstTypeSubstituted;
+        if (varAstType) {
+            if (currentTypeSubst_) {
+                varAstTypeSubstituted = substituteType(varAstType, *currentTypeSubst_);
+                if (varAstTypeSubstituted) varAstType = varAstTypeSubstituted.get();
+            }
+            if (auto* fty = dynamic_cast<ast::FunctionType*>(varAstType)) {
+                if (fty->getReturnType()) {
+                    retTy = convertType(fty->getReturnType());
+                } else {
+                    retTy = llvm::Type::getVoidTy(context_);
+                }
+            }
+        }
+        if (!retTy) {
+            // Fallback: i64 is the most common scalar; better than emitting invalid IR.
+            retTy = llvm::Type::getInt64Ty(context_);
+        }
+        llvm::Value* result = invokeClosure(closure, args, retTy);
+        if (!result && retTy->isVoidTy()) {
+            // Expression position expects a value; use i64 0 for Unit/void.
+            return llvm::ConstantInt::get(context_, llvm::APInt(64, 0, true));
+        }
+        return result;
+    }
+
     // Look up function in module
     llvm::Function* func = module_->getFunction(name);
 
@@ -1631,6 +1820,13 @@ llvm::Value* IRGenerator::evaluateCallWithValues(const std::string& funcName,
                 if (astFunc && !astFunc->isSignature())
                     break;
             }
+        }
+    }
+    // Imported generic (e.g. optionMap, some from Prelude): resolve from loaded modules to monomorphize
+    if (!astFunc && moduleResolver_) {
+        for (const std::string& modName : moduleResolver_->getLoadedModuleNames()) {
+            astFunc = moduleResolver_->getFunction(modName, name);
+            if (astFunc) break;
         }
     }
     if (astFunc && !astFunc->getGenericParams().empty()) {
@@ -1657,6 +1853,21 @@ llvm::Value* IRGenerator::evaluateCallWithValues(const std::string& funcName,
                     auto it = currentTypeSubst_->find(gp.name);
                     if (it == currentTypeSubst_->end() || !it->second) break;
                     typeArgs.push_back(it->second);
+                }
+                // In monomorphized body, infer type for no-arg generics (e.g. none()) from current function return type
+                if (typeArgs.empty() && astFunc->getGenericParams().size() == 1 && currentFunctionDecl_ &&
+                    currentFunctionDecl_->getReturnType()) {
+                    std::unique_ptr<ast::Type> subRet = substituteType(currentFunctionDecl_->getReturnType(), *currentTypeSubst_);
+                    if (subRet) {
+                        if (auto* p = dynamic_cast<ast::ParameterizedType*>(subRet.get()))
+                            if (p->getTypeArgs().size() == 1 && p->getTypeArgs()[0]) {
+                                std::unique_ptr<ast::Type> elemCopy = copyType(p->getTypeArgs()[0].get());
+                                if (elemCopy) {
+                                    typeArgsStorage.push_back(std::move(elemCopy));
+                                    typeArgs.push_back(typeArgsStorage.back().get());
+                                }
+                            }
+                    }
                 }
             } else if (argExprs && argExprs->size() == astFunc->getParameters().size()) {
                 auto getDeclBody = [this]() -> const std::vector<std::unique_ptr<ast::Stmt>>* {
@@ -1732,18 +1943,45 @@ llvm::Value* IRGenerator::evaluateCallWithValues(const std::string& funcName,
     auto getStdlibSig = [&](const std::string& n) -> std::pair<std::string, llvm::FunctionType*> {
         if (n == "print" || n == "println")
             return {n, llvm::FunctionType::get(voidTy, {i8ptr}, false)};
+        if (n == "sleep")
+            return {"first_sleep", llvm::FunctionType::get(voidTy, {i64}, false)};
         if (n == "readLine")
             return {"readLine", llvm::FunctionType::get(i8ptr, false)};
         if (n == "readFile")
             return {"readFile", llvm::FunctionType::get(i8ptr, {i8ptr}, false)};
         if (n == "writeFile")
             return {"writeFile", llvm::FunctionType::get(voidTy, {i8ptr, i8ptr}, false)};
-        if (n == "sin" || n == "cos" || n == "sqrt" || n == "abs" || n == "floor" || n == "ceil")
+        if (n == "sin" || n == "cos" || n == "sqrt" || n == "abs" || n == "floor" || n == "ceil" || n == "tan" || n == "exp" || n == "log" || n == "log10" || n == "round" || n == "sign")
             return {"first_" + n, llvm::FunctionType::get(f64, {f64}, false)};
+        if (n == "pow")
+            return {"first_pow", llvm::FunctionType::get(f64, {f64, f64}, false)};
         if (n == "min" || n == "max")
             return {"first_" + n, llvm::FunctionType::get(f64, {f64, f64}, false)};
-        if (n == "minInt" || n == "maxInt")
-            return {"first_" + n, llvm::FunctionType::get(i64, {i64, i64}, false)};
+        if (n == "minInt") return {"first_min_int", llvm::FunctionType::get(i64, {i64, i64}, false)};
+        if (n == "maxInt") return {"first_max_int", llvm::FunctionType::get(i64, {i64, i64}, false)};
+        if (n == "pi" || n == "e")
+            return {"first_" + n, llvm::FunctionType::get(f64, false)};
+        // Date (opaque Int handle)
+        if (n == "now") return {"first_date_now", llvm::FunctionType::get(i64, false)};
+        if (n == "format") return {"first_date_format", llvm::FunctionType::get(i8ptr, {i64, i8ptr}, false)};
+        if (n == "parse") return {"first_date_parse", llvm::FunctionType::get(i64, {i8ptr}, false)};
+        if (n == "getYear") return {"first_date_get_year", llvm::FunctionType::get(i64, {i64}, false)};
+        if (n == "getMonth") return {"first_date_get_month", llvm::FunctionType::get(i64, {i64}, false)};
+        if (n == "getDay") return {"first_date_get_day", llvm::FunctionType::get(i64, {i64}, false)};
+        if (n == "getHours") return {"first_date_get_hours", llvm::FunctionType::get(i64, {i64}, false)};
+        if (n == "getMinutes") return {"first_date_get_minutes", llvm::FunctionType::get(i64, {i64}, false)};
+        if (n == "getSeconds") return {"first_date_get_seconds", llvm::FunctionType::get(i64, {i64}, false)};
+        if (n == "addSeconds") return {"first_date_add_seconds", llvm::FunctionType::get(i64, {i64, i64}, false)};
+        // ArrayBuf and binary I/O
+        if (n == "arrayBufCreate") return {"first_arraybuf_alloc", llvm::FunctionType::get(i8ptr, {i64}, false)};
+        if (n == "arrayBufLength") return {"first_arraybuf_length", llvm::FunctionType::get(i64, {i8ptr}, false)};
+        if (n == "arrayBufGet") return {"first_arraybuf_get", llvm::FunctionType::get(i64, {i8ptr, i64}, false)};
+        if (n == "arrayBufSet") return {"first_arraybuf_set", llvm::FunctionType::get(voidTy, {i8ptr, i64, i64}, false)};
+        if (n == "readFileBytes") return {"first_read_file_bytes", llvm::FunctionType::get(i8ptr, {i8ptr}, false)};
+        if (n == "writeFileBytes") return {"first_write_file_bytes", llvm::FunctionType::get(voidTy, {i8ptr, i8ptr}, false)};
+        if (n == "base64Encode") return {"first_base64_encode", llvm::FunctionType::get(i8ptr, {i8ptr}, false)};
+        if (n == "base64Decode") return {"first_base64_decode", llvm::FunctionType::get(i8ptr, {i8ptr}, false)};
+        if (n == "arrayBufToString") return {"first_arraybuf_to_string", llvm::FunctionType::get(i8ptr, {i8ptr}, false)};
         if (n == "stringLength") return {"first_string_length", llvm::FunctionType::get(i64, {i8ptr}, false)};
         if (n == "stringConcat") return {"first_string_concat", llvm::FunctionType::get(i8ptr, {i8ptr, i8ptr}, false)};
         if (n == "stringSlice") return {"first_string_slice", llvm::FunctionType::get(i8ptr, {i8ptr, i64, i64}, false)};
@@ -1882,6 +2120,11 @@ llvm::Value* IRGenerator::evaluateFunctionCall(ast::FunctionCallExpr* expr, bool
             args[0] = llvm::ConstantInt::get(context_, llvm::APInt(64, static_cast<uint64_t>(literalVal), true));
         }
     }
+
+    // Option helpers: desugar some(x)/none() to real constructors Some(x)/None
+    // so we don't depend on linking Prelude, and we use the ADT constructor layout.
+    if (funcName == "none" && args.empty()) funcName = "None";
+    if (funcName == "some" && args.size() == 1) funcName = "Some";
 
     // Constructor call (sum type): Name(arg1, ...) -> build tagged union (single heap block, inline payload)
     auto [adtAstType, tagIndex] = getConstructorIndex(funcName);
@@ -2459,6 +2702,7 @@ llvm::Value* IRGenerator::evaluateFunctionCall(ast::FunctionCallExpr* expr, bool
                     case ast::PrimitiveType::Kind::Bool:  funcName = "boolToString"; break;
                     case ast::PrimitiveType::Kind::String: return args[0];  // identity
                     case ast::PrimitiveType::Kind::Unit:  funcName = "unitToString"; break;
+                    case ast::PrimitiveType::Kind::ArrayBuf: funcName = "arrayBufToString"; break;
                     default: break;
                 }
             } else if (auto* gen = dynamic_cast<ast::GenericType*>(argType)) {
@@ -3100,6 +3344,13 @@ llvm::Value* IRGenerator::evaluateMatch(ast::MatchExpr* expr) {
     if (!matchedValue) {
         return nullptr;
     }
+    // Use concrete scrutinee type when in monomorphized body (e.g. Option<Int> not Option<A>)
+    ast::Type* scrutineeType = expr->getScrutineeType();
+    std::unique_ptr<ast::Type> scrutineeSubstituted;
+    if (currentTypeSubst_ && scrutineeType) {
+        scrutineeSubstituted = substituteType(scrutineeType, *currentTypeSubst_);
+        if (scrutineeSubstituted) scrutineeType = scrutineeSubstituted.get();
+    }
     // ADT parameters may be passed by value (struct); constructor pattern matching
     // expects a pointer (to load tag and payload). Store in an alloca if needed.
     if (!matchedValue->getType()->isPointerTy() && matchedValue->getType()->isStructTy()) {
@@ -3197,7 +3448,7 @@ llvm::Value* IRGenerator::evaluateMatch(ast::MatchExpr* expr) {
         builder_->SetInsertPoint(matchBlocks[i]);
         
         // Bind pattern variables (for variable patterns, constructor patterns, etc.)
-        bindPatternVariables(cases[i]->getPattern(), matchedValue);
+        bindPatternVariables(cases[i]->getPattern(), matchedValue, scrutineeType);
         
         // Check guard condition if present
         llvm::BasicBlock* bodyBB = matchBlocks[i];
@@ -3249,6 +3500,9 @@ llvm::Value* IRGenerator::evaluateMatch(ast::MatchExpr* expr) {
     }
     if (hasI64 && hasNullPtr)
         resultType = llvm::Type::getInt64Ty(context_);
+    // LLVM PHI cannot have void type; use i64 0 for Unit/void match results
+    if (resultType->isVoidTy())
+        resultType = llvm::Type::getInt64Ty(context_);
 
     // Default case: no pattern matched
     builder_->SetInsertPoint(defaultBB);
@@ -3274,9 +3528,10 @@ llvm::Value* IRGenerator::evaluateMatch(ast::MatchExpr* expr) {
     builder_->CreateBr(mergeBB);
     
     // Merge block: PHI node selects result
-    // Normalize so all incomings match resultType: ptr (e.g. Unit) or null -> i64 0 when result is i64
+    // Normalize so all incomings match resultType: void/ptr (e.g. Unit) -> i64 0 when result is i64
     auto normalizeForPhi = [&](llvm::Value* val) -> llvm::Value* {
         if (!val) return llvm::ConstantInt::get(context_, llvm::APInt(64, 0, true));
+        if (val->getType()->isVoidTy()) return llvm::ConstantInt::get(context_, llvm::APInt(64, 0, true));
         if (resultType->isIntegerTy(64) && val->getType()->isPointerTy())
             return llvm::ConstantInt::get(context_, llvm::APInt(64, 0, true));
         if (resultType->isIntegerTy(64) && val->getType() != resultType)
@@ -3290,7 +3545,7 @@ llvm::Value* IRGenerator::evaluateMatch(ast::MatchExpr* expr) {
     // Add incoming values from result blocks (match blocks or guard pass blocks)
     for (size_t i = 0; i < resultBlocks.size(); ++i) {
         llvm::Value* val = caseResults[i];
-        if (!val || (val->getType() != resultType)) val = normalizeForPhi(caseResults[i]);
+        if (!val || val->getType()->isVoidTy() || (val->getType() != resultType)) val = normalizeForPhi(caseResults[i]);
         phi->addIncoming(val, resultBlocks[i]);
     }
     // Add default result
@@ -3392,6 +3647,29 @@ bool IRGenerator::generatePatternMatch(ast::Pattern* pattern, llvm::Value* value
     
     // Dispatch based on pattern type
     if (auto* varPattern = dynamic_cast<ast::VariablePattern*>(pattern)) {
+        // "None" and similar are parsed as VariablePattern; if the name is a known constructor, match on tag
+        const std::string& name = varPattern->getName();
+        auto cit = constructorIndexMap_.find(name);
+        if (cit != constructorIndexMap_.end() && value->getType()->isPointerTy()) {
+            auto [adtAstType, tagIndex] = cit->second;
+            (void)adtAstType;
+            llvm::Type* tagType = llvm::Type::getInt64Ty(context_);
+            llvm::Value* adtPtr = builder_->CreateBitCast(value, llvm::PointerType::get(context_, 0), "adtptr");
+            llvm::Value* isNull = builder_->CreateICmpEQ(
+                adtPtr,
+                llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(adtPtr->getType())),
+                "adt.isnull");
+            llvm::BasicBlock* tagCheckBB = llvm::BasicBlock::Create(context_, "tagcheck", currentFunction_);
+            builder_->CreateCondBr(isNull, matchBB, tagCheckBB);
+            builder_->SetInsertPoint(tagCheckBB);
+            std::vector<llvm::Type*> structFields = {tagType, llvm::PointerType::get(context_, 0)};
+            llvm::StructType* adtType = createStructTypeSafe(context_, structFields);
+            llvm::Value* tagPtr = builder_->CreateStructGEP(adtType, adtPtr, 0, "tagptr");
+            llvm::Value* tag = builder_->CreateAlignedLoad(tagType, tagPtr, llvm::Align(8), "tag");
+            llvm::Value* tagMatch = builder_->CreateICmpEQ(tag, llvm::ConstantInt::get(context_, llvm::APInt(64, tagIndex)), "tagcmp");
+            builder_->CreateCondBr(tagMatch, matchBB, nextBB);
+            return true;
+        }
         // Variable pattern always matches - bind the variable
         builder_->CreateBr(matchBB);
         return true;
@@ -3578,7 +3856,7 @@ bool IRGenerator::generatePatternMatch(ast::Pattern* pattern, llvm::Value* value
 
         // Load tag only when value is non-null
         llvm::Value* tagPtr = builder_->CreateStructGEP(adtType, adtPtr, 0, "tagptr");
-        llvm::Value* tag = builder_->CreateLoad(tagType, tagPtr, "tag");
+        llvm::Value* tag = builder_->CreateAlignedLoad(tagType, tagPtr, llvm::Align(8), "tag");
         llvm::Value* tagMatch = builder_->CreateICmpEQ(tag, expectedTag, "tagcmp");
         builder_->CreateCondBr(tagMatch, matchBB, nextBB);
         return true;
@@ -3599,7 +3877,7 @@ bool IRGenerator::generatePatternMatch(ast::Pattern* pattern, llvm::Value* value
     return false;
 }
 
-void IRGenerator::bindPatternVariables(ast::Pattern* pattern, llvm::Value* value) {
+void IRGenerator::bindPatternVariables(ast::Pattern* pattern, llvm::Value* value, ast::Type* scrutineeType) {
     if (!pattern || !value) {
         return;
     }
@@ -3694,12 +3972,41 @@ void IRGenerator::bindPatternVariables(ast::Pattern* pattern, llvm::Value* value
                 }
             }
         }
+        // Build substitution from scrutinee type (e.g. Option<Int> -> T=Int) for payload types
+        std::map<std::string, ast::Type*> scrutineeSubst;
+        ast::Type* effectiveScrutinee = scrutineeType;
+        std::unique_ptr<ast::Type> paramScrutineeSubst;
+        if (!effectiveScrutinee && currentTypeSubst_ && currentFunctionDecl_ &&
+            !currentFunctionDecl_->getParameters().empty() && currentFunctionDecl_->getParameters()[0]->getType()) {
+            paramScrutineeSubst = substituteType(currentFunctionDecl_->getParameters()[0]->getType(), *currentTypeSubst_);
+            if (paramScrutineeSubst) effectiveScrutinee = paramScrutineeSubst.get();
+        }
+        if (effectiveScrutinee) {
+            if (auto* param = dynamic_cast<ast::ParameterizedType*>(effectiveScrutinee)) {
+                auto it = typeDeclParamsMap_.find(param->getBaseName());
+                if (it != typeDeclParamsMap_.end() && it->second.size() == param->getTypeArgs().size()) {
+                    for (size_t k = 0; k < it->second.size(); ++k)
+                        if (param->getTypeArgs()[k])
+                            scrutineeSubst[it->second[k]] = param->getTypeArgs()[k].get();
+                }
+            }
+        }
+        auto resolveArgType = [this, &scrutineeSubst](ast::Type* argType) -> ast::Type* {
+            if (auto* gen = dynamic_cast<ast::GenericType*>(argType)) {
+                auto it = scrutineeSubst.find(gen->getName());
+                if (it != scrutineeSubst.end()) return it->second;
+                auto typeIt = typeDeclsMap_.find(gen->getName());
+                if (typeIt != typeDeclsMap_.end() && typeIt->second) return typeIt->second;
+            }
+            return argType;
+        };
         // ADT layout: single block { tag, payload_struct } (inline payload)
         std::vector<llvm::Type*> fieldTypes;
         if (constructor && constructor->getArgumentTypes().size() == argPatterns.size()) {
             const auto& argTypes = constructor->getArgumentTypes();
             for (size_t j = 0; j < argPatterns.size(); ++j) {
-                llvm::Type* ft = convertType(argTypes[j].get());
+                ast::Type* resolved = resolveArgType(argTypes[j].get());
+                llvm::Type* ft = convertType(resolved);
                 fieldTypes.push_back(ft ? ft : ptrTy);
             }
         } else {
@@ -3783,13 +4090,7 @@ void IRGenerator::bindPatternVariables(ast::Pattern* pattern, llvm::Value* value
         return;
         }
         if (argPatterns.size() == 1) {
-            ast::Type* argType = argTypes[0].get();
-            if (auto* gen = dynamic_cast<ast::GenericType*>(argType)) {
-                auto it = typeDeclsMap_.find(gen->getName());
-                if (it != typeDeclsMap_.end() && it->second) {
-                    argType = it->second;
-                }
-            }
+            ast::Type* argType = resolveArgType(argTypes[0].get());
             llvm::Value* valueForBinding = payloadPtr;
             if (auto* recType = dynamic_cast<ast::RecordType*>(argType)) {
                 // Payload is a pointer to wrapper struct { recordPtr }; load the record pointer.
@@ -3816,7 +4117,7 @@ void IRGenerator::bindPatternVariables(ast::Pattern* pattern, llvm::Value* value
                     llvm::StructType* singleFieldTy = createStructTypeSafe(context_, std::vector<llvm::Type*>{scalarTy});
                     llvm::Value* structPtr = builder_->CreateBitCast(payloadPtr, llvm::PointerType::get(context_, 0), "scalarstructptr");
                     llvm::Value* fieldPtr = builder_->CreateStructGEP(singleFieldTy, structPtr, 0, "scalarfieldptr");
-                    valueForBinding = builder_->CreateLoad(scalarTy, fieldPtr, "scalarval");
+                    valueForBinding = builder_->CreateAlignedLoad(scalarTy, fieldPtr, llvm::Align(8), "scalarval");
                 }
             }
             bindPatternVariables(argPatterns[0].get(), valueForBinding);
@@ -4092,6 +4393,10 @@ llvm::Value* IRGenerator::allocateClosure(llvm::Function* func,
         // Store environment pointer in closure
         llvm::Value* envPtrPtr = builder_->CreateStructGEP(closureType, closureAlloca, 1, "envptrptr");
         builder_->CreateStore(envAlloca, envPtrPtr);
+    } else {
+        // No captures: store null so invokeClosure uses noenv path and calls with (args...) only
+        llvm::Value* envPtrPtr = builder_->CreateStructGEP(closureType, closureAlloca, 1, "envptrptr");
+        builder_->CreateStore(llvm::ConstantPointerNull::get(llvm::PointerType::get(context_, 0)), envPtrPtr);
     }
     
     // Return closure pointer (as i8* for compatibility)
@@ -4482,6 +4787,7 @@ void IRGenerator::generateForInStmt(ast::ForInStmt* stmt) {
     if (!stmt || !currentFunction_) return;
 
     llvm::Type* i64 = llvm::Type::getInt64Ty(context_);
+    llvm::Type* i8ptr = llvm::PointerType::get(context_, 0);
     const std::string& varName = stmt->getVariableName();
     ast::Expr* iterable = stmt->getIterable();
 
@@ -4553,6 +4859,51 @@ void IRGenerator::generateForInStmt(ast::ForInStmt* stmt) {
         builder_->CreateStore(iNext, iAlloca);
         builder_->CreateBr(condBB);
 
+        builder_->SetInsertPoint(exitBB);
+        return;
+    }
+
+    // Case 1b: ArrayBuf - iterate over bytes (0..length-1), element type Int
+    if (stmt->getIterableKind() == ast::IterableKind::ArrayBuf) {
+        llvm::Value* bufVal = evaluateExpr(iterable);
+        if (!bufVal) {
+            errorReporter_.error(stmt->getLocation(), "Failed to evaluate ArrayBuf iterable");
+            return;
+        }
+        if (bufVal->getType() != i8ptr)
+            bufVal = builder_->CreatePointerCast(bufVal, i8ptr, "buf.ptr");
+        llvm::Function* lenFn = module_->getFunction("first_arraybuf_length");
+        if (!lenFn)
+            lenFn = llvm::Function::Create(
+                llvm::FunctionType::get(i64, {i8ptr}, false),
+                llvm::Function::ExternalLinkage, "first_arraybuf_length", module_.get());
+        llvm::Function* getFn = module_->getFunction("first_arraybuf_get");
+        if (!getFn)
+            getFn = llvm::Function::Create(
+                llvm::FunctionType::get(i64, {i8ptr, i64}, false),
+                llvm::Function::ExternalLinkage, "first_arraybuf_get", module_.get());
+        llvm::Value* len = builder_->CreateCall(lenFn, {bufVal}, "buf.len");
+        llvm::AllocaInst* idxAlloca = builder_->CreateAlloca(i64, nullptr, "for.idx");
+        builder_->CreateStore(builder_->getInt64(0), idxAlloca);
+        llvm::BasicBlock* condBB = llvm::BasicBlock::Create(context_, "for.cond", currentFunction_);
+        llvm::BasicBlock* bodyBB = llvm::BasicBlock::Create(context_, "for.body", currentFunction_);
+        llvm::BasicBlock* exitBB = llvm::BasicBlock::Create(context_, "for.exit", currentFunction_);
+        builder_->CreateBr(condBB);
+        builder_->SetInsertPoint(condBB);
+        llvm::Value* idx = builder_->CreateLoad(i64, idxAlloca, "idx");
+        llvm::Value* cmp = builder_->CreateICmpSLT(idx, len, "for.cmp");
+        builder_->CreateCondBr(cmp, bodyBB, exitBB);
+        builder_->SetInsertPoint(bodyBB);
+        llvm::Value* byteVal = builder_->CreateCall(getFn, {bufVal, idx}, "byte");
+        llvm::AllocaInst* elemAlloca = builder_->CreateAlloca(i64, nullptr, varName);
+        builder_->CreateStore(byteVal, elemAlloca);
+        setVariable(varName, elemAlloca, i64);
+        for (const auto& s : stmt->getBody()) {
+            generateStatement(s.get());
+        }
+        llvm::Value* idxNext = builder_->CreateAdd(idx, builder_->getInt64(1), "idx.next");
+        builder_->CreateStore(idxNext, idxAlloca);
+        builder_->CreateBr(condBB);
         builder_->SetInsertPoint(exitBB);
         return;
     }
@@ -4811,6 +5162,7 @@ std::string IRGenerator::getMonomorphizedName(const std::string& baseName,
                     case ast::PrimitiveType::Kind::String: name += "String"; break;
                     case ast::PrimitiveType::Kind::Unit: name += "Unit"; break;
                     case ast::PrimitiveType::Kind::Null: name += "Null"; break;
+                    case ast::PrimitiveType::Kind::ArrayBuf: name += "ArrayBuf"; break;
                 }
             } else if (auto* arr = dynamic_cast<ast::ArrayType*>(typeArgs[i])) {
                 name += "Array";
@@ -5065,13 +5417,12 @@ void IRGenerator::visitImportDecl(ast::ImportDecl* node) {
         if (importedModule) {
             // Generate external declarations based on import kind
             if (kind == ast::ImportDecl::ImportKind::All) {
-                // Import all exported symbols
-                std::vector<std::string> exportedSymbols = moduleResolver_->getExportedSymbols(moduleName);
-                for (const auto& symbolName : exportedSymbols) {
-                    // Generate external function declaration
-                    // TODO: Look up function signature from imported module
-                    // For now, we'll generate a placeholder
-                    generateExternalDeclaration(symbolName, moduleName);
+                // Import all: declare every function and interaction so calls (e.g. optionMap, some) resolve
+                for (const auto& func : importedModule->getFunctions()) {
+                    if (func) generateExternalDeclaration(func->getName(), moduleName);
+                }
+                for (const auto& interaction : importedModule->getInteractions()) {
+                    if (interaction) generateExternalDeclaration(interaction->getName(), moduleName);
                 }
             } else if (kind == ast::ImportDecl::ImportKind::Specific) {
                 // Import specific symbols
@@ -5095,10 +5446,12 @@ void IRGenerator::visitImportDecl(ast::ImportDecl* node) {
 }
 
 void IRGenerator::generateExternalDeclaration(const std::string& symbolName, const std::string& moduleName) {
+    // Math and Date are stdlib: calls resolve to first_* / first_date_* via getStdlibSig; no external decl needed.
+    if (moduleName == "Math" || moduleName == "Date") {
+        return;
+    }
     // Generate an external function declaration
     // This allows the current module to call functions from the imported module
-    
-    // Check if declaration already exists
     if (module_->getFunction(symbolName)) {
         return; // Already declared
     }

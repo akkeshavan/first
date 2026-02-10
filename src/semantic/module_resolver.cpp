@@ -168,6 +168,14 @@ std::string ModuleResolver::findModulePath(const std::string& moduleName) {
     pathsToTry.push_back("lib/" + cleanName + ".first");
     pathsToTry.push_back("lib/" + pathName + ".first");
     
+    // Pattern 4b: Install lib next to binary (PREFIX/lib/first/Module.first)
+    if (!installLibPath_.empty()) {
+        std::string base = installLibPath_;
+        if (base.back() != '/' && base.back() != '\\') base += '/';
+        pathsToTry.push_back(base + cleanName + ".first");
+        pathsToTry.push_back(base + pathName + ".first");
+    }
+    
     // Pattern 5: FIRST_LIB_PATH (e.g. fir sets this so "Prelude" is found from any cwd)
     const char* libPath = std::getenv("FIRST_LIB_PATH");
     if (libPath && libPath[0] != '\0') {
@@ -188,6 +196,10 @@ std::string ModuleResolver::findModulePath(const std::string& moduleName) {
     
     // Module not found
     return "";
+}
+
+void ModuleResolver::setInstallLibPath(const std::string& path) {
+    installLibPath_ = path;
 }
 
 void ModuleResolver::registerModule(const std::string& moduleName, ast::Program* program) {

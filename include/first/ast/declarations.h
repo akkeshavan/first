@@ -16,10 +16,21 @@ namespace ast {
 class Stmt;
 class Parameter;
 
-// Generic parameter with optional interface constraint (e.g. T or T : Eq)
+// Kind of a type parameter: * (concrete type) or * -> * (type constructor)
+enum class GenericParamKind {
+    Star,         // default: type parameter stands for a type (e.g. Int, List<Int>)
+    StarArrowStar // higher-kinded: parameter stands for a type constructor (e.g. List, Option)
+};
+
+// Generic parameter with optional interface constraint (e.g. T : Eq) or Scala-like kind (e.g. F<_>, F<_, _>)
 struct GenericParam {
     std::string name;
-    std::string constraint;  // interface name, empty if unconstrained
+    std::string constraint;  // interface name when kind is Star; empty when higher-kinded
+    GenericParamKind kind = GenericParamKind::Star;
+    // For higher-kinded params: number of type arguments (F<_> => 1, F<_, _> => 2). Default 1.
+    int kindArity = 1;
+
+    bool isHigherKinded() const { return kind == GenericParamKind::StarArrowStar; }
 };
 
 // Function parameter
@@ -187,18 +198,18 @@ private:
     std::unique_ptr<Type> type_;
 };
 
-// Interface declaration (typeclass-style): interface Name<T> { member: Type; ... }
+// Interface declaration (typeclass-style): interface Name<T> { ... } or interface Name<F : * -> *> { ... }
 class InterfaceDecl : public ASTNode {
 public:
     InterfaceDecl(const SourceLocation& location,
                   const std::string& name,
-                  std::vector<std::string> genericParams,
+                  std::vector<GenericParam> genericParams,
                   std::vector<std::unique_ptr<InterfaceMember>> members)
         : ASTNode(location), name_(name), genericParams_(std::move(genericParams)),
           members_(std::move(members)) {}
 
     const std::string& getName() const { return name_; }
-    const std::vector<std::string>& getGenericParams() const { return genericParams_; }
+    const std::vector<GenericParam>& getGenericParams() const { return genericParams_; }
     const std::vector<std::unique_ptr<InterfaceMember>>& getMembers() const { return members_; }
 
     InterfaceMember* getMember(const std::string& name) const {
@@ -216,7 +227,7 @@ public:
 
 private:
     std::string name_;
-    std::vector<std::string> genericParams_;
+    std::vector<GenericParam> genericParams_;
     std::vector<std::unique_ptr<InterfaceMember>> members_;
 };
 

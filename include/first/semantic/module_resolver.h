@@ -60,8 +60,14 @@ public:
     // Check if a module was loaded (has a compiler instance) vs just registered
     bool isModuleLoaded(const std::string& moduleName) const;
 
+    // Set install lib directory (e.g. PREFIX/lib/first when firstc is at PREFIX/bin/firstc).
+    // When set, findModulePath() looks here for stdlib modules (Prelude, etc.).
+    void setInstallLibPath(const std::string& path);
+    std::string getInstallLibPath() const { return installLibPath_; }
+
 private:
     ErrorReporter& errorReporter_;
+    std::string installLibPath_;  // e.g. PREFIX/lib/first (empty = not set)
     std::unordered_map<std::string, ast::Program*> modules_;
     std::set<std::string> loadedModules_; // Track which modules were loaded (have compilers)
     std::vector<std::string> importStack_; // Track import chain for circular dependency detection

@@ -1,0 +1,6 @@
+import * "Prelude"
+type Box = { x: Int };
+function elem<T : Eq>(x: T, y: T) -> Bool { return x == y; }
+function f() -> Bool {
+  return elem({ x: 1 }, { x: 2 });
+}

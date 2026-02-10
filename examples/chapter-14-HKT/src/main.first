@@ -1,0 +1,30 @@
+// Chapter 14: Higher-kinded types — user-defined Functor<F<_>> (Scala-like syntax)
+import * "Prelude"
+
+// Higher-kinded type: F<_> means F has kind * -> * (type constructor).
+// map(receiver, f): so x.map(f) has receiver x : F<A>, arg f : (A -> B).
+interface Functor<F<_>> {
+  map: forall A B. function(F<A>, function(A) -> B) -> F<B>;
+}
+
+// User-land Functor implementation for Option, using Prelude's Option/some/none.
+function optionMap<A, B>(opt: Option<A>, f: function(A) -> B) -> Option<B> {
+  return match opt {
+    None => none(),
+    Some(x) => some(f(x))
+  };
+}
+
+implementation Functor<Option> {
+  map = optionMap;
+}
+
+interaction main() -> Unit {
+  let o: Option<Int> = some(42);
+  let dbl = function(n: Int) -> Int { return n * 2; };
+  let mapped = o.map(dbl);
+  match mapped {
+    Some(v) => println("Functor<Option>: map (*2) Some(42) = Some(" + intToString(v) + ")"),
+    None => println("unexpected None")
+  };
+}

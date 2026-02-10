@@ -185,10 +185,20 @@ std::unique_ptr<InterfaceDecl> ASTBuilder::buildInterfaceDecl(FirstParser::Inter
     if (!ctx || !ctx->IDENTIFIER()) return nullptr;
     SourceLocation loc = getLocation(ctx);
     std::string name = ctx->IDENTIFIER()->getText();
-    std::vector<std::string> genericParams;
+    std::vector<GenericParam> genericParams;
     if (auto* gp = ctx->genericParams()) {
-        for (auto* id : gp->IDENTIFIER()) {
-            if (id) genericParams.push_back(id->getText());
+        for (auto* paramCtx : gp->genericParam()) {
+            if (!paramCtx || paramCtx->IDENTIFIER().empty()) continue;
+            GenericParam p;
+            p.name = paramCtx->IDENTIFIER(0)->getText();
+            p.constraint.clear();
+            p.kind = GenericParamKind::Star;
+            if (paramCtx->kindAnnotation()) {
+                p.kind = GenericParamKind::StarArrowStar;
+            } else if (paramCtx->IDENTIFIER().size() > 1) {
+                p.constraint = paramCtx->IDENTIFIER(1)->getText();
+            }
+            genericParams.push_back(std::move(p));
         }
     }
     std::vector<std::unique_ptr<InterfaceMember>> members;
@@ -872,6 +882,8 @@ std::unique_ptr<PrimitiveType> ASTBuilder::buildPrimitiveType(FirstParser::Built
         return std::make_unique<PrimitiveType>(loc, PrimitiveType::Kind::String);
     } else if (ctx->UNIT()) {
         return std::make_unique<PrimitiveType>(loc, PrimitiveType::Kind::Unit);
+    } else if (ctx->ARRAYBUF()) {
+        return std::make_unique<PrimitiveType>(loc, PrimitiveType::Kind::ArrayBuf);
     }
     
     return nullptr;

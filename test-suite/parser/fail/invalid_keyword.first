@@ -1,0 +1,4 @@
+function f() -> Int {
+  wibble x = 10;
+  return x;
+}

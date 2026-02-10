@@ -1,0 +1,4 @@
+function f() -> Unit {
+  for i in 1..5 { let _ = i; };
+  return;
+}

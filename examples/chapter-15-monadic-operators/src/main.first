@@ -1,0 +1,86 @@
+// =============================================================================
+// Chapter 15: Monadic operators in interactions (first-book)
+// =============================================================================
+// Operators >>= (bind), >> (then), <$> (fmap), <*> (apply) are only allowed
+// in interaction functions. This file defines minimal then/bind/fmap and three
+// interactions that use them; main() invokes all three.
+// =============================================================================
+
+import * "Prelude"
+
+// -----------------------------------------------------------------------------
+// Minimal implementations so the desugared operator calls resolve.
+// (Parser rewrites a >> b to then(a,b), m >>= f to bind(m,f), f <$> m to fmap(f,m).)
+// -----------------------------------------------------------------------------
+
+// then(a, b): run a then b; result is b's result.
+// Note: Unit (void) is not a first-class type in the IR, so we use a dummy Int for sequencing.
+// In a full implementation, the runtime would treat Unit specially for I/O sequencing.
+function then(a: Int, b: Int) -> Int {
+  return b;
+}
+
+// bind(m, f): for Option — if m is Some(x), return f(x); if None, return None.
+function bind<A, B>(m: Option<A>, f: function(A) -> Option<B>) -> Option<B> {
+  return match m {
+    None => none(),
+    Some(x) => f(x)
+  };
+}
+
+// fmap(f, m): for Option — apply f to the value inside m, keep Option.
+function fmap<A, B>(f: function(A) -> B, m: Option<A>) -> Option<B> {
+  return match m {
+    None => none(),
+    Some(x) => some(f(x))
+  };
+}
+
+// -----------------------------------------------------------------------------
+// Example 1: Chain I/O with >> (then)
+// -----------------------------------------------------------------------------
+interaction runThenExample() -> Unit {
+  println("--- Example 1: then (>>) ---");
+  // Chain effectful steps: each step returns a dummy value, then passes to next. (Using 0 as placeholder for Unit.)
+  let _ = 0 >> 0 >> 0;
+  println("Step 1");
+  println("Step 2");
+  println("Step 3");
+  return;
+}
+
+// -----------------------------------------------------------------------------
+// Example 2: Optional value chain with >>= (bind)
+// -----------------------------------------------------------------------------
+interaction runBindExample() -> Unit {
+  println("--- Example 2: bind (>>=) ---");
+  let r: Option<Int> = some(7) >>= function(x: Int) -> Option<Int> { return some(x * 2); };
+  match r {
+    Some(v) => println("  some(7) >>= (*2) = Some(" + intToString(v) + ")"),
+    None => println("  unexpected None")
+  };
+  return;
+}
+
+// -----------------------------------------------------------------------------
+// Example 3: Lift a pure function with <$> (fmap)
+// -----------------------------------------------------------------------------
+interaction runFmapExample() -> Unit {
+  println("--- Example 3: fmap (<$>) ---");
+  let r: Option<Int> = (function(x: Int) -> Int { return x + 100; }) <$> some(5);
+  match r {
+    Some(v) => println("  (+100) <$> some(5) = Some(" + intToString(v) + ")"),
+    None => println("  unexpected None")
+  };
+  return;
+}
+
+// -----------------------------------------------------------------------------
+// main: run all three examples
+// -----------------------------------------------------------------------------
+interaction main() -> Unit {
+  runThenExample();
+  runBindExample();
+  runFmapExample();
+  return;
+}

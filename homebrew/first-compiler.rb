@@ -1,18 +1,34 @@
 # Homebrew formula for First compiler (LLVM-based).
-# Install from tap: brew tap akkeshavan/first && brew install first-compiler
-# Or install this file: brew install --build-from-source ./homebrew/first-compiler.rb
+#
+# Full install: firstc (PREFIX/bin), stdlib (PREFIX/lib/first/), runtime (PREFIX/lib/libfirst_runtime.a).
+# After install, firstc finds Prelude and the runtime via the "lib next to binary" paths.
+#
+# Install from tap:
+#   brew tap akkeshavan/first
+#   brew install first-compiler
+#
+# Install from local formula (no tap):
+#   brew install --build-from-source ./homebrew/first-compiler.rb
+#
+# Install latest from main:
+#   brew install --HEAD akkeshavan/first/first-compiler
+#
 # Uninstall: brew uninstall first-compiler
 
 class FirstCompiler < Formula
   desc "First programming language compiler (LLVM-based)"
   homepage "https://github.com/akkeshavan/first"
-  head "https://github.com/akkeshavan/first.git", branch: "main"
   version "0.1.0"
+
+  # Head-only: install with `brew install --HEAD akkeshavan/first/first-compiler`
+  # To add a stable release: add url/sha256 for a tag (e.g. v0.1.0) and keep head for dev.
+  head "https://github.com/akkeshavan/first.git", branch: "main"
 
   depends_on "cmake" => :build
   depends_on "llvm"
   depends_on "antlr4-cpp-runtime"
-  depends_on "antlr" => :build  # antlr4 command for grammar generation
+  depends_on "antlr" => :build
+  depends_on "bdw-gc"  # compiler links with -lgc when producing executables
 
   def install
     # ANTLR4 tool must be on PATH for CMake to generate lexer
@@ -26,18 +42,23 @@ class FirstCompiler < Formula
                     "-DBUILD_EXAMPLES=OFF",
                     "-DFIRST_USE_GC=OFF"
     system "cmake", "--build", "build"
-    system "cmake", "--install", "build"
-    # Install fir (First project manager) alongside firstc
-    bin.install "tools/fir" => "fir"
+    # Installs: bin/firstc, lib/first/*.first (stdlib), lib/libfirst_runtime.a
+    system "cmake", "--install", "build", "--component", "first"
+
+    # Install fir (First project manager) if present
+    fir = "tools/fir"
+    bin.install fir => "fir" if File.exist?(fir)
   end
 
   test do
     (testpath/"hello.first").write <<~EOS
-      interaction main() {
+      import "Prelude"
+      interaction main() -> Unit {
         println("Hello from First");
       }
     EOS
     system bin/"firstc", "hello.first", "-o", "hello"
     assert_predicate testpath/"hello", :exist?
+    assert_equal "Hello from First\n", shell_output("./hello")
   end
 end

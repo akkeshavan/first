@@ -1,0 +1,5 @@
+import * "Prelude"
+interaction main() -> Unit {
+  let o: Option<Int> = some(42);
+  return;
+}

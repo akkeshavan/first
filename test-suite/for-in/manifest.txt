@@ -1,0 +1,34 @@
+# For-in test suite (separate from main suite until for-in is stable)
+# Format: pass|fail  parser|typecheck  testname
+# Run with: FIRST_TEST_SUITE_PATH=/path/to/test-suite/for-in ./bin/test_compiler test_suite_parser_and_typecheck
+
+# --- Parser pass (valid for-in syntax) ---
+pass parser for_in_range
+pass parser for_in_range_inclusive
+pass parser range_exclusive
+pass parser range_inclusive
+pass parser range_step
+pass parser for_in_array
+pass parser for_in_empty_body
+pass parser for_in_multiple_statements
+
+# --- Parser fail (syntax errors) ---
+fail parser for_in_missing_in
+fail parser for_in_missing_var
+fail parser for_in_missing_lbrace
+
+# --- Typecheck pass (valid for-in types) ---
+pass typecheck range_for_in
+pass typecheck array_for_in
+pass typecheck for_in_range_inclusive_typed
+pass typecheck for_in_range_step_typed
+pass typecheck for_in_use_loop_var
+pass typecheck for_in_exclusive_typed
+
+# --- Typecheck fail (type / semantic errors) ---
+fail typecheck for_in_in_function
+fail typecheck range_element_type
+fail typecheck for_in_over_non_iterable
+fail typecheck for_in_assign_loop_var
+fail typecheck for_in_array_element_wrong_type
+fail typecheck for_in_over_bool

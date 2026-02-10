@@ -1,0 +1,24 @@
+// Chapter 12: Math functions — trig, sqrt, pow, rounding, min/max, pi
+import { sin, cos, pi, sqrt, pow, floor, round, min, maxInt } "Math"
+import "Prelude"
+
+interaction main() -> Unit {
+  println("=== Trig ===");
+  println("sin(pi/2) = " + floatToString(sin(pi() / 2)));
+  println("cos(pi) = " + floatToString(cos(pi())));
+
+  println("");
+  println("=== Roots and powers ===");
+  println("sqrt(49) = " + floatToString(sqrt(49)));
+  println("2^8 = " + floatToString(pow(2, 8)));
+
+  println("");
+  println("=== Rounding ===");
+  println("floor(2.9) = " + floatToString(floor(2.9)));
+  println("round(2.5) = " + floatToString(round(2.5)));
+
+  println("");
+  println("=== Min/Max ===");
+  println("min(1.0, 2.0) = " + floatToString(min(1.0, 2.0)));
+  println("maxInt(10, 20) = " + intToString(maxInt(10, 20)));
+}

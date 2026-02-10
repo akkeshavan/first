@@ -181,6 +181,8 @@ endif()
 
 # Installation (component "first" so productbuild .pkg has payload)
 install(TARGETS firstc DESTINATION bin COMPONENT first)
+# Stdlib (Prelude.first, etc.) next to binary scheme: PREFIX/lib/first/
+install(DIRECTORY lib/ DESTINATION lib/first COMPONENT first)
 
 # --- Packaging (installables for Apple and Linux, x86_64 and arm64) ---
 set(CPACK_PACKAGE_NAME "first-compiler")

@@ -1,0 +1,3 @@
+function a() -> Int { return 1; }
+function b() -> Int { return 2; }
+function c() -> Int { return a() + b(); }

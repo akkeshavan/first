@@ -1,0 +1,3 @@
+function f(a: Int, b: Int) -> Bool {
+  return a < b && a <= b && a > b && a >= b && a == b && a != b;
+}

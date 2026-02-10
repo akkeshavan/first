@@ -1,0 +1,2 @@
+interface Eq<T> {
+  eq: function(T, T) -> Bool

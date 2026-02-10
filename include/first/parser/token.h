@@ -52,6 +52,7 @@
      KwBool,
      KwString,
      KwUnit,
+     KwArrayBuf,
      KwTrue,
      KwFalse,
      KwNull,

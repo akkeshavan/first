@@ -80,6 +80,7 @@
     case FirstLexer::BOOL: kind = TokenKind::KwBool; break;
     case FirstLexer::STRING: kind = TokenKind::KwString; break;
     case FirstLexer::UNIT: kind = TokenKind::KwUnit; break;
+    case FirstLexer::ARRAYBUF: kind = TokenKind::KwArrayBuf; break;
      case FirstLexer::TRUE: kind = TokenKind::KwTrue; break;
      case FirstLexer::FALSE: kind = TokenKind::KwFalse; break;
     case FirstLexer::NULL_: kind = TokenKind::KwNull; break;
@@ -266,6 +267,41 @@
                           length);
  }
 
+ bool FirstParser::parseScalaStyleKind(int& outArity, bool* outConsumedDoubleGt) {
+     if (current().kind != TokenKind::OpLt) return false;
+     advance();
+     if (outConsumedDoubleGt) *outConsumedDoubleGt = false;
+     if ((current().kind != TokenKind::Underscore && current().kind != TokenKind::Identifier) || current().lexeme != "_") {
+         reportSyntaxError("expected '_' in F<_> or F<_, _> kind");
+         while (current().kind != TokenKind::OpGt && current().kind != TokenKind::OpThen && current().kind != TokenKind::EndOfFile) advance();
+         if (current().kind == TokenKind::OpGt) advance();
+         else if (current().kind == TokenKind::OpThen) { advance(); if (outConsumedDoubleGt) *outConsumedDoubleGt = true; }
+         outArity = 1;
+         return true;
+     }
+     advance();
+     int arity = 1;
+     while (match(TokenKind::Comma)) {
+         if ((current().kind != TokenKind::Underscore && current().kind != TokenKind::Identifier) || current().lexeme != "_") {
+             reportSyntaxError("expected '_' in kind placeholder list");
+             break;
+         }
+         advance();
+         ++arity;
+     }
+     if (current().kind == TokenKind::OpGt) {
+         advance();
+     } else if (current().kind == TokenKind::OpThen) {
+         advance();
+         if (outConsumedDoubleGt) *outConsumedDoubleGt = true;
+     } else {
+         reportSyntaxError("expected '>' or '>>' after F<_, ...> kind");
+         return false;
+     }
+     outArity = arity;
+     return true;
+ }
+
  std::unique_ptr<ast::Program> FirstParser::parseProgram() {
      return parseProgramInternal();
  }
@@ -342,6 +378,7 @@
         advance();
 
         std::vector<ast::GenericParam> genericParams;
+        bool genericListConsumedDoubleGt = false;
         if (current().kind == TokenKind::OpLt) {
             advance();
             while (true) {
@@ -353,19 +390,30 @@
                 p.name = current().lexeme;
                 p.constraint.clear();
                 advance();
-                if (match(TokenKind::Colon)) {
+                int kindArity = 1;
+                if (parseScalaStyleKind(kindArity, &genericListConsumedDoubleGt)) {
+                    p.kind = ast::GenericParamKind::StarArrowStar;
+                    p.kindArity = kindArity;
+                } else if (match(TokenKind::Colon)) {
                     if (current().kind == TokenKind::Identifier) {
                         p.constraint = current().lexeme;
                         advance();
+                    } else if (current().kind == TokenKind::OpMul) {
+                        advance();
+                        if (!expect(TokenKind::OpArrow, "expected '->' in kind annotation '* -> *'")) { break; }
+                        if (current().kind != TokenKind::OpMul) {
+                            reportSyntaxError("expected '*' after '->' in kind annotation '* -> *'");
+                        } else { advance(); }
+                        p.kind = ast::GenericParamKind::StarArrowStar;
                     } else {
-                        reportSyntaxError("expected interface name after ':' in generic parameter");
+                        reportSyntaxError("expected interface name, kind '* -> *', or F<_> after ':' in generic parameter");
                     }
                 }
                 genericParams.push_back(std::move(p));
                 if (match(TokenKind::Comma)) continue;
                 break;
             }
-            if (!match(TokenKind::OpGt)) {
+            if (!genericListConsumedDoubleGt && !match(TokenKind::OpGt)) {
                 reportSyntaxError("expected '>' after generic parameter list");
             }
         }
@@ -416,6 +464,7 @@
                 auto stmt = parseStatement();
                 if (stmt) {
                     body.push_back(std::move(stmt));
+                    if (current().kind == TokenKind::Semicolon) advance();
                 } else {
                     advance();
                 }
@@ -574,8 +623,9 @@
     std::string name = current().lexeme;
     advance();
 
-    // Optional generic parameter list: <T, U : Eq, ...>
+    // Optional generic parameter list: <T, U : Eq, ...> or <F<_>>
     std::vector<ast::GenericParam> genericParams;
+    bool genericListConsumedDoubleGt = false;
     if (current().kind == TokenKind::OpLt) {
         advance(); // '<'
         while (true) {
@@ -587,12 +637,26 @@
             p.name = current().lexeme;
             p.constraint.clear();
             advance();
-            if (match(TokenKind::Colon)) {
+            int kindArity = 1;
+            if (parseScalaStyleKind(kindArity, &genericListConsumedDoubleGt)) {
+                p.kind = ast::GenericParamKind::StarArrowStar;
+                p.kindArity = kindArity;
+            } else if (match(TokenKind::Colon)) {
                 if (current().kind == TokenKind::Identifier) {
                     p.constraint = current().lexeme;
                     advance();
+                } else if (current().kind == TokenKind::OpMul) {
+                    // Kind annotation: * -> *
+                    advance();
+                    if (!expect(TokenKind::OpArrow, "expected '->' in kind annotation '* -> *'")) { break; }
+                    if (current().kind != TokenKind::OpMul) {
+                        reportSyntaxError("expected '*' after '->' in kind annotation '* -> *'");
+                    } else {
+                        advance();
+                    }
+                    p.kind = ast::GenericParamKind::StarArrowStar;
                 } else {
-                    reportSyntaxError("expected interface name after ':' in generic parameter");
+                    reportSyntaxError("expected interface name, kind '* -> *', or F<_> after ':' in generic parameter");
                 }
             }
             genericParams.push_back(std::move(p));
@@ -601,7 +665,7 @@
             }
             break;
         }
-        if (!match(TokenKind::OpGt)) {
+        if (!genericListConsumedDoubleGt && !match(TokenKind::OpGt)) {
             reportSyntaxError("expected '>' after generic parameter list");
         }
     }
@@ -652,6 +716,7 @@
              auto stmt = parseStatement();
              if (stmt) {
                  body.push_back(std::move(stmt));
+                 if (current().kind == TokenKind::Semicolon) advance();
              } else {
                  advance();
              }
@@ -675,7 +740,8 @@ void FirstParser::parseInterfaceDecl(ast::Program& program) {
     std::string name = current().lexeme;
     advance();
 
-    std::vector<std::string> genericParams;
+    std::vector<ast::GenericParam> genericParams;
+    bool genericListConsumedDoubleGt = false;
     if (current().kind == TokenKind::OpLt) {
         advance();
         if (current().kind != TokenKind::OpGt) {
@@ -684,15 +750,38 @@ void FirstParser::parseInterfaceDecl(ast::Program& program) {
                     reportSyntaxError("expected generic parameter name");
                     break;
                 }
-                genericParams.push_back(current().lexeme);
+                ast::GenericParam p;
+                p.name = current().lexeme;
+                p.constraint.clear();
+                p.kind = ast::GenericParamKind::Star;
                 advance();
+                int kindArity = 1;
+                if (parseScalaStyleKind(kindArity, &genericListConsumedDoubleGt)) {
+                    p.kind = ast::GenericParamKind::StarArrowStar;
+                    p.kindArity = kindArity;
+                } else if (match(TokenKind::Colon)) {
+                    if (current().kind == TokenKind::Identifier) {
+                        p.constraint = current().lexeme;
+                        advance();
+                    } else if (current().kind == TokenKind::OpMul) {
+                        advance();
+                        if (!expect(TokenKind::OpArrow, "expected '->' in kind annotation '* -> *'")) { break; }
+                        if (current().kind != TokenKind::OpMul) {
+                            reportSyntaxError("expected '*' after '->' in kind annotation '* -> *'");
+                        } else { advance(); }
+                        p.kind = ast::GenericParamKind::StarArrowStar;
+                    } else {
+                        reportSyntaxError("expected interface name, kind '* -> *', or F<_> after ':' in generic parameter");
+                    }
+                }
+                genericParams.push_back(std::move(p));
                 if (match(TokenKind::Comma)) {
                     continue;
                 }
                 break;
             }
         }
-        if (!match(TokenKind::OpGt)) {
+        if (!genericListConsumedDoubleGt && !match(TokenKind::OpGt)) {
             reportSyntaxError("expected '>' after generic parameter list");
         }
     }
@@ -1200,6 +1289,9 @@ std::unique_ptr<ast::Type> FirstParser::parseTypeRhs(const std::string& typeName
     case TokenKind::KwUnit:
         advance();
         return std::make_unique<ast::PrimitiveType>(loc, ast::PrimitiveType::Kind::Unit);
+    case TokenKind::KwArrayBuf:
+        advance();
+        return std::make_unique<ast::PrimitiveType>(loc, ast::PrimitiveType::Kind::ArrayBuf);
     case TokenKind::KwNull:
         advance();
         return std::make_unique<ast::PrimitiveType>(loc, ast::PrimitiveType::Kind::Null);
@@ -1337,11 +1429,13 @@ std::unique_ptr<ast::Type> FirstParser::parseTypeRhs(const std::string& typeName
      SourceLocation loc = current().loc;
      advance(); // let/var
 
-     if (current().kind != TokenKind::Identifier) {
+     // Allow Identifier or Underscore (for "let _ = expr")
+     if (current().kind != TokenKind::Identifier &&
+         (current().kind != TokenKind::Underscore || current().lexeme != "_")) {
          reportSyntaxError("expected variable name");
          return nullptr;
      }
-     std::string name = current().lexeme;
+     std::string name = (current().kind == TokenKind::Underscore) ? "_" : current().lexeme;
      advance();
 
      std::unique_ptr<ast::Type> ty;
@@ -1397,14 +1491,18 @@ std::unique_ptr<ast::Type> FirstParser::parseTypeRhs(const std::string& typeName
          reportSyntaxError("expected iterable expression in for-in loop");
          return nullptr;
      }
-     expect(TokenKind::LBrace, "expected '{' after iterable in for-in loop");
-     std::vector<std::unique_ptr<ast::Stmt>> body;
-     while (current().kind != TokenKind::RBrace &&
-            current().kind != TokenKind::EndOfFile) {
-         auto stmt = parseStatement();
-         if (stmt) body.push_back(std::move(stmt));
-         if (current().kind == TokenKind::Semicolon) advance();
-     }
+    expect(TokenKind::LBrace, "expected '{' after iterable in for-in loop");
+    std::vector<std::unique_ptr<ast::Stmt>> body;
+    while (current().kind != TokenKind::RBrace &&
+           current().kind != TokenKind::EndOfFile) {
+        auto stmt = parseStatement();
+        if (stmt) {
+            body.push_back(std::move(stmt));
+            if (current().kind == TokenKind::Semicolon) advance();
+        } else {
+            advance();  // recovery: skip unrecognized token to avoid infinite loop
+        }
+    }
      expect(TokenKind::RBrace, "expected '}' at end of for-in loop body");
      return std::make_unique<ast::ForInStmt>(
          loc, varName, std::move(iterable), std::move(body));
@@ -1642,8 +1740,10 @@ std::unique_ptr<ast::Expr> FirstParser::parseExpression() {
         args.push_back(std::move(expr));
         args.push_back(std::move(rhs));
 
-        expr = std::make_unique<ast::FunctionCallExpr>(
+        auto call = std::make_unique<ast::FunctionCallExpr>(
             loc, funcName, std::move(args));
+        call->setDesugaredMonadicOp(true);
+        expr = std::move(call);
     }
 
     return expr;
@@ -1773,8 +1873,10 @@ std::unique_ptr<ast::Expr> FirstParser::parseDoBlockExpr() {
         args.push_back(std::move(item.expr));
         args.push_back(std::move(lambda));
 
-        acc = std::make_unique<ast::FunctionCallExpr>(
+        auto call = std::make_unique<ast::FunctionCallExpr>(
             item.loc, funcName, std::move(args));
+        call->setDesugaredMonadicOp(true);
+        acc = std::move(call);
     }
 
     return acc;

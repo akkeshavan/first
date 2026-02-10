@@ -1,0 +1,4 @@
+function f() -> Unit {
+  let buf = arrayBufCreate(4);
+  return;
+}

@@ -1,0 +1,6 @@
+import * "Prelude"
+function id<T>(x: T) -> T { return x; }
+function f() -> Array<Int> {
+  let a: Array<Int> = [1, 2, 3];
+  return id(a);
+}

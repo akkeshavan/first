@@ -1,0 +1,4 @@
+import * "Prelude"
+interface Foo<T> { bar: function(T) -> Int; }
+implementation Foo<Int> { }
+function f() -> Int { return 0; }

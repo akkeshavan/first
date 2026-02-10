@@ -1,0 +1,7 @@
+import * "Prelude"
+interface Functor<F<_>> { map: forall A B. function(F<A>, function(A) -> B) -> F<B>; }
+type Pair<A, B> = P(A, B);
+function pairMap<A, B, C>(p: Pair<A, B>, f: function(A) -> C) -> Pair<C, B> {
+  return match p { P(a, b) => P(f(a), b) };
+}
+implementation Functor<Pair<Int, Int>> { map = pairMap; }

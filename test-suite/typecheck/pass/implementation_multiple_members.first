@@ -1,0 +1,5 @@
+import * "Prelude"
+interface Eq<T> { eq: function(T, T) -> Bool; }
+function eqInt(a: Int, b: Int) -> Bool { return a == b; }
+implementation Eq<Int> { eq = eqInt; }
+function f() -> Bool { return eqInt(1, 2); }

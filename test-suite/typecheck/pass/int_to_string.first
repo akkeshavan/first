@@ -1,0 +1,4 @@
+import * "Prelude"
+function f(n: Int) -> String {
+  return intToString(n);
+}

@@ -1,0 +1,4 @@
+function add(a: Int, b: Int) -> Int { return a + b; }
+function f() -> Int {
+  return add(1);
+}

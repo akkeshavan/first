@@ -1,0 +1,11 @@
+import * "Prelude"
+interface Functor<F<_>> { map: forall A B. function(F<A>, function(A) -> B) -> F<B>; }
+function optionMap<A, B>(o: Option<A>, f: function(A) -> B) -> Option<B> {
+  return match o { Some(x) => some(f(x)), None => none() };
+}
+implementation Functor<Option> { map = optionMap; }
+function f() -> Unit {
+  let x: Int = 42;
+  let _ = x.map(function(n: Int) -> Int { return n; });
+  return;
+}

@@ -1,0 +1,20 @@
+// Chapter 11: Date functions — now, format, parse, getters, addSeconds
+import { now, format, parse, getYear, getMonth, getDay, addSeconds } "Date"
+import "Prelude"
+
+interaction main() -> Unit {
+  println("=== Current time ===");
+  let d = now();
+  println(format(d, "%Y-%m-%d %H:%M:%S"));
+  println("Year: " + intToString(getYear(d)) + ", Month: " + intToString(getMonth(d)) + ", Day: " + intToString(getDay(d)));
+
+  println("");
+  println("=== Parsed date ===");
+  let holiday = parse("2025-07-04");
+  println(format(holiday, "%Y-%m-%d"));
+
+  println("");
+  println("=== One day later ===");
+  let nextDay = addSeconds(holiday, 86400);
+  println(format(nextDay, "%Y-%m-%d"));
+}

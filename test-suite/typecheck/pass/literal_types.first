@@ -1,0 +1,7 @@
+function f() -> Unit {
+  let a: Int = 42;
+  let b: Float = 3.14;
+  let c: String = "x";
+  let d: Bool = true;
+  return;
+}

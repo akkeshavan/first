@@ -3,6 +3,8 @@
 #include <fstream>
 #include <sstream>
 #include <cstdlib>
+#include <chrono>
+#include <thread>
 
 namespace first {
 namespace runtime {
@@ -238,6 +240,11 @@ extern "C" void println(const char* s) {
 extern "C" void __first_refinement_fail(const char* message) {
     std::cerr << "Refinement predicate failed: " << (message ? message : "(no message)") << std::endl;
     std::abort();
+}
+
+extern "C" void first_sleep(int64_t ms) {
+    if (ms <= 0) return;
+    std::this_thread::sleep_for(std::chrono::milliseconds(ms));
 }
 
 } // namespace runtime

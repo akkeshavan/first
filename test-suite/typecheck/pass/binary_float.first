@@ -1,0 +1,3 @@
+function f(a: Float, b: Float) -> Float {
+  return a + b * a;
+}

@@ -1,0 +1,3 @@
+function f(n: Int) -> Int {
+  return if (n > 0) { 1 } else { "zero" };
+}

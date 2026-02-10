@@ -1,0 +1,7 @@
+function f(n: Int) -> Int {
+  return match n {
+    n when n < 0 => -1,
+    n when n > 0 => 1,
+    otherwise => 0
+  };
+}

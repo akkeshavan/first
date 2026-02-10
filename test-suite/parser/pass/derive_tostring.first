@@ -1,0 +1,3 @@
+import * "Prelude"
+type Point = { x: Int, y: Int } #derive(ToString);
+function f() -> String { return toString({ x: 1, y: 2 }); }

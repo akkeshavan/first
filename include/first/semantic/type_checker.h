@@ -51,6 +51,8 @@ public:
     // Function signature matching - public for testing
     bool matchFunctionSignature(ast::FunctionDecl* func, const std::vector<ast::Type*>& argTypes);
     bool matchFunctionSignature(ast::InteractionDecl* interaction, const std::vector<ast::Type*>& argTypes);
+    // Same parameter types (for redefinition check)
+    bool sameParameterTypes(ast::FunctionDecl* a, ast::FunctionDecl* b);
 
 private:
     ErrorReporter& errorReporter_;
@@ -86,6 +88,7 @@ private:
     void checkProgram(ast::Program* program);
     void checkFunction(ast::FunctionDecl* func);
     void checkInteraction(ast::InteractionDecl* interaction);
+    void checkImplementation(ast::ImplementationDecl* impl);
     void checkStatement(ast::Stmt* stmt);
     ast::Type* inferExpression(ast::Expr* expr);
     ast::Type* inferLiteral(ast::LiteralExpr* expr);
@@ -120,6 +123,13 @@ private:
     void checkGenericParamsAppearInParameterTypes(ast::FunctionDecl* func);
     void checkGenericParamsAppearInParameterTypes(ast::InteractionDecl* interaction);
 
+    // ArrayBuf is mutable and only allowed in interactions
+    bool typeContainsArrayBuf(ast::Type* type);
+
+    // Higher-kinded types: get type constructor name (for ParameterizedType or GenericType)
+    static std::string getTypeConstructorName(ast::Type* type);
+    ast::InterfaceDecl* findInterface(const std::string& name);
+
     // Error reporting helpers
     void reportTypeError(const SourceLocation& loc, 
                         const std::string& message,
@@ -134,6 +144,7 @@ private:
     std::unique_ptr<ast::Type> createStringType();
     std::unique_ptr<ast::Type> createUnitType();
     std::unique_ptr<ast::Type> createNullType();
+    std::unique_ptr<ast::Type> createArrayBufType();
     std::unique_ptr<ast::Type> createArrayType(std::unique_ptr<ast::Type> elementType);
     std::unique_ptr<ast::Type> createFunctionType(
         std::vector<std::unique_ptr<ast::Type>> paramTypes,

@@ -244,6 +244,9 @@ bool Compiler::compileFromStringNoModules(const std::string& source, const std::
         if (resolveModules) {
             moduleResolver = std::make_unique<semantic::ModuleResolver>(*errorReporter_);
             moduleResolverPtr = moduleResolver.get();
+            if (!installLibPath_.empty()) {
+                moduleResolver->setInstallLibPath(installLibPath_);
+            }
             // Register current module first
             moduleResolver->registerModule(ast_->getModuleName().empty() ? "main" : ast_->getModuleName(), ast_.get());
             moduleResolver->clearImportStack();
@@ -343,7 +346,7 @@ bool Compiler::compileFromStringNoModules(const std::string& source, const std::
                             SourceLocation(1, 1, virtualFile),
                             "Failed to generate IR for module: " + moduleName
                         );
-                        continue;
+                        return false;
                     }
 
                     std::unique_ptr<llvm::Module> ownedModule = moduleIRGenerator.takeModule();
@@ -352,7 +355,7 @@ bool Compiler::compileFromStringNoModules(const std::string& source, const std::
                             SourceLocation(1, 1, virtualFile),
                             "Failed to take IR module for module: " + moduleName
                         );
-                        continue;
+                        return false;
                     }
 
                     // Link and consume the module immediately (ownership is explicit).
@@ -496,25 +499,40 @@ bool Compiler::linkToExecutable(const std::string& objectPath,
                                 const std::string& runtimeLibPath) const {
     std::string libDir = runtimeLibPath;
     if (libDir.empty()) {
-        // Try common locations: runtime/ (cwd=build), ../runtime/ (cwd=build/bin), lib/, ../lib/
-        std::ifstream test("runtime/libfirst_runtime.a");
-        if (test.good()) libDir = "runtime";
-        else {
-            test.close();
-            test.open("../runtime/libfirst_runtime.a");
-            if (test.good()) libDir = "../runtime";
-            else {
+        // When installed (lib next to binary): PREFIX/lib/first for stdlib, PREFIX/lib for runtime
+        if (!installLibPath_.empty()) {
+            std::string prefixLib = installLibPath_;
+            if (prefixLib.back() == '/' || prefixLib.back() == '\\')
+                prefixLib.pop_back();
+            size_t last = prefixLib.find_last_of("/\\");
+            if (last != std::string::npos) prefixLib = prefixLib.substr(0, last);
+            if (!prefixLib.empty()) {
+                std::ifstream test(prefixLib + "/libfirst_runtime.a");
+                if (test.good()) libDir = prefixLib;
                 test.close();
-                test.open("lib/libfirst_runtime.a");
-                if (test.good()) libDir = "lib";
-                else {
-                    test.close();
-                    test.open("../lib/libfirst_runtime.a");
-                    if (test.good()) libDir = "../lib";
-                }
             }
         }
-        test.close();
+        if (libDir.empty()) {
+            // Try common locations: runtime/ (cwd=build), ../runtime/ (cwd=build/bin), lib/, ../lib/
+            std::ifstream test("runtime/libfirst_runtime.a");
+            if (test.good()) libDir = "runtime";
+            else {
+                test.close();
+                test.open("../runtime/libfirst_runtime.a");
+                if (test.good()) libDir = "../runtime";
+                else {
+                    test.close();
+                    test.open("lib/libfirst_runtime.a");
+                    if (test.good()) libDir = "lib";
+                    else {
+                        test.close();
+                        test.open("../lib/libfirst_runtime.a");
+                        if (test.good()) libDir = "../lib";
+                    }
+                }
+            }
+            test.close();
+        }
     }
     std::string libFlag = "-lfirst_runtime";
     if (!libDir.empty()) {

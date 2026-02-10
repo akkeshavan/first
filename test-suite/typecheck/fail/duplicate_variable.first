@@ -1,0 +1,5 @@
+function f() -> Int {
+  let x: Int = 1;
+  let x: Int = 2;
+  return x;
+}

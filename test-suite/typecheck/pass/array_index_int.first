@@ -1,0 +1,6 @@
+import * "Prelude"
+interaction main() -> Unit {
+  let a: Array<Int> = [1, 2, 3];
+  let x: Int = a[0];
+  return;
+}

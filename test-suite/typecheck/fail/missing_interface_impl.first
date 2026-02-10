@@ -1,0 +1,5 @@
+import * "Prelude"
+interface Show<T> { show: function(T) -> String; }
+function f(x: Int) -> String {
+  return x.show();
+}

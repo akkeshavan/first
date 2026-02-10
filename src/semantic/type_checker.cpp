@@ -7,6 +7,7 @@
 #include "first/semantic/module_resolver.h"
 #include <sstream>
 #include <set>
+#include <functional>
 
 namespace first {
 namespace semantic {
@@ -51,15 +52,23 @@ void TypeChecker::checkProgram(ast::Program* program) {
     }
     // First pass: collect all top-level declarations into symbol table
     for (const auto& func : program->getFunctions()) {
+        std::vector<Symbol*> existing = symbolTable_.lookupAll(func->getName());
+        for (Symbol* sym : existing) {
+            if (sym->getKind() == SymbolKind::Function) {
+                auto* fs = dynamic_cast<FunctionSymbol*>(sym);
+                if (fs && fs->getFunction() && sameParameterTypes(func.get(), fs->getFunction())) {
+                    errorReporter_.error(
+                        func->getLocation(),
+                        "Redefinition of function: " + func->getName()
+                    );
+                    break;
+                }
+            }
+        }
         auto symbol = std::make_unique<FunctionSymbol>(
             func->getName(), func->getLocation(), func.get()
         );
-        if (!symbolTable_.insert(std::move(symbol))) {
-            errorReporter_.error(
-                func->getLocation(),
-                "Duplicate function declaration: " + func->getName()
-            );
-        }
+        symbolTable_.insert(std::move(symbol));
     }
     
     for (const auto& interaction : program->getInteractions()) {
@@ -74,7 +83,12 @@ void TypeChecker::checkProgram(ast::Program* program) {
         }
     }
     
-    // Second pass: type check all functions and interactions
+    // Second pass: check implementations (interface members, types)
+    for (const auto& impl : program->getImplementations()) {
+        checkImplementation(impl.get());
+    }
+    
+    // Third pass: type check all functions and interactions
     for (const auto& func : program->getFunctions()) {
         checkFunction(func.get());
     }
@@ -84,11 +98,98 @@ void TypeChecker::checkProgram(ast::Program* program) {
     }
 }
 
+void TypeChecker::checkImplementation(ast::ImplementationDecl* impl) {
+    if (!impl || !currentProgram_) return;
+    ast::InterfaceDecl* iface = findInterface(impl->getInterfaceName());
+    if (!iface) {
+        errorReporter_.error(
+            impl->getLocation(),
+            "Interface not found: " + impl->getInterfaceName()
+        );
+        return;
+    }
+    const auto& ifaceMembers = iface->getMembers();
+    const auto& typeArgs = impl->getTypeArgs();
+    const auto& genericParams = iface->getGenericParams();
+    bool hktInterface = iface->getGenericParams().size() == 1 &&
+        iface->getGenericParams()[0].isHigherKinded();
+    std::map<std::string, ast::Type*> subst;
+    if (typeArgs.size() == genericParams.size()) {
+        for (size_t i = 0; i < genericParams.size(); ++i) {
+            if (typeArgs[i]) subst[genericParams[i].name] = typeArgs[i].get();
+        }
+    }
+    for (const auto& mem : ifaceMembers) {
+        if (!mem) continue;
+        ast::ImplementationMember* implMem = impl->getMember(mem->getName());
+        if (!implMem) {
+            errorReporter_.error(
+                impl->getLocation(),
+                "Interface method '" + mem->getName() + "' is not implemented"
+            );
+            continue;
+        }
+        if (hktInterface) continue; // Skip strict type check for HKT (e.g. Functor<Option>)
+        ast::Type* expectedType = mem->getType();
+        if (!expectedType) continue;
+        std::unique_ptr<ast::Type> expectedSubst = substituteType(expectedType, subst);
+        if (!expectedSubst) continue;
+        ast::Expr* value = implMem->getValue();
+        if (!value) continue;
+        ast::Type* actualType = inferType(value);
+        if (actualType && !isAssignable(actualType, expectedSubst.get())) {
+            reportTypeError(
+                implMem->getLocation(),
+                "Implementation member '" + mem->getName() + "' has wrong type",
+                actualType,
+                expectedSubst.get()
+            );
+        }
+    }
+}
+
 void TypeChecker::checkFunction(ast::FunctionDecl* func) {
     if (!func) return;
 
+    // Report "Type not found" for bare type names (GenericType) in return/param that aren't defined
+    auto checkTypeExists = [this, func](ast::Type* type) {
+        if (auto* gen = dynamic_cast<ast::GenericType*>(type)) {
+            const std::string& name = gen->getName();
+            if (typeDecls_.count(name)) return;
+            for (const auto& gp : func->getGenericParams()) if (gp.name == name) return;
+            if (moduleResolver_) {
+                for (const std::string& modName : moduleResolver_->getLoadedModuleNames()) {
+                    ast::Program* mod = moduleResolver_->getModule(modName);
+                    if (!mod) continue;
+                    for (const auto& td : mod->getTypeDecls())
+                        if (td && td->getTypeName() == name) return;
+                }
+            }
+            if (name != "Array" && name != "Option" && name != "Range")
+                errorReporter_.error(type->getLocation(), "Type not found: " + name);
+        }
+    };
+    if (func->getReturnType()) checkTypeExists(func->getReturnType());
+    for (const auto& p : func->getParameters()) if (p && p->getType()) checkTypeExists(p->getType());
+
     // Generic params must appear in at least one parameter type (no separate return-only generic)
     checkGenericParamsAppearInParameterTypes(func);
+
+    // ArrayBuf is mutable and only allowed in interactions
+    for (const auto& param : func->getParameters()) {
+        if (param->getType() && typeContainsArrayBuf(param->getType())) {
+            errorReporter_.error(
+                param->getLocation(),
+                "ArrayBuf is only allowed in interactions, not in function parameters"
+            );
+        }
+    }
+    if (func->getReturnType() && typeContainsArrayBuf(func->getReturnType())) {
+        errorReporter_.error(
+            func->getReturnType()->getLocation(),
+            "ArrayBuf is only allowed in interactions, not as function return type"
+        );
+    }
     
     currentFunction_ = func;
     currentInteraction_ = nullptr;
@@ -114,10 +215,32 @@ void TypeChecker::checkFunction(ast::FunctionDecl* func) {
         );
         symbolTable_.insert(std::move(varSymbol));
     }
+
+    // Function signature (no body): validate the signature, but do not enforce return statements.
+    if (func->isSignature()) {
+        symbolTable_.exitScope();
+        currentFunction_ = nullptr;
+        return;
+    }
     
     // Type check function body
     for (const auto& stmt : func->getBody()) {
         checkStatement(stmt.get());
+    }
+    
+    // If function returns non-Unit, it must have at least one return statement
+    ast::Type* retType = func->getReturnType();
+    if (retType && !typesEqual(retType, createUnitType().get())) {
+        bool hasReturn = false;
+        for (const auto& stmt : func->getBody()) {
+            if (dynamic_cast<ast::ReturnStmt*>(stmt.get())) { hasReturn = true; break; }
+        }
+        if (!hasReturn) {
+            errorReporter_.error(
+                func->getLocation(),
+                "Function must return a value (missing return statement)"
+            );
+        }
     }
     
     // Exit function scope
@@ -262,6 +385,65 @@ void TypeChecker::checkGenericParamsAppearInParameterTypes(ast::InteractionDecl*
     }
 }
 
+bool TypeChecker::typeContainsArrayBuf(ast::Type* type) {
+    if (!type) return false;
+    type = getEffectiveType(type);
+    if (auto* prim = dynamic_cast<ast::PrimitiveType*>(type)) {
+        return prim->getKind() == ast::PrimitiveType::Kind::ArrayBuf;
+    }
+    if (auto* gen = dynamic_cast<ast::GenericType*>(type)) {
+        return false;  // generic might be instantiated at call site; we forbid ArrayBuf in function signatures
+    }
+    if (auto* arr = dynamic_cast<ast::ArrayType*>(type)) {
+        return typeContainsArrayBuf(arr->getElementType());
+    }
+    if (auto* param = dynamic_cast<ast::ParameterizedType*>(type)) {
+        for (const auto& arg : param->getTypeArgs()) {
+            if (typeContainsArrayBuf(arg.get())) return true;
+        }
+        return false;
+    }
+    if (auto* func = dynamic_cast<ast::FunctionType*>(type)) {
+        for (const auto& pt : func->getParamTypes()) {
+            if (typeContainsArrayBuf(pt.get())) return true;
+        }
+        return typeContainsArrayBuf(func->getReturnType());
+    }
+    if (auto* rec = dynamic_cast<ast::RecordType*>(type)) {
+        for (const auto& field : rec->getFields()) {
+            if (typeContainsArrayBuf(field->getType())) return true;
+        }
+        return false;
+    }
+    if (auto* ref = dynamic_cast<ast::RefinementType*>(type)) {
+        return typeContainsArrayBuf(ref->getBaseType());
+    }
+    if (auto* idx = dynamic_cast<ast::IndexedType*>(type)) {
+        return typeContainsArrayBuf(idx->getBaseType());
+    }
+    if (auto* dep = dynamic_cast<ast::DependentFunctionType*>(type)) {
+        return typeContainsArrayBuf(dep->getParamType()) || typeContainsArrayBuf(dep->getReturnType());
+    }
+    if (auto* sigma = dynamic_cast<ast::DependentPairType*>(type)) {
+        return typeContainsArrayBuf(sigma->getVarType()) || typeContainsArrayBuf(sigma->getBodyType());
+    }
+    if (auto* forall = dynamic_cast<ast::ForallType*>(type)) {
+        return typeContainsArrayBuf(forall->getBodyType());
+    }
+    if (auto* ex = dynamic_cast<ast::ExistentialType*>(type)) {
+        return typeContainsArrayBuf(ex->getVarType()) || typeContainsArrayBuf(ex->getBodyType());
+    }
+    if (auto* adt = dynamic_cast<ast::ADTType*>(type)) {
+        for (const auto& ctor : adt->getConstructors()) {
+            for (const auto& arg : ctor->getArgumentTypes()) {
+                if (arg && typeContainsArrayBuf(arg.get())) return true;
+            }
+        }
+        return false;
+    }
+    return false;
+}
+
 bool TypeChecker::typeImplementsInterface(ast::Type* type, const std::string& interfaceName) {
     if (!type) return false;
     type = getEffectiveType(type);
@@ -281,7 +463,7 @@ bool TypeChecker::typeImplementsInterface(ast::Type* type, const std::string& in
             }
         }
     }
-    // Built-in ToString for Int, Float, Bool, String — no user implementation required
+    // Built-in ToString for Int, Float, Bool, String, ArrayBuf — no user implementation required
     if (interfaceName == "ToString") {
         if (auto* prim = dynamic_cast<ast::PrimitiveType*>(type)) {
             switch (prim->getKind()) {
@@ -290,6 +472,7 @@ bool TypeChecker::typeImplementsInterface(ast::Type* type, const std::string& in
                 case ast::PrimitiveType::Kind::Bool:
                 case ast::PrimitiveType::Kind::String:
                 case ast::PrimitiveType::Kind::Unit:
+                case ast::PrimitiveType::Kind::ArrayBuf:
                     return true;
                 default: break;
             }
@@ -331,35 +514,103 @@ bool TypeChecker::typeImplementsInterface(ast::Type* type, const std::string& in
         }
     }
     // User-defined implementations from the program and from imported modules (e.g. Prelude)
-    auto checkImpls = [this, type, &interfaceName](ast::Program* program) {
+    ast::InterfaceDecl* iface = findInterface(interfaceName);
+    const bool hktInterface = iface && iface->getGenericParams().size() == 1 &&
+                              iface->getGenericParams()[0].isHigherKinded();
+    // HKT: Option<T> implements Functor when an impl Functor<Option> exists (in current program or loaded module)
+    if (interfaceName == "Functor" && getTypeConstructorName(type) == "Option") {
+        auto hasOptionImpl = [this, &interfaceName](ast::Program* program) {
+            if (!program) return false;
+            for (const auto& impl : program->getImplementations()) {
+                if (!impl || impl->getInterfaceName() != interfaceName) continue;
+                const auto& typeArgs = impl->getTypeArgs();
+                if (typeArgs.size() != 1) continue;
+                if (getTypeConstructorName(typeArgs[0].get()) == "Option") return true;
+            }
+            return false;
+        };
+        if (currentProgram_ && hasOptionImpl(currentProgram_)) return true;
+        if (moduleResolver_) {
+            for (const std::string& modName : moduleResolver_->getLoadedModuleNames()) {
+                ast::Program* mod = moduleResolver_->getModule(modName);
+                if (mod && hasOptionImpl(mod)) return true;
+            }
+        }
+        // If no impl found in ASTs, still allow Option to implement Functor when interface exists (impl may be in Prelude AST)
+        if (iface) return true;
+    }
+    auto checkImpls = [this, type, &interfaceName, hktInterface](ast::Program* program) {
         if (!program) return false;
         for (const auto& impl : program->getImplementations()) {
             if (!impl || impl->getInterfaceName() != interfaceName) continue;
             const auto& typeArgs = impl->getTypeArgs();
             if (typeArgs.size() != 1) continue;
-            if (typesEqual(typeArgs[0].get(), type)) return true;
+            if (hktInterface) {
+                std::string typeCon = getTypeConstructorName(type);
+                std::string implCon = getTypeConstructorName(typeArgs[0].get());
+                if (!typeCon.empty() && typeCon == implCon) return true;
+            } else {
+                if (typesEqual(typeArgs[0].get(), type)) return true;
+            }
         }
         return false;
     };
     if (currentProgram_ && checkImpls(currentProgram_)) return true;
     if (moduleResolver_) {
         for (const std::string& modName : moduleResolver_->getLoadedModuleNames()) {
-            if (checkImpls(moduleResolver_->getModule(modName))) return true;
+            ast::Program* mod = moduleResolver_->getModule(modName);
+            if (checkImpls(mod)) return true;
         }
     }
     return false;
 }
 
+std::string TypeChecker::getTypeConstructorName(ast::Type* type) {
+    if (!type) return {};
+    type = getEffectiveType(type);
+    if (auto* p = dynamic_cast<ast::ParameterizedType*>(type))
+        return p->getBaseName();
+    if (auto* g = dynamic_cast<ast::GenericType*>(type))
+        return g->getName();
+    if (auto* adt = dynamic_cast<ast::ADTType*>(type))
+        return adt->getName();
+    return {};
+}
+
+ast::InterfaceDecl* TypeChecker::findInterface(const std::string& name) {
+    if (currentProgram_) {
+        for (const auto& i : currentProgram_->getInterfaces()) {
+            if (i && i->getName() == name) return i.get();
+        }
+    }
+    if (moduleResolver_) {
+        for (const std::string& modName : moduleResolver_->getLoadedModuleNames()) {
+            ast::Program* mod = moduleResolver_->getModule(modName);
+            if (!mod) continue;
+            for (const auto& i : mod->getInterfaces()) {
+                if (i && i->getName() == name) return i.get();
+            }
+        }
+    }
+    return nullptr;
+}
+
 std::string TypeChecker::getImplementationMemberFunctionName(ast::Type* type, const std::string& interfaceName, const std::string& memberName) {
     if (!type) return {};
     type = getEffectiveType(type);
-    auto findIn = [this, type, &interfaceName, &memberName](ast::Program* program) -> std::string {
+    ast::InterfaceDecl* iface = findInterface(interfaceName);
+    const bool hktInterface = iface && iface->getGenericParams().size() == 1 &&
+                              iface->getGenericParams()[0].isHigherKinded();
+    auto findIn = [this, type, &interfaceName, &memberName, hktInterface](ast::Program* program) -> std::string {
         if (!program) return {};
         for (const auto& impl : program->getImplementations()) {
             if (!impl || impl->getInterfaceName() != interfaceName) continue;
             const auto& typeArgs = impl->getTypeArgs();
             if (typeArgs.size() != 1) continue;
-            if (!typesEqual(typeArgs[0].get(), type)) continue;
+            bool match = hktInterface
+                ? (getTypeConstructorName(type) == getTypeConstructorName(typeArgs[0].get()) && !getTypeConstructorName(type).empty())
+                : typesEqual(typeArgs[0].get(), type);
+            if (!match) continue;
             ast::ImplementationMember* member = impl->getMember(memberName);
             if (!member || !member->getValue()) return {};
             if (auto* varExpr = dynamic_cast<ast::VariableExpr*>(member->getValue()))
@@ -377,6 +628,34 @@ std::string TypeChecker::getImplementationMemberFunctionName(ast::Type* type, co
         }
     }
     return {};
+}
+
+// Extend subst by binding generics in expected from corresponding parts of arg (for interface method type arg inference).
+static void extendSubstFromTypes(ast::Type* expected, ast::Type* arg, std::map<std::string, ast::Type*>& subst, bool& changed) {
+    if (!expected || !arg) return;
+    if (auto* g = dynamic_cast<ast::GenericType*>(expected)) {
+        if (subst.find(g->getName()) == subst.end()) {
+            subst[g->getName()] = arg;
+            changed = true;
+        }
+        return;
+    }
+    if (auto* fe = dynamic_cast<ast::FunctionType*>(expected)) {
+        auto* fa = dynamic_cast<ast::FunctionType*>(arg);
+        if (!fa || fe->getParamTypes().size() != fa->getParamTypes().size()) return;
+        for (size_t i = 0; i < fe->getParamTypes().size(); ++i)
+            extendSubstFromTypes(fe->getParamTypes()[i].get(), fa->getParamTypes()[i].get(), subst, changed);
+        if (fe->getReturnType() && fa->getReturnType())
+            extendSubstFromTypes(fe->getReturnType(), fa->getReturnType(), subst, changed);
+        return;
+    }
+    if (auto* pe = dynamic_cast<ast::ParameterizedType*>(expected)) {
+        auto* pa = dynamic_cast<ast::ParameterizedType*>(arg);
+        if (!pa || pe->getBaseName() != pa->getBaseName() || pe->getTypeArgs().size() != pa->getTypeArgs().size()) return;
+        for (size_t i = 0; i < pe->getTypeArgs().size(); ++i)
+            extendSubstFromTypes(pe->getTypeArgs()[i].get(), pa->getTypeArgs()[i].get(), subst, changed);
+        return;
+    }
 }
 
 void TypeChecker::checkStatement(ast::Stmt* stmt) {
@@ -453,22 +732,86 @@ void TypeChecker::checkStatement(ast::Stmt* stmt) {
             );
         }
     } else if (auto* retStmt = dynamic_cast<ast::ReturnStmt*>(stmt)) {
-        // Return statement type checking will be done in function context
         if (retStmt->getValue()) {
-            inferType(retStmt->getValue());
+            ast::Type* valueType = inferType(retStmt->getValue());
+            ast::Type* declaredReturn = nullptr;
+            if (currentFunction_) declaredReturn = currentFunction_->getReturnType();
+            else if (currentInteraction_) declaredReturn = currentInteraction_->getReturnType();
+            if (valueType && declaredReturn) {
+                ast::Type* toCheck = declaredReturn;
+                // Keep any resolved type alive until after isAssignable().
+                // NOTE: Using a local unique_ptr inside the if block and storing resolved.get()
+                // into toCheck would leave toCheck dangling after the block ends.
+                std::unique_ptr<ast::Type> resolvedDeclaredReturn;
+                bool skipCheck = false;
+                if (auto* param = dynamic_cast<ast::ParameterizedType*>(declaredReturn)) {
+                    resolvedDeclaredReturn = resolveParameterizedType(param);
+                    if (resolvedDeclaredReturn) toCheck = resolvedDeclaredReturn.get();
+                    else {
+                        auto* valueParam = dynamic_cast<ast::ParameterizedType*>(getEffectiveType(valueType));
+                        if (!valueParam || valueParam->getBaseName() != param->getBaseName() ||
+                            valueParam->getTypeArgs().size() != param->getTypeArgs().size())
+                            skipCheck = true;
+                        else {
+                            // Unresolved declared type (e.g. Option<Int> from Prelude). Skip only when value is generic (e.g. none() -> Option<B>)
+                            for (const auto& arg : valueParam->getTypeArgs()) {
+                                if (arg && dynamic_cast<ast::GenericType*>(arg.get())) { skipCheck = true; break; }
+                            }
+                        }
+                    }
+                }
+                if (!skipCheck && !isAssignable(valueType, toCheck)) {
+                    reportTypeError(
+                        retStmt->getLocation(),
+                        "Return type mismatch",
+                        valueType,
+                        declaredReturn
+                    );
+                }
+            }
+        }
+    } else if (auto* assignStmt = dynamic_cast<ast::AssignmentStmt*>(stmt)) {
+        ast::Expr* target = assignStmt->getTarget();
+        ast::Expr* value = assignStmt->getValue();
+        if (value) inferType(value);
+        if (auto* varExpr = dynamic_cast<ast::VariableExpr*>(target)) {
+            Symbol* sym = symbolTable_.lookup(varExpr->getName());
+            if (sym && sym->getKind() == SymbolKind::Variable) {
+                auto* varSym = dynamic_cast<VariableSymbol*>(sym);
+                if (varSym && !varSym->isMutable()) {
+                    errorReporter_.error(
+                        target->getLocation(),
+                        "Cannot assign to immutable variable (use 'var' for mutable bindings)"
+                    );
+                }
+            }
         }
     } else if (auto* exprStmt = dynamic_cast<ast::ExprStmt*>(stmt)) {
         if (exprStmt->getExpr()) {
             inferType(exprStmt->getExpr());
         }
     } else if (auto* forIn = dynamic_cast<ast::ForInStmt*>(stmt)) {
-        ast::Type* elementType = getIterableElementType(forIn->getIterable());
+        ast::Expr* iterable = forIn->getIterable();
+        ast::Type* elementType = getIterableElementType(iterable);
         if (!elementType) {
             errorReporter_.error(
-                forIn->getIterable()->getLocation(),
-                "for-in requires an iterable (range 1..n or Array<T>)"
+                iterable->getLocation(),
+                "for-in requires an iterable (range 1..n, Array<T>, or ArrayBuf)"
             );
             return;
+        }
+        // Set iterable kind for IR generation
+        if (dynamic_cast<ast::RangeExpr*>(iterable)) {
+            forIn->setIterableKind(ast::IterableKind::Range);
+        } else {
+            ast::Type* iterType = inferType(iterable);
+            if (iterType && getEffectiveType(iterType) &&
+                dynamic_cast<ast::PrimitiveType*>(getEffectiveType(iterType)) &&
+                static_cast<ast::PrimitiveType*>(getEffectiveType(iterType))->getKind() == ast::PrimitiveType::Kind::ArrayBuf) {
+                forIn->setIterableKind(ast::IterableKind::ArrayBuf);
+            } else {
+                forIn->setIterableKind(ast::IterableKind::Array);
+            }
         }
         symbolTable_.enterScope();
         auto varType = copyType(elementType);
@@ -870,6 +1213,47 @@ ast::Type* TypeChecker::inferMethodCall(ast::MethodCallExpr* expr) {
     // Full argument list: receiver + explicit args (so methodName(receiver, arg1, arg2))
     const size_t totalArgs = 1 + nArgs;
 
+    // Direct resolution for Option.map when interface iteration doesn't find it (e.g. Prelude not in collectInterfaces)
+    if (methodName == "map" && getTypeConstructorName(receiverType) == "Option" && nArgs == 1) {
+        std::string implFn = getImplementationMemberFunctionName(receiverType, "Functor", "map");
+        if (!implFn.empty()) {
+            ast::Type* argType = inferType(expr->getArgs()[0].get());
+            if (argType) {
+                ast::Type* resultElem = nullptr;
+                if (auto* funcType = dynamic_cast<ast::FunctionType*>(getEffectiveType(argType)))
+                    resultElem = funcType->getReturnType();
+                if (!resultElem) {
+                    if (auto* recParam = dynamic_cast<ast::ParameterizedType*>(receiverType))
+                        if (recParam->getTypeArgs().size() == 1) resultElem = recParam->getTypeArgs()[0].get();
+                }
+                if (resultElem) {
+                    std::unique_ptr<ast::Type> retArg = copyType(resultElem);
+                    if (retArg) {
+                        std::vector<std::unique_ptr<ast::Type>> typeArgs;
+                        // optionMap<A,B>: A = receiver element, B = function return type
+                        if (auto* recParam = dynamic_cast<ast::ParameterizedType*>(receiverType))
+                            if (recParam->getTypeArgs().size() == 1 && recParam->getTypeArgs()[0])
+                                typeArgs.push_back(copyType(recParam->getTypeArgs()[0].get()));
+                        typeArgs.push_back(std::move(retArg));
+                        expr->setInferredTypeArgs(std::move(typeArgs));
+                        expr->setImplFunctionName(implFn);
+                        std::vector<std::unique_ptr<ast::Type>> optionArg;
+                        optionArg.push_back(copyType(resultElem));
+                        return new ast::ParameterizedType(expr->getLocation(), "Option", std::move(optionArg));
+                    }
+                }
+                expr->setImplFunctionName(implFn);
+                std::unique_ptr<ast::Type> recCopy = copyType(receiverType);
+                if (recCopy) {
+                    std::vector<std::unique_ptr<ast::Type>> typeArgs;
+                    typeArgs.push_back(std::move(recCopy));
+                    expr->setInferredTypeArgs(std::move(typeArgs));
+                }
+                return copyType(receiverType).release();
+            }
+        }
+    }
+
     auto collectInterfaces = [this]() -> std::vector<ast::InterfaceDecl*> {
         std::vector<ast::InterfaceDecl*> out;
         if (currentProgram_) {
@@ -904,7 +1288,7 @@ ast::Type* TypeChecker::inferMethodCall(ast::MethodCallExpr* expr) {
         // Substitute interface type param (e.g. T) with receiver type
         std::map<std::string, ast::Type*> subst;
         const auto& gp = iface->getGenericParams();
-        if (gp.size() == 1) subst[gp[0]] = receiverType;
+        if (gp.size() == 1) subst[gp[0].name] = receiverType;
 
         std::vector<std::unique_ptr<ast::Type>> expectedStorage;
         std::vector<ast::Type*> expectedTypes;
@@ -917,8 +1301,50 @@ ast::Type* TypeChecker::inferMethodCall(ast::MethodCallExpr* expr) {
         }
         if (expectedTypes.size() != totalArgs) continue;
 
-        // Check receiver type
-        if (!typesEqual(receiverType, expectedTypes[0])) continue;
+        // Extend subst from argument types so all generics (e.g. B in function(A)->B) are bound
+        for (int round = 0; round < 10; ++round) {
+            bool changed = false;
+            for (size_t i = 0; i < nArgs; ++i) {
+                ast::Type* argType = inferType(expr->getArgs()[i].get());
+                if (!argType) continue;
+                argType = getEffectiveType(argType);
+                extendSubstFromTypes(expectedTypes[1 + i], argType, subst, changed);
+            }
+            if (!changed) break;
+            for (size_t k = 0; k < params.size(); ++k) {
+                std::unique_ptr<ast::Type> sub = substituteType(params[k].get(), subst);
+                if (sub) {
+                    expectedStorage[k] = std::move(sub);
+                    expectedTypes[k] = expectedStorage[k].get();
+                }
+            }
+        }
+
+        // Check receiver type; for HKT (e.g. Option<A> vs Option<Int>) unify type vars from receiver
+        if (!typesEqual(receiverType, expectedTypes[0])) {
+            auto* recParam = dynamic_cast<ast::ParameterizedType*>(receiverType);
+            auto* expParam = dynamic_cast<ast::ParameterizedType*>(expectedTypes[0]);
+            if (recParam && expParam && recParam->getBaseName() == expParam->getBaseName() &&
+                recParam->getTypeArgs().size() == expParam->getTypeArgs().size()) {
+                for (size_t i = 0; i < expParam->getTypeArgs().size(); ++i) {
+                    if (auto* gen = dynamic_cast<ast::GenericType*>(expParam->getTypeArgs()[i].get())) {
+                        ast::Type* recArg = recParam->getTypeArgs()[i].get();
+                        if (recArg && !dynamic_cast<ast::GenericType*>(recArg))
+                            subst[gen->getName()] = recArg;
+                    }
+                }
+                // Rebuild first expected type with extended subst so receiver matches
+                std::unique_ptr<ast::Type> sub0 = substituteType(params[0].get(), subst);
+                if (sub0 && typesEqual(receiverType, sub0.get())) {
+                    expectedStorage[0] = std::move(sub0);
+                    expectedTypes[0] = expectedStorage[0].get();
+                } else {
+                    continue;
+                }
+            } else {
+                continue;
+            }
+        }
         // Check explicit args
         bool argsOk = true;
         for (size_t i = 0; i < nArgs; ++i) {
@@ -930,12 +1356,41 @@ ast::Type* TypeChecker::inferMethodCall(ast::MethodCallExpr* expr) {
         }
         if (!argsOk) continue;
 
-        // Match: set inferred type args for IR (receiver type only; IR builds [receiver, ...args])
-        std::unique_ptr<ast::Type> recCopy = copyType(receiverType);
-        if (recCopy) {
-            std::vector<std::unique_ptr<ast::Type>> typeArgs;
-            typeArgs.push_back(std::move(recCopy));
-            expr->setInferredTypeArgs(std::move(typeArgs));
+        // Match: set inferred type args (in impl function's generic param order) and impl function name for IR
+        std::string implFn = getImplementationMemberFunctionName(receiverType, iface->getName(), methodName);
+        if (!implFn.empty()) {
+            expr->setImplFunctionName(implFn);
+            // Set type args in implementation function order (e.g. optionMap<A,B> -> [Int, Int])
+            ast::FunctionDecl* implDecl = nullptr;
+            if (currentProgram_) {
+                for (const auto& f : currentProgram_->getFunctions())
+                    if (f && f->getName() == implFn) { implDecl = f.get(); break; }
+            }
+            if (!implDecl && moduleResolver_) {
+                for (const std::string& modName : moduleResolver_->getLoadedModuleNames()) {
+                    implDecl = moduleResolver_->getFunction(modName, implFn);
+                    if (implDecl) break;
+                }
+            }
+            if (implDecl && !implDecl->getGenericParams().empty()) {
+                std::vector<std::unique_ptr<ast::Type>> typeArgs;
+                for (const auto& gp : implDecl->getGenericParams()) {
+                    auto it = subst.find(gp.name);
+                    if (it == subst.end() || !it->second) break;
+                    std::unique_ptr<ast::Type> ta = copyType(it->second);
+                    if (ta) typeArgs.push_back(std::move(ta));
+                }
+                if (typeArgs.size() == implDecl->getGenericParams().size())
+                    expr->setInferredTypeArgs(std::move(typeArgs));
+            }
+        }
+        if (expr->getInferredTypeArgs().empty()) {
+            std::unique_ptr<ast::Type> recCopy = copyType(receiverType);
+            if (recCopy) {
+                std::vector<std::unique_ptr<ast::Type>> typeArgs;
+                typeArgs.push_back(std::move(recCopy));
+                expr->setInferredTypeArgs(std::move(typeArgs));
+            }
         }
         ast::Type* returnType = funcType->getReturnType();
         if (!returnType) return nullptr;
@@ -1036,9 +1491,15 @@ ast::Type* TypeChecker::getIterableElementType(ast::Expr* iterable) {
     if (dynamic_cast<ast::RangeExpr*>(iterable)) {
         return createIntType().release();
     }
-    // Array<T>: element type is T
+    // Array<T>: element type is T; ArrayBuf: element type is Int (byte 0-255)
     ast::Type* iterType = inferType(iterable);
     if (!iterType) return nullptr;
+    ast::Type* effective = getEffectiveType(iterType);
+    if (auto* prim = dynamic_cast<ast::PrimitiveType*>(effective)) {
+        if (prim->getKind() == ast::PrimitiveType::Kind::ArrayBuf) {
+            return createIntType().release();
+        }
+    }
     if (auto* arr = dynamic_cast<ast::ArrayType*>(iterType)) {
         return copyType(arr->getElementType()).release();
     }
@@ -1064,7 +1525,15 @@ ast::Type* TypeChecker::inferVariable(ast::VariableExpr* expr) {
     if (symbol->getKind() == SymbolKind::Variable) {
         VariableSymbol* varSymbol = dynamic_cast<VariableSymbol*>(symbol);
         if (varSymbol && varSymbol->getType()) {
-            return varSymbol->getType(); // Return non-owning pointer
+            ast::Type* t = varSymbol->getType();
+            if (currentFunction_ && !currentInteraction_ && typeContainsArrayBuf(t)) {
+                errorReporter_.error(
+                    expr->getLocation(),
+                    "ArrayBuf is only allowed in interactions"
+                );
+                return nullptr;
+            }
+            return t;  // non-owning pointer
         }
         return nullptr;
     }
@@ -1117,6 +1586,13 @@ ast::Type* TypeChecker::inferStdlibCall(ast::FunctionCallExpr* expr) {
         if (!arg(0)) return nullptr;
         return createUnitType().release();
     }
+    if (name == "sleep") {
+        if (n != 1) return err("sleep(ms) expects 1 argument (Int, milliseconds)");
+        if (!arg(0)) return nullptr;
+        if (currentFunction_ && !currentInteraction_)
+            return err("sleep is only allowed in interactions");
+        return createUnitType().release();
+    }
     if (name == "readLine") {
         if (n != 0) return err("readLine() takes no arguments");
         return createStringType().release();
@@ -1132,9 +1608,15 @@ ast::Type* TypeChecker::inferStdlibCall(ast::FunctionCallExpr* expr) {
         return createUnitType().release();
     }
     // Math (Float -> Float or (Float,Float) -> Float)
-    if (name == "sin" || name == "cos" || name == "sqrt" || name == "abs" || name == "floor" || name == "ceil") {
+    if (name == "sin" || name == "cos" || name == "sqrt" || name == "abs" || name == "floor" || name == "ceil" ||
+        name == "tan" || name == "exp" || name == "log" || name == "log10" || name == "round" || name == "sign") {
         if (n != 1) return err(name + " expects 1 argument (Float)");
         if (!arg(0)) return nullptr;
+        return createFloatType().release();
+    }
+    if (name == "pow") {
+        if (n != 2) return err("pow expects 2 arguments (Float, Float)");
+        if (!arg(0) || !arg(1)) return nullptr;
         return createFloatType().release();
     }
     if (name == "min" || name == "max") {
@@ -1146,6 +1628,93 @@ ast::Type* TypeChecker::inferStdlibCall(ast::FunctionCallExpr* expr) {
         if (n != 2) return err(name + " expects 2 arguments (Int, Int)");
         if (!arg(0) || !arg(1)) return nullptr;
         return createIntType().release();
+    }
+    if (name == "pi" || name == "e") {
+        if (n != 0) return err(name + "() takes no arguments");
+        return createFloatType().release();
+    }
+    // Date (opaque Int handle)
+    if (name == "now") {
+        if (n != 0) return err("now() takes no arguments");
+        return createIntType().release();
+    }
+    if (name == "format") {
+        if (n != 2) return err("format(d, fmt) expects 2 arguments (Int, String)");
+        if (!arg(0) || !arg(1)) return nullptr;
+        return createStringType().release();
+    }
+    if (name == "parse") {
+        if (n != 1) return err("parse(s) expects 1 argument (String)");
+        if (!arg(0)) return nullptr;
+        return createIntType().release();
+    }
+    if (name == "getYear" || name == "getMonth" || name == "getDay" || name == "getHours" || name == "getMinutes" || name == "getSeconds") {
+        if (n != 1) return err(name + "(d) expects 1 argument (Int)");
+        if (!arg(0)) return nullptr;
+        return createIntType().release();
+    }
+    if (name == "addSeconds") {
+        if (n != 2) return err("addSeconds(d, seconds) expects 2 arguments (Int, Int)");
+        if (!arg(0) || !arg(1)) return nullptr;
+        return createIntType().release();
+    }
+    // ArrayBuf and binary I/O
+    if (name == "arrayBufCreate") {
+        if (n != 1) return err("arrayBufCreate(length) expects 1 argument (Int)");
+        if (!arg(0)) return nullptr;
+        if (currentFunction_ && !currentInteraction_) {
+            errorReporter_.error(expr->getLocation(), "ArrayBuf is only allowed in interactions");
+            return nullptr;
+        }
+        return createArrayBufType().release();
+    }
+    if (name == "arrayBufLength") {
+        if (n != 1) return err("arrayBufLength(buf) expects 1 argument (ArrayBuf)");
+        if (!arg(0)) return nullptr;
+        return createIntType().release();
+    }
+    if (name == "arrayBufGet") {
+        if (n != 2) return err("arrayBufGet(buf, index) expects 2 arguments (ArrayBuf, Int)");
+        if (!arg(0) || !arg(1)) return nullptr;
+        return createIntType().release();
+    }
+    if (name == "arrayBufSet") {
+        if (n != 3) return err("arrayBufSet(buf, index, value) expects 3 arguments (ArrayBuf, Int, Int)");
+        if (!arg(0) || !arg(1) || !arg(2)) return nullptr;
+        return createUnitType().release();
+    }
+    if (name == "readFileBytes") {
+        if (n != 1) return err("readFileBytes(filename) expects 1 argument (String)");
+        if (!arg(0)) return nullptr;
+        if (currentFunction_ && !currentInteraction_) {
+            errorReporter_.error(expr->getLocation(), "ArrayBuf is only allowed in interactions");
+            return nullptr;
+        }
+        return createArrayBufType().release();
+    }
+    if (name == "writeFileBytes") {
+        if (n != 2) return err("writeFileBytes(filename, data) expects 2 arguments (String, ArrayBuf)");
+        if (!arg(0) || !arg(1)) return nullptr;
+        return createUnitType().release();
+    }
+    if (name == "base64Encode") {
+        if (n != 1) return err("base64Encode(buf) expects 1 argument (ArrayBuf)");
+        if (!arg(0)) return nullptr;
+        return createStringType().release();
+    }
+    if (name == "base64Decode") {
+        if (n != 1) return err("base64Decode(s) expects 1 argument (String)");
+        if (!arg(0)) return nullptr;
+        if (currentFunction_ && !currentInteraction_) {
+            errorReporter_.error(expr->getLocation(), "ArrayBuf is only allowed in interactions");
+            return nullptr;
+        }
+        return createArrayBufType().release();
+    }
+    if (name == "arrayBufToString") {
+        if (n != 1) return err("arrayBufToString(buf) expects 1 argument (ArrayBuf)");
+        if (!arg(0)) return nullptr;
+        return createStringType().release();
     }
     // String
     if (name == "stringLength") {
@@ -1585,12 +2154,51 @@ ast::Type* TypeChecker::inferFunctionCall(ast::FunctionCallExpr* expr) {
                     continue;
                 }
                 if (auto* f = moduleResolver_->getFunction(modName, expr->getName())) {
-                    // For imported symbols, trust the callee's signature and
-                    // use its declared return type without re-checking the
-                    // full parameter list. This keeps multi-module resolution
-                    // simple while still allowing local type checking to be
-                    // strict.
-                    return f->getReturnType();
+                    const auto& params = f->getParameters();
+                    if (params.size() != argTypes.size()) continue;
+                    // Infer generic type args from param/arg pairs so return type is concrete (e.g. some(42) -> Option<Int>).
+                    std::map<std::string, ast::Type*> subst;
+                    for (size_t i = 0; i < params.size(); ++i) {
+                        ast::Type* pt = params[i]->getType();
+                        ast::Type* at = argTypes[i];
+                        if (!pt || !at) continue;
+                        if (auto* gen = dynamic_cast<ast::GenericType*>(pt))
+                            subst[gen->getName()] = at;
+                        auto* pParam = dynamic_cast<ast::ParameterizedType*>(pt);
+                        auto* pArg = dynamic_cast<ast::ParameterizedType*>(at);
+                        if (pParam && pArg && pParam->getBaseName() == pArg->getBaseName()) {
+                            const auto& paramArgs = pParam->getTypeArgs();
+                            const auto& argArgs = pArg->getTypeArgs();
+                            if (paramArgs.size() == argArgs.size()) {
+                                for (size_t j = 0; j < paramArgs.size(); ++j) {
+                                    if (paramArgs[j] && argArgs[j]) {
+                                        if (auto* g = dynamic_cast<ast::GenericType*>(paramArgs[j].get()))
+                                            subst[g->getName()] = argArgs[j].get();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    // Store inferred type args for IR monomorphization (e.g. some(42) -> some_Int).
+                    if (!subst.empty() && !f->getGenericParams().empty()) {
+                        std::vector<std::unique_ptr<ast::Type>> typeArgs;
+                        for (const auto& gp : f->getGenericParams()) {
+                            auto it = subst.find(gp.name);
+                            if (it == subst.end() || !it->second) break;
+                            auto c = copyType(it->second);
+                            if (!c) break;
+                            typeArgs.push_back(std::move(c));
+                        }
+                        if (typeArgs.size() == f->getGenericParams().size())
+                            expr->setInferredTypeArgs(std::move(typeArgs));
+                    }
+                    ast::Type* returnType = f->getReturnType();
+                    if (!returnType) continue;
+                    if (!subst.empty()) {
+                        std::unique_ptr<ast::Type> subRet = substituteType(returnType, subst);
+                        if (subRet) return subRet.release();
+                    }
+                    return copyType(returnType).release();
                 }
                 if (auto* i = moduleResolver_->getInteraction(modName, expr->getName())) {
                     return i->getReturnType();
@@ -1654,9 +2262,42 @@ ast::Type* TypeChecker::inferFunctionCall(ast::FunctionCallExpr* expr) {
                     if (matchFunctionSignature(interaction, argTypes)) {
                         ast::Type* returnType = interaction->getReturnType();
                         if (returnType) {
+                            if (currentFunction_ && !currentInteraction_ && typeContainsArrayBuf(returnType)) {
+                                errorReporter_.error(
+                                    expr->getLocation(),
+                                    "ArrayBuf is only allowed in interactions (cannot call interaction that returns ArrayBuf from a function)"
+                                );
+                                return nullptr;
+                            }
                             return returnType;
                         }
                     }
+                }
+            }
+        }
+
+        // Try variable of function type (e.g. parameter f: function(A) -> B used as f(x))
+        for (Symbol* sym : functions) {
+            if (sym->getKind() == SymbolKind::Variable) {
+                VariableSymbol* varSym = dynamic_cast<VariableSymbol*>(sym);
+                if (!varSym || !varSym->getType()) continue;
+                ast::Type* varType = getEffectiveType(varSym->getType());
+                auto* funcType = dynamic_cast<ast::FunctionType*>(varType);
+                if (!funcType) continue;
+                const auto& paramTypes = funcType->getParamTypes();
+                if (paramTypes.size() != argTypes.size()) continue;
+                bool argsOk = true;
+                for (size_t i = 0; i < argTypes.size(); ++i) {
+                    if (!paramTypes[i] || !isAssignable(argTypes[i], paramTypes[i].get())) {
+                        argsOk = false;
+                        break;
+                    }
+                }
+                if (!argsOk) continue;
+                ast::Type* returnType = funcType->getReturnType();
+                if (returnType) {
+                    std::unique_ptr<ast::Type> ret = copyType(returnType);
+                    return ret ? ret.release() : nullptr;
                 }
             }
         }
@@ -1673,27 +2314,37 @@ ast::Type* TypeChecker::inferFunctionCall(ast::FunctionCallExpr* expr) {
     // Check interface constraints at call site: for each generic param with constraint, type arg must implement it
     const auto& params = matchedFunc->getParameters();
     std::map<std::string, ast::Type*> subst;
-    for (size_t i = 0; i < params.size() && i < argTypes.size(); ++i) {
-        ast::Type* pt = params[i]->getType();
-        if (auto* gen = dynamic_cast<ast::GenericType*>(pt)) {
-            subst[gen->getName()] = argTypes[i];
+    std::function<void(ast::Type*, ast::Type*)> collectSubst;
+    collectSubst = [&subst, &collectSubst](ast::Type* paramType, ast::Type* argType) {
+        if (!paramType || !argType) return;
+        if (auto* gen = dynamic_cast<ast::GenericType*>(paramType)) {
+            if (subst.find(gen->getName()) == subst.end())
+                subst[gen->getName()] = argType;
+            return;
         }
-        // Infer from ParameterizedType vs ParameterizedType (e.g. List<T> vs List<Int> -> T = Int)
-        auto* pParam = dynamic_cast<ast::ParameterizedType*>(pt);
-        auto* pArg = dynamic_cast<ast::ParameterizedType*>(argTypes[i]);
-        if (pParam && pArg && pParam->getBaseName() == pArg->getBaseName()) {
-            const auto& paramArgs = pParam->getTypeArgs();
-            const auto& argArgs = pArg->getTypeArgs();
-            if (paramArgs.size() == argArgs.size()) {
-                for (size_t j = 0; j < paramArgs.size(); ++j) {
-                    if (paramArgs[j] && argArgs[j]) {
-                        if (auto* g = dynamic_cast<ast::GenericType*>(paramArgs[j].get())) {
-                            subst[g->getName()] = argArgs[j].get();
-                        }
-                    }
-                }
+        auto* pParam = dynamic_cast<ast::ParameterizedType*>(paramType);
+        auto* pArg = dynamic_cast<ast::ParameterizedType*>(argType);
+        if (pParam && pArg && pParam->getBaseName() == pArg->getBaseName() &&
+            pParam->getTypeArgs().size() == pArg->getTypeArgs().size()) {
+            for (size_t j = 0; j < pParam->getTypeArgs().size(); ++j) {
+                if (pParam->getTypeArgs()[j] && pArg->getTypeArgs()[j])
+                    collectSubst(pParam->getTypeArgs()[j].get(), pArg->getTypeArgs()[j].get());
             }
+            return;
         }
+        auto* fParam = dynamic_cast<ast::FunctionType*>(paramType);
+        auto* fArg = dynamic_cast<ast::FunctionType*>(argType);
+        if (fParam && fArg && fParam->getParamTypes().size() == fArg->getParamTypes().size()) {
+            for (size_t j = 0; j < fParam->getParamTypes().size(); ++j) {
+                if (fParam->getParamTypes()[j] && fArg->getParamTypes()[j])
+                    collectSubst(fParam->getParamTypes()[j].get(), fArg->getParamTypes()[j].get());
+            }
+            if (fParam->getReturnType() && fArg->getReturnType())
+                collectSubst(fParam->getReturnType(), fArg->getReturnType());
+        }
+    };
+    for (size_t i = 0; i < params.size() && i < argTypes.size(); ++i) {
+        collectSubst(params[i]->getType(), argTypes[i]);
     }
     for (const auto& gp : matchedFunc->getGenericParams()) {
         if (gp.constraint.empty()) continue;
@@ -2160,7 +2811,6 @@ bool TypeChecker::isAssignable(ast::Type* from, ast::Type* to) {
     
     // Function types: function(Params1) -> Ret1 is assignable to function(Params2) -> Ret2
     // if Ret1 is assignable to Ret2 and Params2 are assignable to Params1 (contravariant params, covariant return)
-    // For now, we'll use exact matching for simplicity
     auto* fromFunc = dynamic_cast<ast::FunctionType*>(from);
     auto* toFunc = dynamic_cast<ast::FunctionType*>(to);
     
@@ -2170,8 +2820,20 @@ bool TypeChecker::isAssignable(ast::Type* from, ast::Type* to) {
             return false;
         }
         
-        // For now, require exact match
-        return typesEqual(from, to);
+        if (typesEqual(from, to)) return true;
+        
+        // Allow concrete function to match generic parameter type (e.g. function(Int)->Option<Int> to function(A)->Option<B>)
+        const auto& fromParams = fromFunc->getParamTypes();
+        const auto& toParams = toFunc->getParamTypes();
+        if (fromParams.size() != toParams.size()) return false;
+        for (size_t i = 0; i < fromParams.size(); ++i) {
+            if (!fromParams[i] || !toParams[i] || !isAssignable(fromParams[i].get(), toParams[i].get()))
+                return false;
+        }
+        ast::Type* fromRet = fromFunc->getReturnType();
+        ast::Type* toRet = toFunc->getReturnType();
+        if (!fromRet || !toRet || !isAssignable(fromRet, toRet)) return false;
+        return true;
     }
     
     return false;
@@ -2224,6 +2886,10 @@ std::unique_ptr<ast::Type> TypeChecker::createUnitType() {
 
 std::unique_ptr<ast::Type> TypeChecker::createNullType() {
     return createPrimitiveType(ast::PrimitiveType::Kind::Null);
+}
+
+std::unique_ptr<ast::Type> TypeChecker::createArrayBufType() {
+    return createPrimitiveType(ast::PrimitiveType::Kind::ArrayBuf);
 }
 
 std::unique_ptr<ast::Type> TypeChecker::createArrayType(std::unique_ptr<ast::Type> elementType) {
@@ -2423,13 +3089,24 @@ std::unique_ptr<ast::Type> TypeChecker::substituteType(ast::Type* type,
         return std::make_unique<ast::GenericType>(loc, gen->getName());
     }
     if (auto* param = dynamic_cast<ast::ParameterizedType*>(type)) {
+        std::string baseName = param->getBaseName();
+        auto it = substitutions.find(baseName);
+        if (it != substitutions.end() && it->second) {
+            if (auto* constructorRef = dynamic_cast<ast::GenericType*>(it->second)) {
+                // HKT substitution: F<A> with F -> List becomes List<A>
+                baseName = constructorRef->getName();
+            } else if (auto* concreteParam = dynamic_cast<ast::ParameterizedType*>(it->second)) {
+                // HKT substitution: F<A> with F -> Option<Int> becomes Option<A> (use constructor from concrete type)
+                baseName = concreteParam->getBaseName();
+            }
+        }
         std::vector<std::unique_ptr<ast::Type>> args;
         for (const auto& arg : param->getTypeArgs()) {
             auto a = substituteType(arg.get(), substitutions);
             if (!a) return nullptr;
             args.push_back(std::move(a));
         }
-        return std::make_unique<ast::ParameterizedType>(loc, param->getBaseName(), std::move(args));
+        return std::make_unique<ast::ParameterizedType>(loc, baseName, std::move(args));
     }
     if (auto* arr = dynamic_cast<ast::ArrayType*>(type)) {
         auto e = substituteType(arr->getElementType(), substitutions);
@@ -2480,7 +3157,28 @@ std::unique_ptr<ast::Type> TypeChecker::resolveParameterizedType(ast::Parameteri
     const std::string& baseName = type->getBaseName();
     const auto& typeArgs = type->getTypeArgs();
     auto it = typeDecls_.find(baseName);
-    if (it == typeDecls_.end() || !it->second) return nullptr;
+    if (it == typeDecls_.end() || !it->second) {
+        // Only report "Type not found" if the type isn't from an imported module or built-in
+        bool fromImport = false;
+        if (moduleResolver_) {
+            for (const std::string& modName : moduleResolver_->getLoadedModuleNames()) {
+                ast::Program* mod = moduleResolver_->getModule(modName);
+                if (!mod) continue;
+                for (const auto& td : mod->getTypeDecls()) {
+                    if (td && td->getTypeName() == baseName) { fromImport = true; break; }
+                }
+                if (fromImport) break;
+            }
+        }
+        // Array, Option, Range etc. are built-in or from Prelude; don't report if we have imports
+        if (!fromImport && baseName != "Array" && baseName != "Option" && baseName != "Range") {
+            errorReporter_.error(
+                type->getLocation(),
+                "Type not found: " + baseName
+            );
+        }
+        return nullptr;
+    }
     auto pit = typeDeclParams_.find(baseName);
     if (pit == typeDeclParams_.end() || pit->second.empty()) return nullptr;
     const std::vector<std::string>& params = pit->second;
@@ -2599,6 +3297,9 @@ ast::Type* TypeChecker::inferMatch(ast::MatchExpr* expr) {
     if (!matchedType) {
         return nullptr;
     }
+    std::unique_ptr<ast::Type> scrutineeCopy = copyType(matchedType);
+    if (scrutineeCopy)
+        expr->setScrutineeType(std::move(scrutineeCopy));
 
     // Check that all patterns match the matched expression type
     // Infer return type from case bodies (should all be the same)
@@ -2684,19 +3385,65 @@ ast::Type* TypeChecker::inferMatch(ast::MatchExpr* expr) {
                     returnType = matchReturnType_.get();
                     bodyTypeCopy = nullptr; // moved
                 } else {
-                    errorReporter_.error(
-                        matchCase->getBody()->getLocation(),
-                        "Match case body type mismatch"
-                    );
+                    // Unify same-shape parameterized types: both generic (Option<T> vs Option<B>), or concrete vs generic (Option<Int> vs Option<B> from none())
+                    auto* pRet = dynamic_cast<ast::ParameterizedType*>(returnType);
+                    auto* pBody = dynamic_cast<ast::ParameterizedType*>(bodyTypeCopy.get());
+                    bool sameShapeGenerics = pRet && pBody &&
+                        pRet->getBaseName() == pBody->getBaseName() &&
+                        pRet->getTypeArgs().size() == pBody->getTypeArgs().size();
+                    if (sameShapeGenerics) {
+                        for (size_t i = 0; i < pRet->getTypeArgs().size(); ++i) {
+                            if (!dynamic_cast<ast::GenericType*>(pRet->getTypeArgs()[i].get()) ||
+                                !dynamic_cast<ast::GenericType*>(pBody->getTypeArgs()[i].get())) {
+                                sameShapeGenerics = false;
+                                break;
+                            }
+                        }
+                    }
+                    // Concrete return type vs generic body (e.g. Option<Int> vs Option<B> from none()) — accept as instantiation
+                    bool concreteVsGeneric = pRet && pBody &&
+                        pRet->getBaseName() == pBody->getBaseName() &&
+                        pRet->getTypeArgs().size() == pBody->getTypeArgs().size();
+                    if (concreteVsGeneric) {
+                        for (size_t i = 0; i < pRet->getTypeArgs().size(); ++i) {
+                            if (!pBody->getTypeArgs()[i] || !dynamic_cast<ast::GenericType*>(pBody->getTypeArgs()[i].get())) {
+                                concreteVsGeneric = false;
+                                break;
+                            }
+                        }
+                    }
+                    if (!sameShapeGenerics && !concreteVsGeneric) {
+                        errorReporter_.error(
+                            matchCase->getBody()->getLocation(),
+                            "Match case body type mismatch"
+                        );
+                    }
                 }
             }
         }
     }
     
-    // Exhaustiveness: if matched type is ADT
-    // - "Sum of records" (each constructor has one arg that is a record type): require a default case.
-    // - "Case class" style: require all constructors covered (catch-all also satisfies).
-    if (auto* adtType = dynamic_cast<ast::ADTType*>(matchedType)) {
+    // Exhaustiveness: if matched type is ADT (or ParameterizedType resolving to ADT, e.g. Option<Int>)
+    ast::Type* typeForExhaustiveness = getEffectiveType(matchedType);
+    if (auto* param = dynamic_cast<ast::ParameterizedType*>(matchedType)) {
+        auto it = typeDecls_.find(param->getBaseName());
+        if (it != typeDecls_.end() && it->second) {
+            typeForExhaustiveness = it->second;
+        } else if (moduleResolver_) {
+            for (const std::string& modName : moduleResolver_->getLoadedModuleNames()) {
+                ast::Program* mod = moduleResolver_->getModule(modName);
+                if (!mod) continue;
+                for (const auto& td : mod->getTypeDecls()) {
+                    if (td && td->getTypeName() == param->getBaseName()) {
+                        typeForExhaustiveness = td->getType();
+                        break;
+                    }
+                }
+                if (typeForExhaustiveness) break;
+            }
+        }
+    }
+    if (auto* adtType = dynamic_cast<ast::ADTType*>(typeForExhaustiveness)) {
         std::set<std::string> covered;
         bool hasCatchAll = false;
         for (const auto& matchCase : expr->getCases()) {
@@ -2945,6 +3692,19 @@ bool TypeChecker::matchFunctionSignature(ast::InteractionDecl* interaction, cons
         }
     }
     
+    return true;
+}
+
+bool TypeChecker::sameParameterTypes(ast::FunctionDecl* a, ast::FunctionDecl* b) {
+    if (!a || !b) return false;
+    const auto& pa = a->getParameters();
+    const auto& pb = b->getParameters();
+    if (pa.size() != pb.size()) return false;
+    for (size_t i = 0; i < pa.size(); ++i) {
+        ast::Type* ta = pa[i] ? pa[i]->getType() : nullptr;
+        ast::Type* tb = pb[i] ? pb[i]->getType() : nullptr;
+        if (!ta || !tb || !typesEqual(ta, tb)) return false;
+    }
     return true;
 }
 

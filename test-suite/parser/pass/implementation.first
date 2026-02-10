@@ -1,0 +1,4 @@
+import * "Prelude"
+implementation ToString<Int> {
+  toString = intToString;
+}

@@ -1,0 +1,4 @@
+interaction main() -> Unit {
+  for x in true { let _ = x; };
+  return;
+}

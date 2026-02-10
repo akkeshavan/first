@@ -1,0 +1,2 @@
+module Foo;
+function f() -> Int { return 0; }

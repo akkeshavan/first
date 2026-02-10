@@ -5,6 +5,7 @@ cmake_minimum_required(VERSION 3.20)
 
 add_executable(test_compiler
     test_main.cpp
+    test_suite_runner.cpp
     test_error_reporter.cpp
     test_error_enhancements.cpp
     test_source_location.cpp
@@ -65,6 +66,7 @@ target_include_directories(test_compiler PRIVATE
 )
 
 target_compile_definitions(test_compiler PRIVATE
+    FIRST_TEST_SUITE_PATH="${CMAKE_SOURCE_DIR}/test-suite"
     ${LLVM_DEFINITIONS}
 )
 

@@ -39,6 +39,14 @@ public:
     // resolveModules: if false, skip module resolution to avoid recursion
     bool compileFromStringNoModules(const std::string& source, const std::string& virtualFile, bool resolveModules = true);
 
+    // Set install lib directory (e.g. PREFIX/lib/first). When set, the compiler
+    // looks here for stdlib modules (Prelude, etc.) so "firstc" works from any cwd after install.
+    void setInstallLibPath(const std::string& path) { installLibPath_ = path; }
+
+    // When true, compileFromString runs module resolution, typecheck, and semantic checks
+    // (and IR generation). Used by the test suite to exercise typecheck without writing IR.
+    void setGenerateIR(bool b) { generateIR_ = b; }
+
     // Get error reporter
     ErrorReporter& getErrorReporter() { return *errorReporter_; }
     
@@ -71,6 +79,7 @@ public:
     bool linkRuntimeLibrary(const std::string& runtimeLibPath = "");
 
 private:
+    std::string installLibPath_;  // e.g. PREFIX/lib/first (empty = only cwd/FIRST_LIB_PATH)
     std::unique_ptr<ErrorReporter> errorReporter_;
     std::unique_ptr<ast::Program> ast_;
     bool generateIR_;

@@ -1,0 +1,8 @@
+interaction main() -> Unit {
+  let a: Array<Int> = [1, 2, 3];
+  var sum: Int = 0;
+  for x in a {
+    sum = sum + x;
+  };
+  return;
+}

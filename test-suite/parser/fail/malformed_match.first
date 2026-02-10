@@ -1,0 +1,5 @@
+function f(n: Int) -> Int {
+  return match n
+    x => 0
+  };
+}

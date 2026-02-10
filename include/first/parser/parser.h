@@ -124,7 +124,10 @@
      // Helpers
      void reportSyntaxError(const std::string& message,
                             std::size_t length = 1);
- };
+     // Scala-like kind: F<_> or F<_, _>. Returns true if parsed, and sets outArity (1, 2, ...).
+     // If the closing token is >> (OpThen), sets outConsumedDoubleGt true so caller skips expecting '>'.
+     bool parseScalaStyleKind(int& outArity, bool* outConsumedDoubleGt = nullptr);
+};
 
  } // namespace parser
  } // namespace first

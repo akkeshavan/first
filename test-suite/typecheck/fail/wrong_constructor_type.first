@@ -1,0 +1,4 @@
+import * "Prelude"
+function f() -> Option<String> {
+  return some(42);
+}

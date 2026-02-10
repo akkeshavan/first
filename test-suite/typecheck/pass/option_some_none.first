@@ -1,0 +1,7 @@
+import * "Prelude"
+function f() -> Option<Int> {
+  return some(42);
+}
+function g() -> Option<Int> {
+  return none();
+}

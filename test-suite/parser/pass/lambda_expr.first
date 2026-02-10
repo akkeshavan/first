@@ -1,0 +1,4 @@
+interaction main() -> Unit {
+  let f: function(Int) -> Int = function(n: Int) -> Int { return n + 1; };
+  return;
+}

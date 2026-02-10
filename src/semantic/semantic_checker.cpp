@@ -157,20 +157,15 @@ void SemanticChecker::checkWhileLoop(ast::Stmt* stmt) {
 void SemanticChecker::checkMonadicOperators(ast::Expr* expr) {
     if (!inPureFunction_ || !expr) return;
     
-    // After parser desugaring, monadic operators are represented as ordinary
-    // function calls to bind/then/fmap/apply. We treat those specially in
-    // pure functions and report a semantic restriction violation.
+    // Only flag calls that were produced by desugaring >>=, >>, <$>, <*>.
+    // User-defined functions named bind/then/fmap/apply are allowed in pure functions.
     auto* call = dynamic_cast<ast::FunctionCallExpr*>(expr);
-    if (!call) return;
+    if (!call || !call->isDesugaredMonadicOp()) return;
 
-    const std::string& name = call->getName();
-    if (name == "bind" || name == "then" ||
-        name == "fmap" || name == "apply") {
-        reportViolation(
-            call->getLocation(),
-            "Monadic operators (`>>=`, `>>`, `<$>`, `<*>`) can only be used in interaction functions, not in pure functions"
-        );
-    }
+    reportViolation(
+        call->getLocation(),
+        "Monadic operators (`>>=`, `>>`, `<$>`, `<*>`) can only be used in interaction functions, not in pure functions"
+    );
 }
 
 void SemanticChecker::checkIOOperation(ast::FunctionCallExpr* call) {

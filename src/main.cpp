@@ -1,7 +1,53 @@
 #include <iostream>
 #include <string>
+#include <filesystem>
 #include "first/compiler.h"
 #include "first/error_reporter.h"
+
+#if defined(__linux__)
+#include <unistd.h>
+#elif defined(__APPLE__)
+#include <mach-o/dyld.h>
+#elif defined(_WIN32)
+#include <windows.h>
+#endif
+
+namespace {
+
+// Resolve path to the running executable so we can compute PREFIX/lib/first for stdlib.
+std::string getExecutablePath(const char* argv0) {
+#if defined(__linux__)
+    char buf[4096];
+    ssize_t n = readlink("/proc/self/exe", buf, sizeof(buf) - 1);
+    if (n > 0) {
+        buf[n] = '\0';
+        return std::string(buf);
+    }
+    return "";
+#elif defined(__APPLE__)
+    char buf[1024];
+    uint32_t size = sizeof(buf);
+    if (_NSGetExecutablePath(buf, &size) == 0) return std::string(buf);
+    return "";
+#elif defined(_WIN32)
+    char buf[MAX_PATH];
+    if (GetModuleFileNameA(nullptr, buf, MAX_PATH)) return std::string(buf);
+    return "";
+#else
+    (void)argv0;
+    return "";
+#endif
+}
+
+// Given executable path (e.g. /usr/local/bin/firstc), return PREFIX/lib/first (e.g. /usr/local/lib/first).
+std::string getInstallLibDir(const std::string& executablePath) {
+    if (executablePath.empty()) return "";
+    std::filesystem::path exe(executablePath);
+    std::filesystem::path prefix = exe.parent_path().parent_path();
+    return (prefix / "lib" / "first").string();
+}
+
+}  // namespace
 
 void printUsage(const char* programName) {
     std::cout << "First Programming Language Compiler\n";
@@ -60,9 +106,14 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    // Create compiler and compile
+    // Create compiler and set install lib path (PREFIX/lib/first) so stdlib is found when run from install.
     first::Compiler compiler;
-    
+    std::string exePath = getExecutablePath(argv[0]);
+    if (!exePath.empty()) {
+        std::string installLib = getInstallLibDir(exePath);
+        if (!installLib.empty()) compiler.setInstallLibPath(installLib);
+    }
+
     if (verbose) {
         std::cout << "Compiling: " << sourceFile << "\n";
     }

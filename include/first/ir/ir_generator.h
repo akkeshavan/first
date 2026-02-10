@@ -208,7 +208,7 @@ private:
     // Pattern matching helpers
     bool generatePatternMatch(ast::Pattern* pattern, llvm::Value* value, 
                               llvm::BasicBlock* matchBB, llvm::BasicBlock* nextBB);
-    void bindPatternVariables(ast::Pattern* pattern, llvm::Value* value);
+    void bindPatternVariables(ast::Pattern* pattern, llvm::Value* value, ast::Type* scrutineeType = nullptr);
     
     // Closure/lambda helpers
     llvm::Value* evaluateLambda(ast::LambdaExpr* expr);
@@ -235,6 +235,11 @@ private:
     // Runtime allocator for heap-allocated ADTs (so they outlive the stack frame)
     llvm::Function* getOrCreateFirstAlloc();
 
+    // Concurrency: task spawn/join (and async/await use same runtime)
+    llvm::Function* getOrCreateTaskSpawn();
+    llvm::Function* getOrCreateTaskJoin();
+    llvm::Function* createTaskThunk(ast::Expr* operand);
+
     // ADT constructor index map: constructor name -> (ADTType*, index)
     void buildConstructorIndexMap(ast::Program* program);
     void registerADTFromType(ast::Type* type);
@@ -254,6 +259,7 @@ private:
     std::map<std::string, ast::Type*> typeDeclsMap_;
     // For generic types (e.g. List<T>): type name -> type parameter names
     std::map<std::string, std::vector<std::string>> typeDeclParamsMap_;
+    size_t spawnThunkCounter_ = 0;
 };
 
 } // namespace ir

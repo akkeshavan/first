@@ -1,0 +1,4 @@
+function pair<A, B>(a: A, b: B) -> A {
+  return a;
+}
+function f() -> Int { return pair(1, "x"); }

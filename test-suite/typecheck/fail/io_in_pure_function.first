@@ -1,0 +1,4 @@
+function f() -> Unit {
+  println("not allowed");
+  return;
+}

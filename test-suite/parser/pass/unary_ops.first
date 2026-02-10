@@ -1,0 +1,6 @@
+function f(n: Int) -> Int {
+  return -n;
+}
+function g(b: Bool) -> Bool {
+  return !b;
+}

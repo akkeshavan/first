@@ -1,0 +1,6 @@
+function apply(f: function(Int) -> Int, n: Int) -> Int {
+  return f(n);
+}
+function g() -> Int {
+  return apply(function(x: Int) -> Int { return x + 1; }, 10);
+}

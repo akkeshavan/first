@@ -32,7 +32,8 @@ public:
         Bool,
         String,
         Unit,
-        Null
+        Null,
+        ArrayBuf
     };
 
     PrimitiveType(const SourceLocation& location, Kind kind)

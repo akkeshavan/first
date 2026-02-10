@@ -16,14 +16,23 @@ void writeFile(const char* filename, const char* content);  // overwrites file
 // --- Math ---
 double first_sin(double x);
 double first_cos(double x);
+double first_tan(double x);
 double first_sqrt(double x);
+double first_pow(double base, double exp);
+double first_exp(double x);
+double first_log(double x);
+double first_log10(double x);
 double first_abs(double x);
 double first_floor(double x);
 double first_ceil(double x);
+double first_round(double x);
+double first_sign(double x);
 double first_min(double a, double b);
 double first_max(double a, double b);
 int64_t first_min_int(int64_t a, int64_t b);
 int64_t first_max_int(int64_t a, int64_t b);
+double first_pi(void);
+double first_e(void);
 
 // --- String ---
 int64_t first_string_length(const char* s);
@@ -93,6 +102,17 @@ char* first_json_prettify(const char* json_str);  // caller must free; null on e
 char* first_json_stringify_int(int64_t n);        // trivial
 char* first_json_stringify_float(double x);
 char* first_json_stringify_string(const char* s);
+
+// --- ArrayBuf (JS/TS-style buffer: layout [int64_t length][uint8_t data[]], ptr = first byte of block) ---
+void* first_arraybuf_alloc(int64_t len);           // alloc 8+len, store len at 0, zero data; returns ptr
+int64_t first_arraybuf_length(void* buf);          // *(int64_t*)buf; 0 if buf null
+int64_t first_arraybuf_get(void* buf, int64_t i);  // byte 0-255; 0 if out of range
+void first_arraybuf_set(void* buf, int64_t i, int64_t v);  // v&0xff; no-op if out of range
+void* first_read_file_bytes(const char* path);      // returns arraybuf (empty on error)
+void first_write_file_bytes(const char* path, void* buf);   // writes buf's data to file
+char* first_base64_encode(void* buf);               // caller must free
+void* first_base64_decode(const char* s);           // returns arraybuf (empty on error); caller/GC frees
+char* first_arraybuf_to_string(void* buf);         // "<ArrayBuf length=N>"; caller must free
 
 #ifdef __cplusplus
 }

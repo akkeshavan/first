@@ -1,0 +1,70 @@
+// Chapter 17: Concurrency and async — practical example
+// Run:
+//   cd examples/chapter-17-concurrency-async
+//   fir run
+//
+// Notes:
+// - spawn/join and async/await run the callee in a separate thread; join/await block for the result.
+// - sleep(ms) blocks the current thread for the given number of milliseconds (like JS setTimeout/sleep).
+// - Using sleep() here simulates network/database latency so you can see parallel vs sequential timing.
+//
+// Practical scenario: a checkout summary.
+// We fetch independent pieces of information in parallel (cart, shipping, tax),
+// then compute the grand total and estimate delivery time.
+
+interaction loadCartTotal() -> Int {
+  println("Loading cart total...");
+  sleep(500);  // simulate 500 ms API delay
+  return 5000; // cents
+}
+
+interaction loadShippingCost() -> Int {
+  println("Loading shipping cost...");
+  sleep(300);  // simulate 300 ms delay
+  return 700;  // cents
+}
+
+interaction loadTax() -> Int {
+  println("Loading tax...");
+  sleep(200);  // simulate 200 ms delay
+  return 650;  // cents
+}
+
+interaction estimateDeliveryDays() -> Int {
+  println("Estimating delivery days...");
+  sleep(150);  // simulate 150 ms delay
+  return 3;
+}
+
+interaction main() -> Unit {
+  println("Starting checkout...");
+
+  // Run independent work concurrently.
+  let cartTask = spawn (loadCartTotal());
+  let shippingTask = spawn (loadShippingCost());
+  let taxTask = spawn (loadTax());
+
+  // Join = wait for results.
+  let cart = join cartTask;
+  let shipping = join shippingTask;
+  let tax = join taxTask;
+
+  let total = cart + shipping + tax;
+
+  println("Cart total:  " + intToString(cart) + " cents");
+  println("Shipping:    " + intToString(shipping) + " cents");
+  println("Tax:         " + intToString(tax) + " cents");
+  println("------------");
+  println("Grand total: " + intToString(total) + " cents");
+
+  // Async/await style: start work, then await later.
+  let deliveryPromise = async (estimateDeliveryDays());
+  let days = await deliveryPromise;
+  println("Estimated delivery: " + intToString(days) + " days");
+
+  // Select syntax demo (channels not implemented yet, so use else).
+  select {
+    else: println("Select: (channels pending) else branch executed");
+  }
+}
+

@@ -82,14 +82,27 @@ void writeFile(const char* filename, const char* content) {
 // --- Math (libm) ---
 double first_sin(double x) { return std::sin(x); }
 double first_cos(double x) { return std::cos(x); }
+double first_tan(double x) { return std::tan(x); }
 double first_sqrt(double x) { return std::sqrt(x); }
+double first_pow(double base, double exp) { return std::pow(base, exp); }
+double first_exp(double x) { return std::exp(x); }
+double first_log(double x) { return std::log(x); }
+double first_log10(double x) { return std::log10(x); }
 double first_abs(double x) { return std::abs(x); }
 double first_floor(double x) { return std::floor(x); }
 double first_ceil(double x) { return std::ceil(x); }
+double first_round(double x) { return std::round(x); }
+double first_sign(double x) {
+    if (x > 0) return 1.0;
+    if (x < 0) return -1.0;
+    return 0.0;
+}
 double first_min(double a, double b) { return std::min(a, b); }
 double first_max(double a, double b) { return std::max(a, b); }
 int64_t first_min_int(int64_t a, int64_t b) { return std::min(a, b); }
 int64_t first_max_int(int64_t a, int64_t b) { return std::max(a, b); }
+double first_pi(void) { return 3.14159265358979323846; }
+double first_e(void) { return 2.71828182845904523536; }
 
 // --- String ---
 int64_t first_string_length(const char* s) {
@@ -895,6 +908,143 @@ char* first_json_stringify_string(const char* s) {
     }
     out += '"';
     return strdup_heap(out.c_str());
+}
+
+// --- ArrayBuf: layout [int64_t length][uint8_t data[]] ---
+static int64_t* arraybuf_len_ptr(void* buf) {
+    return static_cast<int64_t*>(buf);
+}
+static uint8_t* arraybuf_data_ptr(void* buf) {
+    return buf ? static_cast<uint8_t*>(buf) + sizeof(int64_t) : nullptr;
+}
+
+void* first_arraybuf_alloc(int64_t len) {
+    if (len < 0) len = 0;
+    size_t n = static_cast<size_t>(len) + sizeof(int64_t);
+    void* p = first_alloc(n);
+    if (!p) return nullptr;
+    *arraybuf_len_ptr(p) = len;
+    std::memset(arraybuf_data_ptr(p), 0, static_cast<size_t>(len));
+    return p;
+}
+
+int64_t first_arraybuf_length(void* buf) {
+    if (!buf) return 0;
+    return *arraybuf_len_ptr(buf);
+}
+
+int64_t first_arraybuf_get(void* buf, int64_t i) {
+    if (!buf || i < 0) return 0;
+    int64_t len = *arraybuf_len_ptr(buf);
+    if (i >= len) return 0;
+    return static_cast<int64_t>(arraybuf_data_ptr(buf)[i]);
+}
+
+void first_arraybuf_set(void* buf, int64_t i, int64_t v) {
+    if (!buf || i < 0) return;
+    int64_t len = *arraybuf_len_ptr(buf);
+    if (i >= len) return;
+    arraybuf_data_ptr(buf)[i] = static_cast<uint8_t>(v & 0xFF);
+}
+
+void* first_read_file_bytes(const char* path) {
+    if (!path) return first_arraybuf_alloc(0);
+    std::ifstream f(path, std::ios::binary | std::ios::ate);
+    if (!f.is_open()) return first_arraybuf_alloc(0);
+    std::streamsize size = f.tellg();
+    f.seekg(0, std::ios::beg);
+    if (size <= 0) return first_arraybuf_alloc(0);
+    void* p = first_arraybuf_alloc(static_cast<int64_t>(size));
+    if (!p) return first_arraybuf_alloc(0);
+    if (!f.read(reinterpret_cast<char*>(arraybuf_data_ptr(p)), size)) {
+        *arraybuf_len_ptr(p) = 0;
+        return p;
+    }
+    return p;
+}
+
+void first_write_file_bytes(const char* path, void* buf) {
+    if (!path || !buf) return;
+    int64_t len = *arraybuf_len_ptr(buf);
+    if (len <= 0) return;
+    std::ofstream f(path, std::ios::binary);
+    if (f.is_open())
+        f.write(static_cast<const char*>(static_cast<const void*>(arraybuf_data_ptr(buf))), static_cast<std::streamsize>(len));
+}
+
+// --- Base64 ---
+extern "C++" {
+namespace {
+static const char kBase64Chars[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+
+std::string base64_encode(const uint8_t* data, size_t len) {
+    std::string out;
+    out.reserve(((len + 2) / 3) * 4);
+    for (size_t i = 0; i < len; i += 3) {
+        uint32_t n = static_cast<uint32_t>(data[i]) << 16;
+        if (i + 1 < len) n |= static_cast<uint32_t>(data[i + 1]) << 8;
+        if (i + 2 < len) n |= data[i + 2];
+        out += kBase64Chars[(n >> 18) & 63];
+        out += kBase64Chars[(n >> 12) & 63];
+        out += (i + 1 < len) ? kBase64Chars[(n >> 6) & 63] : '=';
+        out += (i + 2 < len) ? kBase64Chars[n & 63] : '=';
+    }
+    return out;
+}
+
+int base64_decode_char(char c) {
+    if (c >= 'A' && c <= 'Z') return c - 'A';
+    if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+    if (c >= '0' && c <= '9') return c - '0' + 52;
+    if (c == '+') return 62;
+    if (c == '/') return 63;
+    return -1;
+}
+
+std::vector<uint8_t> base64_decode(const char* s) {
+    std::vector<uint8_t> out;
+    if (!s) return out;
+    size_t n = std::strlen(s);
+    for (size_t i = 0; i + 4 <= n; i += 4) {
+        int a = base64_decode_char(s[i]);
+        int b = base64_decode_char(s[i + 1]);
+        if (a < 0 || b < 0) break;
+        out.push_back(static_cast<uint8_t>((a << 2) | (b >> 4)));
+        if (s[i + 2] == '=') break;
+        int c = base64_decode_char(s[i + 2]);
+        if (c < 0) break;
+        out.push_back(static_cast<uint8_t>(((b & 15) << 4) | (c >> 2)));
+        if (s[i + 3] == '=') break;
+        int d = base64_decode_char(s[i + 3]);
+        if (d < 0) break;
+        out.push_back(static_cast<uint8_t>(((c & 3) << 6) | d));
+    }
+    return out;
+}
+} // namespace
+} // extern "C++"
+
+char* first_base64_encode(void* buf) {
+    if (!buf) return strdup_heap("");
+    int64_t len = *arraybuf_len_ptr(buf);
+    if (len <= 0) return strdup_heap("");
+    std::string s = base64_encode(arraybuf_data_ptr(buf), static_cast<size_t>(len));
+    return strdup_heap(s.c_str());
+}
+
+void* first_base64_decode(const char* s) {
+    std::vector<uint8_t> data = base64_decode(s);
+    if (data.empty()) return first_arraybuf_alloc(0);
+    void* p = first_arraybuf_alloc(static_cast<int64_t>(data.size()));
+    if (!p) return first_arraybuf_alloc(0);
+    std::memcpy(arraybuf_data_ptr(p), data.data(), data.size());
+    return p;
+}
+
+char* first_arraybuf_to_string(void* buf) {
+    int64_t len = first_arraybuf_length(buf);
+    std::string s = "<ArrayBuf length=" + std::to_string(len) + ">";
+    return strdup_heap(s.c_str());
 }
 
 } // extern "C"

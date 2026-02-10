@@ -1,0 +1,21 @@
+// Chapter 13: ArrayBuf — create, get/set, binary file I/O, Base64
+import "Prelude"
+
+interaction main() -> Unit {
+  let buf = arrayBufCreate(4);
+  arrayBufSet(buf, 0, 72);
+  arrayBufSet(buf, 1, 105);
+  arrayBufSet(buf, 2, 33);
+  println(intToString(arrayBufGet(buf, 0)));
+  writeFileBytes("out.bin", buf);
+  let read = readFileBytes("out.bin");
+  println(toString(read));
+  let b64 = base64Encode(buf);
+  println("base64 encoded : "+b64);
+  let decoded = base64Decode(b64);
+  println(intToString(arrayBufLength(decoded)));
+  println("bytes in buf:");
+  for b in buf {
+    println("  " + intToString(b));
+  }
+}

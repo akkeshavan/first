@@ -1,0 +1,6 @@
+interaction main() -> Unit {
+  for i in 0..3 {
+    let _: Int = i;
+  };
+  return;
+}
