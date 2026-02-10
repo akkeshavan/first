@@ -50,6 +50,15 @@ Example (sum): `reduce(a, 0, function(acc: Int, cur: Int) -> Int { return acc + 
 
 ---
 
+## Map and reverse
+
+| Function | Type | Description |
+|----------|------|--------------|
+| `map(a, f)` | `(Array<T>, (item: T) -> U) -> Array<U>` | New array where each element is `f(x)` for `x` in `a`, in the same order. Implemented in Prelude using `reduceRight` and `insertAt`. |
+| `reverse(a)` | `Array<T> -> Array<T>` | New array with elements of `a` in reverse order. Implemented in Prelude using `reduceRight` and `insertAt`. |
+
+---
+
 ## Iteration
 
 `Array<T>` implements `Iterator<T>`, so you can use **`for x in arr { ... }`** to iterate over elements. The loop variable `x` is immutable.

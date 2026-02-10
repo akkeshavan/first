@@ -22,7 +22,11 @@ All example code lives in the repository’s **examples** directory. You can run
 
 7. **[Intro to Generic Types](chapter-07-Intro-to-generic-types.md)** – Generic data types, interfaces, and a Haskell-like list.
 
-8–10. *(Further chapters in the repo; see examples.)*
+8. **[Recursion and tail-call optimization](chapter-08-recursion.md)** – Simple recursion (e.g. factorial) and tail-recursive functions with accumulators (TCO keeps the stack bounded). Examples in **examples/chapter-08-recursion**.
+
+9. **[Interfaces — ToString, Eq, Ord](chapter-09-interfaces.md)** – Standard interfaces, **derive(ToString)** for records, custom **Eq** and **Ord** implementations, and calling interface methods. Examples in **examples/chapter-09-interfaces**.
+
+10. **[Array functions](chapter-10-array-functions.md)** – Immutable arrays, **arrayLength**, **insertAt**, **deleteAt**, **reduce**, **reduceRight**, **filter**, and **for-in**. Examples in **examples/chapter-10-Array-functions**.
 
 11. **[Date functions](chapter-11-date-functions.md)** – The **Date** library: now, format, parse, getters (year, month, day, time), and addSeconds.
 
@@ -53,6 +57,8 @@ The **examples** folder has matching projects for each chapter:
 | 5 | Control Flow | **examples/chapter-05-control-flow** |
 | 6 | Custom Record Types and Pattern Matching | **examples/chapter-06-records-pattern-matching** (sum types), **examples/chapter-06-shapes-record-literals** (record literals) |
 | 7 | Intro to Generic Types | **examples/chapter-07-Intro-to-generic-types** |
+| 8 | Recursion and tail-call optimization | **examples/chapter-08-recursion** |
+| 9 | Interfaces (ToString, Eq, Ord) | **examples/chapter-09-interfaces** |
 | 10 | Array functions | **examples/chapter-10-Array-functions** |
 | 11 | Date functions | **examples/chapter-11-Date-functions** |
 | 12 | Math functions | **examples/chapter-12-Math-functions** |

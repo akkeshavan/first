@@ -181,28 +181,45 @@ Regex functions (see `docs/STRING_COMPARISON_AND_REGEX.md` for details):
 
 ---
 
-## Arrays and numeric helpers
+## Arrays
 
-These are available without importing any module and are backed by the runtime / compiler intrinsics.
+Arrays are **immutable**. These functions are available in scope (Prelude or built-in); see **first-reference/Array.md** and **first-book/chapter-10-array-functions.md** for usage.
+
+**Length and indexing:**
 
 - **arrayLength(a: Array<T>) -> Int**  
   Returns the number of elements.
 
-Int‑specific helpers:
-
-- **arrayReduceIntSum(a: Array<Int>) -> Int**  
-  Sums all elements.
-
-- **arrayMapIntDouble(a: Array<Int>) -> Array<Int>**  
-  Example intrinsic for mapping `Array<Int>`; used by the book/examples.
-
-- **arrayFilterIntPositive(a: Array<Int>) -> Array<Int>**  
-  Keeps only positive integers.
-
-Generic operation:
+**Insert and delete** (return **Option&lt;Array&lt;T&gt;&gt;**; use **match** for `Some` / `None`):
 
 - **insertAt<T>(a: Array<T>, value: T, position: Int) -> Option<Array<T>>**  
-  Returns a new array with `value` inserted at `position`, or `None` if the index is out of range.
+  Returns a new array with `value` inserted at `position`, or `None` if the index is out of range (position &lt; 0 or &gt; length).
+
+- **deleteAt<T>(a: Array<T>, position: Int) -> Option<Array<T>>**  
+  Returns a new array with the element at `position` removed, or `None` if the index is out of range.
+
+**Reduce (fold):**
+
+- **reduce<T, U>(a: Array<T>, init: U, f: function(U, T) -> U) -> U**  
+  Fold left: start with `init`, then apply `f(acc, cur)` over elements left to right. Example: sum = `reduce(a, 0, function(acc: Int, cur: Int) -> Int { return acc + cur; })`.
+
+- **reduceRight<T, U>(a: Array<T>, init: U, f: function(T, U) -> U) -> U**  
+  Fold right: start with `init`, then apply `f(cur, acc)` from right to left.
+
+**Filter:**
+
+- **filter<T>(a: Array<T>, p: function(T) -> Bool) -> Array<T>**  
+  Returns a new array containing only elements for which `p(item)` is true.
+
+**Map and reverse:**
+
+- **map<T, U>(a: Array<T>, f: function(T) -> U) -> Array<U>**  
+  Returns a new array where each element is `f(x)` for `x` in `a`, in the same order.
+
+- **reverse<T>(a: Array<T>) -> Array<T>**  
+  Returns a new array with the elements of `a` in reverse order.
+
+**Iteration:** `Array<T>` implements **Iterator&lt;T&gt;** (Prelude), so you can use **`for x in arr { ... }`**.
 
 ---
 
