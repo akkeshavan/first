@@ -15,15 +15,11 @@ This chapter gets you set up: installing First on macOS or Linux, creating a “
 Install the compiler and **fir** with Homebrew:
 
 ```bash
-brew install https://raw.githubusercontent.com/akkeshavan/first/main/homebrew/first-compiler.rb
-```
-
-Or, if you use the tap:
-
-```bash
 brew tap akkeshavan/first
-brew install first-compiler
+brew install --HEAD first-compiler
 ```
+
+> The `--HEAD` flag installs from the latest `main` branch. Once a stable release (e.g. `v0.1.0`) is tagged, you can use `brew install first-compiler` without `--HEAD`.
 
 Then check:
 
@@ -32,9 +28,30 @@ firstc --help
 fir
 ```
 
+### Linux (Homebrew)
+
+If you use [Homebrew on Linux](https://docs.brew.sh/Homebrew-on-Linux), install First the same way as on macOS.
+
+**1. Install Homebrew** (if not already installed):
+
+```bash
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+```
+
+Follow the post-install instructions to add Homebrew to your PATH (e.g. add the suggested commands to your `~/.bashrc` or `~/.zshrc`).
+
+**2. Install First:**
+
+```bash
+brew tap akkeshavan/first
+brew install --HEAD first-compiler
+```
+
+Then run `firstc --help` and `fir`.
+
 ### Linux (build from source)
 
-Clone the repository, build, and install:
+If you prefer not to use Homebrew, clone the repository, build, and install:
 
 ```bash
 git clone https://github.com/akkeshavan/first.git
@@ -53,8 +70,6 @@ sudo chmod +x /usr/local/bin/fir
 ```
 
 Ensure `/usr/local/bin` is in your PATH, then run `firstc --help` and `fir`.
-
-*(On Linux you can also use [Homebrew for Linux](https://docs.brew.sh/Homebrew-on-Linux) and the same `brew install` command as on macOS.)*
 
 ---
 

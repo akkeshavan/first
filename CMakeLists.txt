@@ -5,12 +5,12 @@ set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
 
-# Add runtime subdirectory
-add_subdirectory(runtime)
-
-# Build options
+# Build options (must be before add_subdirectory(runtime) so runtime tests respect BUILD_TESTS)
 option(BUILD_TESTS "Build test suite" ON)
 option(BUILD_EXAMPLES "Build example programs" ON)
+
+# Add runtime subdirectory
+add_subdirectory(runtime)
 
 # Output directories
 set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/bin)

@@ -62,7 +62,8 @@ target_include_directories(first_runtime PUBLIC
     ${CMAKE_SOURCE_DIR}/include
 )
 
-# Test executables
+# Test executables (only when BUILD_TESTS is ON, e.g. for Homebrew install)
+if(BUILD_TESTS)
 add_executable(test_runtime_refcount
     tests/test_refcount.cpp
 )
@@ -117,6 +118,7 @@ set_target_properties(
     PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR}/runtime/tests
 )
+endif()
 
 # Install rules (for linking with compiler); component "first" for macOS .pkg
 install(TARGETS first_runtime
