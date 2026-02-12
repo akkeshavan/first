@@ -9,40 +9,40 @@
 
 After install, `firstc` finds Prelude and the runtime via the “lib next to binary” paths, so it works from any directory.
 
-## Install from local formula (no tap)
-
-From the repo root:
+## Install (users)
 
 ```bash
-brew install --build-from-source ./homebrew/first-compiler.rb
+brew tap akkeshavan/first
+brew install --HEAD first-compiler
 ```
 
-Or build from the latest Git (HEAD):
+> `--HEAD` is required until a stable release (e.g. `v0.1.0`) is tagged. See "Adding a stable release" below.
 
-```bash
-brew install --HEAD ./homebrew/first-compiler.rb
-```
+## One-time tap setup (maintainers)
 
-(With a local path, HEAD uses the current directory as source.)
+To publish the Homebrew tap so others can install via `brew tap`:
 
-## Install from a tap
-
-1. **Create a tap repo** (one-time): e.g. GitHub repo `homebrew-first` (or `akkeshavan/first`). Inside it, add the formula as:
-
-   ```
-   homebrew-first/
-   └── Formula/
-       └── first-compiler.rb   # copy from this repo's homebrew/first-compiler.rb
-   ```
-
-2. **Users install:**
-
+1. **Create the tap locally** (if not already done):
    ```bash
-   brew tap akkeshavan/first    # or your-username/first
-   brew install --HEAD first-compiler
+   brew tap-new akkeshavan/first
    ```
 
-   Without a stable `url` in the formula, `--HEAD` is required so Homebrew clones the repo.
+2. **Copy the formula** into the tap:
+   ```bash
+   cp homebrew/first-compiler.rb $(brew --repository akkeshavan/first)/Formula/
+   ```
+
+3. **Push the tap to GitHub** (repo name must be `homebrew-first` for tap `akkeshavan/first`):
+   ```bash
+   brew install gh
+   gh repo create akkeshavan/homebrew-first --push --public --source "$(brew --repository akkeshavan/first)"
+   ```
+
+4. **To update the formula** after changes:
+   ```bash
+   cp homebrew/first-compiler.rb $(brew --repository akkeshavan/first)/Formula/
+   cd $(brew --repository akkeshavan/first) && git add Formula/first-compiler.rb && git commit -m "Update first-compiler" && git push
+   ```
 
 ## Adding a stable release
 

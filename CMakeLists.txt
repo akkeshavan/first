@@ -55,11 +55,12 @@ llvm_map_components_to_libnames(llvm_libs
 set(ANTLR4_GENERATED_DIR ${CMAKE_BINARY_DIR}/generated)
 file(MAKE_DIRECTORY ${ANTLR4_GENERATED_DIR})
 
-# Find ANTLR4 tool
-find_program(ANTLR4_TOOL antlr4)
+# Find ANTLR4 tool (antlr4 from pip/antlr4-tools, or antlr from Homebrew)
+find_program(ANTLR4_TOOL NAMES antlr4 antlr)
 if(NOT ANTLR4_TOOL)
-    message(WARNING "antlr4 tool not found. Please install ANTLR4.")
-    message(STATUS "You can install it via: pip install antlr4-tools")
+    message(WARNING "antlr4/antlr tool not found. Please install ANTLR4.")
+    message(STATUS "  pip: pip install antlr4-tools")
+    message(STATUS "  Homebrew: brew install antlr")
 endif()
 
 # Generate parser from grammar
