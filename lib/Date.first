@@ -1,0 +1,24 @@
+// Date library: current time, format, parse, getters, arithmetic.
+// Date values are Int handles (Unix timestamp in seconds). Use 0 as invalid.
+// Import with: import "Date" or import { now, format } "Date"
+module Date;
+
+// Current time (UTC) as a date handle.
+export function now() -> Int;
+
+// Format a date with strftime-style format (e.g. "%Y-%m-%d %H:%M:%S").
+export function format(d: Int, fmt: String) -> String;
+
+// Parse "YYYY-MM-DD" or "YYYY-MM-DDTHH:MM:SS"; returns 0 on failure.
+export function parse(s: String) -> Int;
+
+// Getters (UTC). Undefined if d is 0.
+export function getYear(d: Int) -> Int;
+export function getMonth(d: Int) -> Int;   // 1-12
+export function getDay(d: Int) -> Int;     // 1-31
+export function getHours(d: Int) -> Int;   // 0-23
+export function getMinutes(d: Int) -> Int; // 0-59
+export function getSeconds(d: Int) -> Int; // 0-59
+
+// Add seconds to a date (can be negative).
+export function addSeconds(d: Int, seconds: Int) -> Int;

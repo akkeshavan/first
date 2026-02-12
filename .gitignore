@@ -8,7 +8,6 @@ build-x86_64/
 build-aarch64/
 cmake-build-*/
 bin/
-lib/
 generated/
 dist/
 test-fir-app/

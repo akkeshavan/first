@@ -1,0 +1,34 @@
+// Math library: trigonometry, log/exp, rounding, min/max, constants.
+// Import with: import "Math" or import { sin, cos, pi } "Math"
+module Math;
+
+// Trigonometry (radians)
+export function sin(x: Float) -> Float;
+export function cos(x: Float) -> Float;
+export function tan(x: Float) -> Float;
+
+// Power and roots
+export function sqrt(x: Float) -> Float;
+export function pow(base: Float, exp: Float) -> Float;
+
+// Exponential and log
+export function exp(x: Float) -> Float;
+export function log(x: Float) -> Float;
+export function log10(x: Float) -> Float;
+
+// Rounding and sign
+export function abs(x: Float) -> Float;
+export function floor(x: Float) -> Float;
+export function ceil(x: Float) -> Float;
+export function round(x: Float) -> Float;
+export function sign(x: Float) -> Float;
+
+// Min/max
+export function min(a: Float, b: Float) -> Float;
+export function max(a: Float, b: Float) -> Float;
+export function minInt(a: Int, b: Int) -> Int;
+export function maxInt(a: Int, b: Int) -> Int;
+
+// Constants (as functions so they work without module-level constants)
+export function pi() -> Float;
+export function e() -> Float;

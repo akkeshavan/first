@@ -1,0 +1,34 @@
+// Standard library: ToString, Eq, Ord, Iterator interfaces; Option type.
+// Import this module to use constrained generics (e.g. T : Eq) and Option (e.g. insertAt/deleteAt return Option<Array<T>>).
+// Built-in types Int, Float, Bool, String implement Eq and ToString; Int, Float, String implement Ord.
+// Array<T> implements Iterator<T> so for-in over arrays works.
+// User types: implementation Eq<MyType> { ... } or #derive(ToString, Eq, Ord) on the type.
+
+module Prelude;
+
+// Option<T>: Some(value) or None. Used by insertAt/deleteAt and other APIs that may fail.
+type Option<T> = Some(T) | None;
+
+function some<T>(x: T) -> Option<T> {
+  return Some(x);
+}
+function none<T>() -> Option<T> {
+  return None();
+}
+
+interface ToString<T> {
+    toString: function(T) -> String;
+}
+
+interface Eq<T> {
+    eq: function(T, T) -> Bool;
+}
+
+interface Ord<T> {
+    compare: function(T, T) -> Int;
+}
+
+interface Iterator<T> {
+    hasNext: function(Iterator<T>) -> Bool;
+    next: function(Iterator<T>) -> T;
+}
