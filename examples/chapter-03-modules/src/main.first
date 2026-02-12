@@ -1,9 +1,25 @@
-// Chapter 3: Main module – imports compute from compute.first, runs interaction main
-// Use "module main" so the interaction main() is the program entry point.
+// Chapter 3: Modules – import examples (same dir, sibling, child, parent)
 module main;
 
-import { compute } "./compute";
+// 1. Same directory as main: module lives in src/ next to main.first
+import { value } "./src/same_dir";
+
+// 2. Sibling directory: module in sibling/ (sibling of src/)
+import { siblingValue } "./sibling/sibling_mod";
+
+// 3. Child directory: module in src/child/ (under src/)
+import { childValue } "./src/child/child_mod";
+
+// 4. Parent directory: module at project root (parent of src/)
+import { parentValue } "./parent";
+
+// Existing: compute in src/, and Math at project root
+import { compute } "./src/compute";
 
 interaction main() -> Unit {
-    println("3² + 4² = " + intToString(compute()));
+    println("1. Same dir (src/):      " + intToString(value()));
+    println("2. Sibling (sibling/):  " + intToString(siblingValue()));
+    println("3. Child (src/child/):  " + intToString(childValue()));
+    println("4. Parent (project root): " + intToString(parentValue()));
+    println("Compute (3² + 4²):      " + intToString(compute()));
 }

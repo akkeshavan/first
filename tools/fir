@@ -122,9 +122,8 @@ cmd_build() {
   export_library_path
   export FIRST_LIB_PATH="${PROJECT_ROOT}/lib"
   echo "Building $name..."
-  local main_abs="$(cd "$dir" && pwd)/$main"
-  local out_abs="$(cd "$dir" && pwd)/build/$name"
-  if (cd "$prefix" && "$firstc" "$main_abs" -o "$out_abs"); then
+  # Run firstc from project dir so relative imports (e.g. ./src/compute) resolve correctly
+  if (cd "$dir" && "$firstc" "$main" -o "build/$name"); then
     echo "Built: $dir/build/$name"
   else
     exit 1

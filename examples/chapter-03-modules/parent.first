@@ -1,0 +1,6 @@
+// Chapter 3: Example 4 – module in parent directory (project root, same level as src/)
+module parent;
+
+export function parentValue() -> Int {
+    return 400;
+}

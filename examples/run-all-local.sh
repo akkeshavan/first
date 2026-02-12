@@ -43,11 +43,20 @@ for dir in "$EXAMPLES_DIR"/chapter-*/; do
   rel_main="../examples/$name/$main"
   rel_out="../examples/$name/build/out"
   mkdir -p "$dir/build"
-  # chapter-03 imports ./compute and Math from cwd (build dir)
-  if [[ "$name" == "chapter-03-modules" ]]; then
-    cp "$dir/src/compute.first" "$dir/Math.first" "$BUILD_DIR/" 2>/dev/null || true
-  fi
   echo "--- $name ---"
+  # chapter-03 has local imports (same/sibling/child/parent dirs); run firstc from example dir
+  if [[ "$name" == "chapter-03-modules" ]]; then
+    export LIBRARY_PATH="${BUILD_DIR}:${BUILD_DIR}/runtime:${LIBRARY_PATH:-}"
+    if (cd "$dir" && "$FIRSTC" "src/main.first" -o "build/out" 2>&1); then
+      "$dir/build/out" 2>&1 || true
+      echo "[PASS] $name"
+      PASSED+=("$name")
+    else
+      echo "[FAIL] $name (build failed)"
+      FAILED+=("$name")
+    fi
+    continue
+  fi
   if (cd "$BUILD_DIR" && "$FIRSTC" "$rel_main" -o "$rel_out" 2>&1); then
     "$dir/build/out" 2>&1 || true
     echo "[PASS] $name"

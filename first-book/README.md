@@ -8,7 +8,7 @@ All example code lives in the repository’s **examples** directory. You can run
 
 ## Chapters
 
-1. **[Getting Started](chapter-01-getting-started.md)** – Introduction, install (macOS and Linux), create the hello project with fir, and use `print` and `println`.
+1. **[Getting Started](chapter-01-getting-started.md)** – Introduction, install on macOS (Homebrew), create the hello project with fir, and use `print` and `println`.
 
 2. **[Functions and Interactions](chapter-02-functions-and-interactions.md)** – Pure **function**s vs side-effecting **interaction**s, when to use which, and examples.
 
@@ -70,7 +70,7 @@ The **examples** folder has matching projects for each chapter:
 | 17 | Concurrency and async model | **examples/chapter-17-concurrency-async** |
 | 18 | A JSON parser | **examples/chapter-18-A-JSON-parser** |
 
-From the repo root, run an example with: `cd examples/chapter-N-... && fir run` (or use the **build-and-run-all.sh** script in examples).
+From the repo root, run an example with: `cd examples/chapter-N-... && fir run` (or use the **run-all-local.sh** script in examples). For how to **clone the repo**, **build from source**, **run all tests**, and **run all examples**, see the main repository [README](../README.md) at the repo root.
 
 ---
 

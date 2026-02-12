@@ -4,15 +4,15 @@
 
 First is a **functional-first** programming language with strong, static typing and a clear split between pure functions and side-effecting **interactions**. You write interactions when you need I/O, mutable state, or other effects; the rest of your code stays pure. The compiler targets native code via LLVM and comes with a small runtime and standard library. The **fir** tool (included with the compiler) lets you create projects, build, and run them with simple commands.
 
-This chapter gets you set up: installing First on macOS or Linux, creating a “Hello, World” project under **examples**, and using **print** and **println** to produce output.
+This chapter gets you set up: installing First on macOS, creating a “Hello, World” project under **examples**, and using **print** and **println** to produce output.
 
 ---
 
 ## Installing First
 
-### macOS (Homebrew)
+**First is currently only available on macOS** and can be installed using [Homebrew](https://brew.sh).
 
-Install the compiler and **fir** with Homebrew:
+Install the compiler and **fir** (the First project manager) with:
 
 ```bash
 brew tap akkeshavan/first
@@ -27,49 +27,6 @@ Then check:
 firstc --help
 fir
 ```
-
-### Linux (Homebrew)
-
-If you use [Homebrew on Linux](https://docs.brew.sh/Homebrew-on-Linux), install First the same way as on macOS.
-
-**1. Install Homebrew** (if not already installed):
-
-```bash
-/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-```
-
-Follow the post-install instructions to add Homebrew to your PATH (e.g. add the suggested commands to your `~/.bashrc` or `~/.zshrc`).
-
-**2. Install First:**
-
-```bash
-brew tap akkeshavan/first
-brew install --HEAD first-compiler
-```
-
-Then run `firstc --help` and `fir`.
-
-### Linux (build from source)
-
-If you prefer not to use Homebrew, clone the repository, build, and install:
-
-```bash
-git clone https://github.com/akkeshavan/first.git
-cd first
-mkdir build && cd build
-cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local
-make -j$(nproc)
-sudo make install
-```
-
-Install **fir** into the same prefix so it’s on your PATH:
-
-```bash
-sudo cp ../tools/fir /usr/local/bin/
-sudo chmod +x /usr/local/bin/fir
-```
-
-Ensure `/usr/local/bin` is in your PATH, then run `firstc --help` and `fir`.
 
 ---
 

@@ -36,6 +36,41 @@ class FirstCompiler < Formula
     # Installs: bin/firstc, lib/first/*.first (stdlib), lib/libfirst_runtime.a
     system "cmake", "--install", "build", "--component", "first"
 
+    # On Linux, firstc can segfault on load (LLVM/ANTLR static init). Use a wrapper
+    # so --version and --help work without invoking the heavy binary.
+    if OS.linux?
+      libexec.install bin/"firstc" => "firstc.real"
+      (bin/"firstc").write <<~EOS
+        #!/bin/bash
+        case "${1:-}" in
+          --version|-v)
+            echo "firstc version 0.1.0"
+            echo "First Programming Language Compiler"
+            exit 0
+            ;;
+          --help|-h)
+            echo "First Programming Language Compiler"
+            echo "Usage: firstc [options] <source_file>"
+            echo ""
+            echo "Options:"
+            echo "  -o <file>        Output file: .o = object only; .ll = LLVM IR; else executable"
+            echo "  --version, -v    Print version information"
+            echo "  --help, -h       Print this help message"
+            echo "  --verbose        Enable verbose output"
+            echo ""
+            exit 0
+            ;;
+          "")
+            echo "Error: No source file specified"
+            echo "Usage: firstc [options] <source_file>"
+            exit 1
+            ;;
+        esac
+        exec "#{libexec}/firstc.real" "$@"
+      EOS
+      chmod 0755, bin/"firstc"
+    end
+
     # Install fir (First project manager) if present
     fir = "tools/fir"
     bin.install fir => "fir" if File.exist?(fir)

@@ -103,7 +103,7 @@ The project **examples/chapter-15-monadic-operators** contains:
 4. **runFmapExample** — uses **<\$>** to add 100 to the value in **some(5)**.
 5. **main** — calls all three interactions.
 
-From the repo root (with **FIRST_LIB_PATH** set so Prelude is found, e.g. via **fir** or **build-and-run-all.sh**):
+From the repo root (with **FIRST_LIB_PATH** set so Prelude is found, e.g. via **fir** or **run-all-local.sh**):
 
 ```bash
 cd examples/chapter-15-monadic-operators

@@ -1,0 +1,6 @@
+// Chapter 3: Example 1 – module in the same directory as main (src/)
+module same_dir;
+
+export function value() -> Int {
+    return 100;
+}

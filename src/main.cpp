@@ -67,6 +67,20 @@ void printVersion() {
 }
 
 int main(int argc, char* argv[]) {
+    // Handle --version and --help before InitLLVM to avoid LLVM/ANTLR init on Linux
+    // where library initialization can segfault (static init order, aarch64).
+    if (argc >= 2) {
+        std::string arg = argv[1];
+        if (arg == "--version" || arg == "-v") {
+            printVersion();
+            return 0;
+        }
+        if (arg == "--help" || arg == "-h") {
+            printUsage(argv[0]);
+            return 0;
+        }
+    }
+
     llvm::InitLLVM init(argc, argv);
     if (argc < 2) {
         printUsage(argv[0]);

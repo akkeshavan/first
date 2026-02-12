@@ -1,0 +1,6 @@
+// Chapter 3: Example 2 – module in a sibling directory of src/
+module sibling_mod;
+
+export function siblingValue() -> Int {
+    return 200;
+}

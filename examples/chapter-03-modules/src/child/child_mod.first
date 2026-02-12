@@ -1,0 +1,6 @@
+// Chapter 3: Example 3 – module in a child directory of src/
+module child_mod;
+
+export function childValue() -> Int {
+    return 300;
+}
