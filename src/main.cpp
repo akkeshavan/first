@@ -1,6 +1,7 @@
 #include <iostream>
 #include <string>
 #include <filesystem>
+#include <llvm/Support/InitLLVM.h>
 #include "first/compiler.h"
 #include "first/error_reporter.h"
 
@@ -66,6 +67,7 @@ void printVersion() {
 }
 
 int main(int argc, char* argv[]) {
+    llvm::InitLLVM init(argc, argv);
     if (argc < 2) {
         printUsage(argv[0]);
         return 1;
