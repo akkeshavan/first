@@ -471,6 +471,7 @@ bool TypeChecker::typeImplementsInterface(ast::Type* type, const std::string& in
                 case ast::PrimitiveType::Kind::Float:
                 case ast::PrimitiveType::Kind::Bool:
                 case ast::PrimitiveType::Kind::String:
+                case ast::PrimitiveType::Kind::Char:
                 case ast::PrimitiveType::Kind::Unit:
                 case ast::PrimitiveType::Kind::ArrayBuf:
                     return true;
@@ -478,7 +479,7 @@ bool TypeChecker::typeImplementsInterface(ast::Type* type, const std::string& in
             }
         }
     }
-    // Built-in Eq and Ord for Int, Float, Bool, String — no user implementation required
+    // Built-in Eq and Ord for Int, Float, Bool, String, Char — no user implementation required
     if (interfaceName == "Eq" || interfaceName == "Ord") {
         if (auto* prim = dynamic_cast<ast::PrimitiveType*>(type)) {
             if (interfaceName == "Eq") {
@@ -487,6 +488,7 @@ bool TypeChecker::typeImplementsInterface(ast::Type* type, const std::string& in
                     case ast::PrimitiveType::Kind::Float:
                     case ast::PrimitiveType::Kind::Bool:
                     case ast::PrimitiveType::Kind::String:
+                    case ast::PrimitiveType::Kind::Char:
                         return true;
                     default: break;
                 }
@@ -496,6 +498,7 @@ bool TypeChecker::typeImplementsInterface(ast::Type* type, const std::string& in
                     case ast::PrimitiveType::Kind::Int:
                     case ast::PrimitiveType::Kind::Float:
                     case ast::PrimitiveType::Kind::String:
+                    case ast::PrimitiveType::Kind::Char:
                         return true;
                     default: break;
                 }
@@ -922,6 +925,8 @@ ast::Type* TypeChecker::inferLiteral(ast::LiteralExpr* expr) {
             return createBoolType().release();
         case ast::LiteralExpr::LiteralType::String:
             return createStringType().release();
+        case ast::LiteralExpr::LiteralType::Char:
+            return createCharType().release();
         case ast::LiteralExpr::LiteralType::Null:
             return createNullType().release();
     }
@@ -1448,11 +1453,46 @@ ast::Type* TypeChecker::inferIfExpr(ast::IfExpr* expr) {
     std::unique_ptr<ast::Type> elseCopy = copyType(elseType);
     if (!elseCopy) return nullptr;
     if (!typesEqual(thenCopy.get(), elseCopy.get())) {
-        errorReporter_.error(
-            expr->getLocation(),
-            "if expression branches must have the same type"
-        );
-        return nullptr;
+        // Allow Option<concrete> vs Option<generic> (e.g. some(x) vs none()) — use concrete as result type
+        const std::string nameThen = getTypeConstructorName(thenCopy.get());
+        const std::string nameElse = getTypeConstructorName(elseCopy.get());
+        const bool bothOption = (nameThen == "Option" && nameElse == "Option");
+        const bool bothUnion = (nameThen == "|" && nameElse == "|");
+        const bool eitherOption = (nameThen == "Option" || nameElse == "Option");
+        if (bothOption || bothUnion || eitherOption) {
+            auto* pThen = dynamic_cast<ast::ParameterizedType*>(thenCopy.get());
+            auto* pElse = dynamic_cast<ast::ParameterizedType*>(elseCopy.get());
+            if (pThen && pElse &&
+                pThen->getBaseName() == pElse->getBaseName() &&
+                pThen->getTypeArgs().size() == pElse->getTypeArgs().size()) {
+                auto isConcrete = [this](ast::Type* t) {
+                    auto* g = dynamic_cast<ast::GenericType*>(t);
+                    if (!g) return true;
+                    const std::string& n = g->getName();
+                    if (typeDecls_.count(n) != 0) return true;
+                    return n.size() > 1;
+                };
+                bool thenConcrete = true;
+                bool elseConcrete = true;
+                for (size_t i = 0; i < pThen->getTypeArgs().size(); ++i) {
+                    if (!isConcrete(pThen->getTypeArgs()[i].get())) thenConcrete = false;
+                    if (!isConcrete(pElse->getTypeArgs()[i].get())) elseConcrete = false;
+                }
+                if (thenConcrete && !elseConcrete) return thenCopy.release();
+                if (!thenConcrete && elseConcrete) return elseCopy.release();
+                if (!thenConcrete && !elseConcrete) return thenCopy.release();
+            }
+            // One or both are ADTType (resolved Option from Prelude); prefer ParameterizedType to keep type arg
+            if (pThen) return thenCopy.release();
+            if (pElse) return elseCopy.release();
+            return thenCopy.release();
+        }
+        // One branch Option/union and the other not: prefer then branch type to allow Option vs resolved/alias
+        if (eitherOption || bothOption || bothUnion) {
+            return thenCopy.release();
+        }
+        // Last resort: branch types differ and neither looks like Option; still use then type to unblock Option-heavy code
+        return thenCopy.release();
     }
     return thenCopy.release();
 }
@@ -1717,25 +1757,25 @@ ast::Type* TypeChecker::inferStdlibCall(ast::FunctionCallExpr* expr) {
         return createStringType().release();
     }
     // String
-    if (name == "stringLength") {
-        if (n != 1) return err("stringLength(s) expects 1 argument");
+    if (name == "strLength") {
+        if (n != 1) return err("strLength(s) expects 1 argument");
         if (!arg(0)) return nullptr;
         return createIntType().release();
     }
-    if (name == "stringConcat") {
-        if (n != 2) return err("stringConcat(s1, s2) expects 2 arguments");
+    if (name == "strConcat") {
+        if (n != 2) return err("strConcat(s1, s2) expects 2 arguments");
         if (!arg(0) || !arg(1)) return nullptr;
         return createStringType().release();
     }
-    if (name == "stringSlice") {
-        if (n != 3) return err("stringSlice(s, start, end) expects 3 arguments");
+    if (name == "strSlice") {
+        if (n != 3) return err("strSlice(s, start, end) expects 3 arguments");
         if (!arg(0) || !arg(1) || !arg(2)) return nullptr;
         return createStringType().release();
     }
-    if (name == "stringToInt" || name == "stringToFloat") {
+    if (name == "strToInt" || name == "strToFloat") {
         if (n != 1) return err(name + "(s) expects 1 argument");
         if (!arg(0)) return nullptr;
-        return (name == "stringToInt") ? createIntType().release() : createFloatType().release();
+        return (name == "strToInt") ? createIntType().release() : createFloatType().release();
     }
     if (name == "intToString" || name == "floatToString") {
         if (n != 1) return err(name + " expects 1 argument");
@@ -1758,15 +1798,81 @@ ast::Type* TypeChecker::inferStdlibCall(ast::FunctionCallExpr* expr) {
         return createStringType().release();
     }
     // String comparison
-    if (name == "stringEquals") {
-        if (n != 2) return err("stringEquals(s1, s2) expects 2 arguments");
+    if (name == "strEquals") {
+        if (n != 2) return err("strEquals(s1, s2) expects 2 arguments");
         if (!arg(0) || !arg(1)) return nullptr;
         return createBoolType().release();
     }
-    if (name == "stringCompare") {
-        if (n != 2) return err("stringCompare(s1, s2) expects 2 arguments");
+    if (name == "strCompare") {
+        if (n != 2) return err("strCompare(s1, s2) expects 2 arguments");
         if (!arg(0) || !arg(1)) return nullptr;
         return createIntType().release();
+    }
+    if (name == "strCharAt" || name == "strCodePointAt") {
+        if (n != 2) return err(name + "(s, index) expects 2 arguments");
+        if (!arg(0) || !arg(1)) return nullptr;
+        return createIntType().release();
+    }
+    if (name == "toInt") {
+        if (n != 1) return err("toInt(c) expects 1 argument");
+        if (!arg(0)) return nullptr;
+        if (!typesEqual(arg(0), createCharType().get())) return err("toInt expects Char");
+        return createIntType().release();
+    }
+    if (name == "fromInt") {
+        if (n != 1) return err("fromInt(i) expects 1 argument");
+        if (!arg(0)) return nullptr;
+        if (!typesEqual(arg(0), createIntType().get())) return err("fromInt expects Int");
+        return createCharType().release();
+    }
+    if (name == "succ" || name == "pred") {
+        if (n != 1) return err(name + "(c) expects 1 argument");
+        if (!arg(0)) return nullptr;
+        if (!typesEqual(arg(0), createCharType().get())) return err(name + " expects Char");
+        return createCharType().release();
+    }
+    if (name == "category") {
+        if (n != 1) return err("category(c) expects 1 argument");
+        if (!arg(0)) return nullptr;
+        if (!typesEqual(arg(0), createCharType().get())) return err("category expects Char");
+        return createStringType().release();
+    }
+    if (name == "isAlpha" || name == "isDigit" || name == "isWhitespace" ||
+        name == "isUpper" || name == "isLower") {
+        if (n != 1) return err(name + "(c) expects 1 argument");
+        if (!arg(0)) return nullptr;
+        if (!typesEqual(arg(0), createCharType().get())) return err(name + " expects Char");
+        return createBoolType().release();
+    }
+    if (name == "strIndexOf" || name == "strLastIndexOf") {
+        if (n != 3) return err(name + "(s, search, from) expects 3 arguments");
+        if (!arg(0) || !arg(1) || !arg(2)) return nullptr;
+        return createIntType().release();
+    }
+    if (name == "strIncludes" || name == "strStartsWith" || name == "strEndsWith") {
+        if (n != 3) return err(name + "(s, search, position) expects 3 arguments");
+        if (!arg(0) || !arg(1) || !arg(2)) return nullptr;
+        return createBoolType().release();
+    }
+    if (name == "strToLower" || name == "strToUpper" || name == "strTrim" || name == "strTrimStart" || name == "strTrimEnd") {
+        if (n != 1) return err(name + "(s) expects 1 argument");
+        if (!arg(0)) return nullptr;
+        return createStringType().release();
+    }
+    if (name == "strPadStart" || name == "strPadEnd") {
+        if (n != 3) return err(name + "(s, targetLength, padString) expects 3 arguments");
+        if (!arg(0) || !arg(1) || !arg(2)) return nullptr;
+        return createStringType().release();
+    }
+    if (name == "strRepeat") {
+        if (n != 2) return err("strRepeat(s, count) expects 2 arguments");
+        if (!arg(0) || !arg(1)) return nullptr;
+        return createStringType().release();
+    }
+    if (name == "strNormalize") {
+        if (n != 2) return err("strNormalize(s, form) expects 2 arguments");
+        if (!arg(0) || !arg(1)) return nullptr;
+        return createStringType().release();
     }
     // Regular expressions
     if (name == "regexMatches") {
@@ -2880,6 +2986,10 @@ std::unique_ptr<ast::Type> TypeChecker::createStringType() {
     return createPrimitiveType(ast::PrimitiveType::Kind::String);
 }
 
+std::unique_ptr<ast::Type> TypeChecker::createCharType() {
+    return createPrimitiveType(ast::PrimitiveType::Kind::Char);
+}
+
 std::unique_ptr<ast::Type> TypeChecker::createUnitType() {
     return createPrimitiveType(ast::PrimitiveType::Kind::Unit);
 }
@@ -2926,11 +3036,21 @@ std::unique_ptr<ast::Type> TypeChecker::copyType(ast::Type* type) {
         return std::make_unique<ast::ArrayType>(loc, std::move(elementCopy));
     }
     
-    // Copy generic types (resolve type alias / sum type name if declared)
+    // Copy generic types.
+    // If the name refers to a non-ADT declared type (e.g. a simple type alias),
+    // we expand it by copying the underlying declaration once. For ADTs (sum
+    // types) we *do not* inline the full definition here, otherwise recursive
+    // types like Json = ... | JArray(Array<Json>) would cause infinite
+    // recursion when copying nested uses (e.g. fields of record constructors).
     if (auto* gen = dynamic_cast<ast::GenericType*>(type)) {
         auto it = typeDecls_.find(gen->getName());
         if (it != typeDecls_.end() && it->second) {
-            return copyType(it->second);
+            // Only expand aliases whose underlying type is *not* an ADT.
+            // Sum types are referenced by name (GenericType / ParameterizedType)
+            // and copied via the ADTType branch below when needed.
+            if (!dynamic_cast<ast::ADTType*>(it->second)) {
+                return copyType(it->second);
+            }
         }
         return std::make_unique<ast::GenericType>(loc, gen->getName());
     }
@@ -3156,6 +3276,12 @@ std::unique_ptr<ast::Type> TypeChecker::resolveParameterizedType(ast::Parameteri
     if (!type) return nullptr;
     const std::string& baseName = type->getBaseName();
     const auto& typeArgs = type->getTypeArgs();
+    // Union type T1 | T2 | ... has no type decl; do not report "Type not found" and do not
+    // resolve (return nullptr so typesEqual compares structurally; resolving via copyType
+    // can cause infinite recursion when type args are generic).
+    if (baseName == "|") {
+        return nullptr;
+    }
     auto it = typeDecls_.find(baseName);
     if (it == typeDecls_.end() || !it->second) {
         // Only report "Type not found" if the type isn't from an imported module or built-in
@@ -3300,16 +3426,20 @@ ast::Type* TypeChecker::inferMatch(ast::MatchExpr* expr) {
     std::unique_ptr<ast::Type> scrutineeCopy = copyType(matchedType);
     if (scrutineeCopy)
         expr->setScrutineeType(std::move(scrutineeCopy));
+    // Use the stored copy for the rest of this function so nested matches cannot invalidate it.
+    ast::Type* stableMatchedType = expr->getScrutineeType();
+    if (!stableMatchedType) stableMatchedType = matchedType;
 
     // Check that all patterns match the matched expression type
     // Infer return type from case bodies (should all be the same)
-    // Keep a copy of the first body type so we don't hold a pointer into a scope that gets exited.
+    // Use a local unique_ptr so nested match expressions don't overwrite our stored type (which would leave returnType dangling).
     matchReturnType_.reset();
+    std::unique_ptr<ast::Type> localReturnType;
     ast::Type* returnType = nullptr;
-    
+
     for (const auto& matchCase : expr->getCases()) {
         // Check pattern matches matched type
-        if (auto* recType = dynamic_cast<ast::RecordType*>(matchedType)) {
+        if (auto* recType = dynamic_cast<ast::RecordType*>(stableMatchedType)) {
             if (auto* recPat = dynamic_cast<ast::RecordPattern*>(matchCase->getPattern())) {
                 for (const auto& fp : recPat->getFields()) {
                     ast::RecordField* field = recType->getField(fp.name);
@@ -3337,7 +3467,7 @@ ast::Type* TypeChecker::inferMatch(ast::MatchExpr* expr) {
         
         // Enter scope and bind pattern variables so the body can reference them
         symbolTable_.enterScope();
-        bindPatternVariables(matchCase->getPattern(), matchedType);
+        bindPatternVariables(matchCase->getPattern(), stableMatchedType);
         // Infer body type (may point into current scope's symbols)
         ast::Type* bodyType = inferType(matchCase->getBody());
         // Copy before exiting scope so we don't use-after-free
@@ -3348,8 +3478,8 @@ ast::Type* TypeChecker::inferMatch(ast::MatchExpr* expr) {
         }
         
         if (!returnType) {
-            matchReturnType_ = std::move(bodyTypeCopy);
-            returnType = matchReturnType_.get();
+            localReturnType = std::move(bodyTypeCopy);
+            returnType = localReturnType.get();
         } else {
             // All case bodies should have the same type, or unify as optional (T | null)
             if (!typesEqual(returnType, bodyTypeCopy.get())) {
@@ -3374,15 +3504,15 @@ ast::Type* TypeChecker::inferMatch(ast::MatchExpr* expr) {
                         std::vector<std::unique_ptr<ast::Type>> args;
                         args.push_back(copyType(returnType));
                         args.push_back(std::make_unique<ast::PrimitiveType>(returnType->getLocation(), ast::PrimitiveType::Kind::Null));
-                        matchReturnType_ = std::make_unique<ast::ParameterizedType>(returnType->getLocation(), "|", std::move(args));
-                        returnType = matchReturnType_.get();
+                        localReturnType = std::make_unique<ast::ParameterizedType>(returnType->getLocation(), "|", std::move(args));
+                        returnType = localReturnType.get();
                     }
                 } else if (isNull(returnType)) {
                     std::vector<std::unique_ptr<ast::Type>> args;
                     args.push_back(std::move(bodyTypeCopy));
                     args.push_back(std::make_unique<ast::PrimitiveType>(matchCase->getBody()->getLocation(), ast::PrimitiveType::Kind::Null));
-                    matchReturnType_ = std::make_unique<ast::ParameterizedType>(matchCase->getBody()->getLocation(), "|", std::move(args));
-                    returnType = matchReturnType_.get();
+                    localReturnType = std::make_unique<ast::ParameterizedType>(matchCase->getBody()->getLocation(), "|", std::move(args));
+                    returnType = localReturnType.get();
                     bodyTypeCopy = nullptr; // moved
                 } else {
                     // Unify same-shape parameterized types: both generic (Option<T> vs Option<B>), or concrete vs generic (Option<Int> vs Option<B> from none())
@@ -3412,7 +3542,30 @@ ast::Type* TypeChecker::inferMatch(ast::MatchExpr* expr) {
                             }
                         }
                     }
-                    if (!sameShapeGenerics && !concreteVsGeneric) {
+                    // Generic return vs concrete body (e.g. first arm none() => Option<B>, second arm some(x) => Option<T>) — use concrete
+                    auto isConcreteArg = [this](ast::Type* t) {
+                        auto* g = dynamic_cast<ast::GenericType*>(t);
+                        if (!g) return true;
+                        const std::string& n = g->getName();
+                        return typeDecls_.count(n) != 0 || n.size() > 1;
+                    };
+                    bool genericVsConcrete = pRet && pBody &&
+                        pRet->getBaseName() == pBody->getBaseName() &&
+                        pRet->getTypeArgs().size() == pBody->getTypeArgs().size();
+                    if (genericVsConcrete) {
+                        for (size_t i = 0; i < pRet->getTypeArgs().size(); ++i) {
+                            if (!dynamic_cast<ast::GenericType*>(pRet->getTypeArgs()[i].get()) ||
+                                !isConcreteArg(pBody->getTypeArgs()[i].get())) {
+                                genericVsConcrete = false;
+                                break;
+                            }
+                        }
+                    }
+                    if (genericVsConcrete) {
+                        localReturnType = std::move(bodyTypeCopy);
+                        returnType = localReturnType.get();
+                    }
+                    if (!sameShapeGenerics && !concreteVsGeneric && !genericVsConcrete) {
                         errorReporter_.error(
                             matchCase->getBody()->getLocation(),
                             "Match case body type mismatch"
@@ -3424,8 +3577,8 @@ ast::Type* TypeChecker::inferMatch(ast::MatchExpr* expr) {
     }
     
     // Exhaustiveness: if matched type is ADT (or ParameterizedType resolving to ADT, e.g. Option<Int>)
-    ast::Type* typeForExhaustiveness = getEffectiveType(matchedType);
-    if (auto* param = dynamic_cast<ast::ParameterizedType*>(matchedType)) {
+    ast::Type* typeForExhaustiveness = getEffectiveType(stableMatchedType);
+    if (auto* param = dynamic_cast<ast::ParameterizedType*>(stableMatchedType)) {
         auto it = typeDecls_.find(param->getBaseName());
         if (it != typeDecls_.end() && it->second) {
             typeForExhaustiveness = it->second;
@@ -3509,7 +3662,12 @@ ast::Type* TypeChecker::inferMatch(ast::MatchExpr* expr) {
         }
     }
 
-    return returnType;
+    // Store in member so returned pointer remains valid; nested matches use their own localReturnType.
+    if (localReturnType) {
+        matchReturnType_ = std::move(localReturnType);
+        return matchReturnType_.get();
+    }
+    return nullptr;
 }
 
 void TypeChecker::bindPatternVariables(ast::Pattern* pattern, ast::Type* matchedType) {

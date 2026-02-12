@@ -79,6 +79,32 @@ function notBool(b: Bool) -> Bool {
     return !b;
 }
 
+// -------- Char --------
+function toIntDemo(c: Char) -> Int {
+    return toInt(c);
+}
+function fromIntDemo(i: Int) -> Char {
+    return fromInt(i);
+}
+function succDemo(c: Char) -> Char {
+    return succ(c);
+}
+function predDemo(c: Char) -> Char {
+    return pred(c);
+}
+function categoryDemo(c: Char) -> String {
+    return category(c);
+}
+function isAlphaDemo(c: Char) -> Bool {
+    return isAlpha(c);
+}
+function charEq(c: Char, d: Char) -> Bool {
+    return c == d;
+}
+function charLt(c: Char, d: Char) -> Bool {
+    return c < d;
+}
+
 interaction main() -> Unit {
     // Arithmetic Int
     println("addInt(10, 3) = " + intToString(addInt(10, 3)));
@@ -93,7 +119,18 @@ interaction main() -> Unit {
 
     // String concatenation
     println("concatStrings(\"Hello, \", \"First!\") = " + concatStrings("Hello, ", "First!"));
-    
+
+    // Char
+    println("toInt('A') = " + intToString(toIntDemo('A')));
+    println("fromInt(65) = " + toString(fromIntDemo(65)));
+    println("succ('a') = " + toString(succDemo('a')));
+    println("pred('b') = " + toString(predDemo('b')));
+    println("category('9') = " + categoryDemo('9'));
+    println("category('A') = " + categoryDemo('A'));
+    println("isAlpha('x') = " + (if (isAlphaDemo('x')) { "true" } else { "false" }));
+    println("charEq('a', 'a') = " + (if (charEq('a', 'a')) { "true" } else { "false" }));
+    println("charLt('A', 'B') = " + (if (charLt('A', 'B')) { "true" } else { "false" }));
+
     // String comparison
     let strEq = eqString("hello", "hello");
     println("eqString(\"hello\", \"hello\") called");

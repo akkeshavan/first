@@ -17,7 +17,7 @@ static const char* kStdlibSource = R"(
 interaction main() -> Unit {
     print("hi");
     let x = sin(0.0);
-    let n = stringLength("abc");
+    let n = strLength("abc");
 }
 )";
 

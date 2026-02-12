@@ -13,11 +13,13 @@ First provides these built-in types for everyday use:
 | **Int**   | 64-bit signed integer    | `0`, `42`, `-7`                        |
 | **Float** | 64-bit floating-point    | `0.0`, `3.14`, `-1.5e2`               |
 | **Bool**  | Boolean                  | `true`, `false`                        |
+| **Char**  | Single Unicode character (UTF-32 scalar) | `'A'`, `'\n'`, `'\u0041'`     |
 | **String**| Text (UTF-8)             | `"hello"`, `"a\nb"`                    |
 | **Unit**  | “No useful value”        | Result of `println(...)`; function returns nothing |
 
 - **Int** and **Float** are used for numeric computation. Mixing them in an expression promotes **Int** to **Float** (e.g. `3 + 2.0` is **Float**).
 - **Bool** is used in conditions and logical expressions.
+- **Char** is a single Unicode code point (e.g. letters, digits, spaces). You can compare chars (**==**, **!=**, **<**, **<=**, **>**, **>=**) and convert to/from **Int** or **String** (see [The Char type](#the-char-type)).
 - **String** is used for text and I/O (e.g. **print** / **println** take a **String**). You can concatenate with **+**.
 - **Unit** is the type of expressions that only have side effects and no result you use (e.g. **println(...)** returns **Unit**).
 
@@ -34,6 +36,8 @@ First provides these built-in types for everyday use:
 0.0       // Float
 true      // Bool
 false     // Bool
+'A'       // Char (single quote)
+'\n'      // Char (escape: \n \t \r \\ \' ")
 "hello"   // String
 "a\nb"    // String (escape sequences: \n \t \" \\)
 ```
@@ -41,6 +45,7 @@ false     // Bool
 - Integer literals (digits, optional minus) → **Int**.
 - Float literals (digits, decimal point, optional exponent) → **Float**.
 - **true** / **false** → **Bool**.
+- Single-quoted **Char** literals: one character or escape (**\n**, **\t**, **\r**, **\\**, **\'**, **"**). **\uXXXX** (4 hex digits) gives a Unicode code point.
 - Double-quoted strings → **String**; **\n**, **\t**, **\"**, **\\** are supported.
 
 The compiler uses these to **infer** the type of an expression when you don’t write it explicitly.
@@ -75,12 +80,12 @@ Examples:
 
 | Operator | Meaning        | Supported types        |
 |----------|----------------|------------------------|
-| **==**   | equal          | Int, Float, String     |
-| **!=**   | not equal      | Int, Float, String     |
-| **<**    | less than      | Int, Float, String     |
-| **<=**   | less or equal  | Int, Float, String     |
-| **>**    | greater than   | Int, Float, String     |
-| **>=**   | greater or equal | Int, Float, String   |
+| **==**   | equal          | Int, Float, Char, String     |
+| **!=**   | not equal      | Int, Float, Char, String     |
+| **<**    | less than      | Int, Float, Char, String     |
+| **<=**   | less or equal  | Int, Float, Char, String     |
+| **>**    | greater than   | Int, Float, Char, String     |
+| **>=**   | greater or equal | Int, Float, Char, String   |
 
 Both operands must be the same (or compatible) type. The result is **Bool**.
 
@@ -91,6 +96,8 @@ x == 0       // Bool
 n >= 1       // Bool
 1.5 < 2.0    // Bool: true
 ```
+
+**Char comparison**: For **Char** operands, comparison is by Unicode code point: `'A' < 'B'`, `'a' == 'a'`, etc.
 
 **String comparison**: For **String** operands, all six operators perform **lexicographic** (dictionary) comparison. Characters are compared by their UTF-8 byte order; shorter strings are less than longer strings if one is a prefix of the other.
 
@@ -131,6 +138,53 @@ done || error
 
 ---
 
+## The Char type
+
+**Char** represents a single Unicode character (one UTF-32 scalar value). Valid code points exclude surrogates (0xD800..0xDFFF); literals and **fromInt** enforce this.
+
+### Char literals
+
+Use single quotes. Escapes: **\n**, **\t**, **\r**, **\\**, **\'**, **"**. For a code point by value use **\uXXXX** (exactly 4 hex digits).
+
+```first
+'A'       // Char
+'\n'      // newline
+'\u0041'  // 'A' by code point
+```
+
+### Char conversion and utilities
+
+These built-in functions are always available (no import):
+
+| Function | Signature | Explanation |
+|----------|-----------|-------------|
+| **toInt** | `(c: Char) -> Int` | Code point of the character (e.g. `toInt('A')` → 65). |
+| **fromInt** | `(i: Int) -> Char` | Character for a code point; aborts if out of valid Unicode scalar range. |
+| **toString** | (built-in) | Converts **Char** to **String** (e.g. for **println** or concatenation). |
+| **succ** | `(c: Char) -> Char` | Next character in code-point order; skips surrogate range; aborts at U+10FFFF. |
+| **pred** | `(c: Char) -> Char` | Previous character; skips surrogates; aborts at U+0000. |
+| **category** | `(c: Char) -> String` | General category: **"Letter"**, **"Number"**, **"Punctuation"**, **"Space"**, or **"Other"**. |
+| **isAlpha** | `(c: Char) -> Bool` | True if the character is a letter. |
+| **isDigit** | `(c: Char) -> Bool` | True if a decimal digit. |
+| **isWhitespace** | `(c: Char) -> Bool` | True for space, tab, newline, and other Unicode whitespace. |
+| **isUpper** | `(c: Char) -> Bool` | True if uppercase. |
+| **isLower** | `(c: Char) -> Bool` | True if lowercase. |
+
+Example:
+
+```first
+toInt('A');           // 65
+fromInt(65);          // 'A'
+toString('x');        // "x"
+succ('a');            // 'b'
+category('9');       // "Number"
+isAlpha('K');        // true
+isDigit('5');        // true
+isWhitespace(' ');   // true
+```
+
+---
+
 ## String operators and built-in string functions
 
 This section summarizes **string-specific** operators and the built-in functions that work on or produce strings.
@@ -157,16 +211,16 @@ These functions are always available (no import).
 |----------|-----------|-------------|
 | **intToString** | `(n: Int) -> String` | Converts an integer to its decimal string, e.g. `intToString(42)` → `"42"`. |
 | **floatToString** | `(x: Float) -> String` | Converts a float to a string, e.g. `floatToString(3.14)` → `"3.140000"` (format may vary). |
-| **stringEquals** | `(s1: String, s2: String) -> Bool` | Same as `s1 == s2`; true if the two strings are equal. |
-| **stringCompare** | `(s1: String, s2: String) -> Int` | Lexicographic comparison: returns **-1** if `s1 < s2`, **0** if `s1 == s2`, **1** if `s1 > s2`. Useful for sorting or custom ordering. |
+| **strEquals** | `(s1: String, s2: String) -> Bool` | Same as `s1 == s2`; true if the two strings are equal. |
+| **strCompare** | `(s1: String, s2: String) -> Int` | Lexicographic comparison: returns **-1** if `s1 < s2`, **0** if `s1 == s2`, **1** if `s1 > s2`. Useful for sorting or custom ordering. |
 
 Example:
 
 ```first
 let a = "apple";
 let b = "banana";
-stringEquals(a, b);      // false
-stringCompare(a, b);     // -1
+strEquals(a, b);      // false
+strCompare(a, b);     // -1
 "Sum: " + intToString(10 + 20);   // "Sum: 30"
 ```
 
@@ -287,6 +341,7 @@ The project **examples/chapter-04-basic-expressions-types** defines one pure fun
 - **String**: **concatStrings** (uses **+**)
 - **String comparison**: **eqString**, **neString**, **ltString**, **geString** (uses operators)
 - **Comparison**: **eqInt**, **neInt**, **ltInt**, **geInt** (return **Bool**)
+- **Char**: **toInt**, **fromInt**, **succ**, **pred**, **category**, **isAlpha** (and related predicates)
 - **Logical**: **andBool**, **orBool**
 - **Unary**: **negateInt**, **negateFloat**, **notBool**
 - **Regex**: demonstrations of **regexMatches** and **regexSearch**
@@ -336,13 +391,14 @@ interaction main() -> Unit {
 
 ## Summary
 
-1. **Basic types**: **Int**, **Float**, **Bool**, **String**, **Unit**—used for numbers, booleans, text, and “no value.”
+1. **Basic types**: **Int**, **Float**, **Bool**, **Char**, **String**, **Unit**—used for numbers, booleans, single characters, text, and “no value.”
 2. **Literals** have fixed types; the compiler uses them to infer expression types.
-3. **Expressions**: arithmetic (**+** **-** **\*** **/** **%**), comparison (**==** **!=** **<** **<=** **>** **>=** on Int, Float, and String), logical (**&&** **||**), unary (**-** **!**), and string **+** (concatenation); result types follow the rules above.
-4. **String operators**: **+** concatenates strings; **==** **!=** **<** **<=** **>** **>=** compare strings lexicographically and return **Bool**. Built-in **stringEquals** and **stringCompare** give explicit comparison.
-5. **Regular expressions**: **regexMatches**, **regexSearch**, **regexReplace**, **regexReplaceAll**, and **regexExtract** provide pattern matching, search, replace, and capturing-group extraction.
-6. **Type inference**: in **let** / **var**, you can omit the type and the compiler infers it from the initializer; you can still add a type for checking.
-7. Function parameters and return types are always annotated; inference applies to locals and expressions.
+3. **Expressions**: arithmetic (**+** **-** **\*** **/** **%**), comparison (**==** **!=** **<** **<=** **>** **>=** on Int, Float, Char, and String), logical (**&&** **||**), unary (**-** **!**), and string **+** (concatenation); result types follow the rules above.
+4. **Char**: single-quoted literals and **\uXXXX**; **toInt** / **fromInt** / **toString**; **succ** / **pred**; **category** and **isAlpha** / **isDigit** / **isWhitespace** / **isUpper** / **isLower**. Chars support **==**, **!=**, **<**, **<=**, **>**, **>=** by code point.
+5. **String operators**: **+** concatenates strings; **==** **!=** **<** **<=** **>** **>=** compare strings lexicographically and return **Bool**. Built-in **strEquals** and **strCompare** give explicit comparison.
+6. **Regular expressions**: **regexMatches**, **regexSearch**, **regexReplace**, **regexReplaceAll**, and **regexExtract** provide pattern matching, search, replace, and capturing-group extraction.
+7. **Type inference**: in **let** / **var**, you can omit the type and the compiler infers it from the initializer; you can still add a type for checking.
+8. Function parameters and return types are always annotated; inference applies to locals and expressions.
 
 Control flow and the **for-in** loop over ranges are covered in **Chapter 5**.
 

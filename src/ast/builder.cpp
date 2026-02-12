@@ -289,6 +289,32 @@ std::unique_ptr<LiteralExpr> ASTBuilder::buildLiteral(FirstParser::LiteralContex
         }
         value = std::move(out);
         return std::make_unique<LiteralExpr>(loc, LiteralExpr::LiteralType::String, value);
+    } else if (ctx->CHAR_LITERAL()) {
+        std::string v = ctx->CHAR_LITERAL()->getText();
+        uint32_t codePoint = 0;
+        if (v.size() >= 2 && v.front() == '\'' && v.back() == '\'') {
+            std::string inner = v.substr(1, v.size() - 2);
+            if (inner.size() == 1) {
+                codePoint = static_cast<unsigned char>(inner[0]);
+            } else if (inner.size() >= 2 && inner[0] == '\\') {
+                if (inner.size() == 2) {
+                    switch (inner[1]) {
+                        case 'n': codePoint = 10; break;
+                        case 't': codePoint = 9; break;
+                        case 'r': codePoint = 13; break;
+                        case '\\': codePoint = '\\'; break;
+                        case '\'': codePoint = '\''; break;
+                        case '"': codePoint = '"'; break;
+                        default: codePoint = static_cast<unsigned char>(inner[1]); break;
+                    }
+                } else if (inner.size() >= 6 && inner[1] == 'u') {
+                    codePoint = static_cast<uint32_t>(std::stoul(inner.substr(2, 4), nullptr, 16));
+                }
+            }
+            if (codePoint >= 0xD800 && codePoint <= 0xDFFF) codePoint = 0;
+            if (codePoint > 0x10FFFF) codePoint = 0;
+        }
+        return std::make_unique<LiteralExpr>(loc, LiteralExpr::LiteralType::Char, std::to_string(codePoint));
     } else if (ctx->getToken(FirstParser::NULL_, 0)) {
         return std::make_unique<LiteralExpr>(loc, LiteralExpr::LiteralType::Null, "null");
     } else if (ctx->unitLiteral()) {
@@ -880,6 +906,8 @@ std::unique_ptr<PrimitiveType> ASTBuilder::buildPrimitiveType(FirstParser::Built
         return std::make_unique<PrimitiveType>(loc, PrimitiveType::Kind::Bool);
     } else if (ctx->STRING()) {
         return std::make_unique<PrimitiveType>(loc, PrimitiveType::Kind::String);
+    } else if (ctx->CHAR()) {
+        return std::make_unique<PrimitiveType>(loc, PrimitiveType::Kind::Char);
     } else if (ctx->UNIT()) {
         return std::make_unique<PrimitiveType>(loc, PrimitiveType::Kind::Unit);
     } else if (ctx->ARRAYBUF()) {

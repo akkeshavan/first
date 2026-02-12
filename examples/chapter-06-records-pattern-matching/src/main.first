@@ -3,7 +3,7 @@
 // =============================================================================
 // 1. Expression example (sum type: Term | Operator | BinaryExpression)
 // 2. FizzBuzz with match and guards (n when n%3==0) and otherwise clause
-// 3. Shape example (record types: Circle | Rectangle)
+// 3. Shape example (sum-of-records: Shape = Circle | Rectangle)
 // =============================================================================
 
 // -----------------------------------------------------------------------------
@@ -34,7 +34,7 @@ function fizzBuzz(n: Int) -> String {
 }
 
 // -----------------------------------------------------------------------------
-// 3. Shape example (sum-of-records: Circle | Rectangle)
+// 3. Shape example (constructor-style record patterns)
 // -----------------------------------------------------------------------------
 type Circle = { radius: Float };
 type Rectangle = { len: Float, width: Float };
@@ -43,7 +43,8 @@ type Shape = Circle | Rectangle;
 function describe(s: Shape) -> String {
     return match s {
         Circle({ radius }) => "Circle with radius " + floatToString(radius),
-        Rectangle({ len, width }) => "Rectangle " + floatToString(len) + " x " + floatToString(width)
+        Rectangle({ len, width }) => "Rectangle " + floatToString(len) + " x " + floatToString(width),
+        other => "unknown shape"
     };
 }
 
@@ -66,7 +67,7 @@ interaction main() -> Unit {
     println("fizzBuzz(15) = " + fizzBuzz(15));
     println("fizzBuzz(1) = " + fizzBuzz(1));
 
-    // Shapes (record construction)
+    // Shapes (constructor-style record literals)
     let c = Circle({ radius: 5.0 });
     let r = Rectangle({ len: 10.0, width: 20.0 });
     println(describe(c));

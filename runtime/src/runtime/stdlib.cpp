@@ -4,6 +4,7 @@
 #include "first/runtime/regex.h"
 #include "first/runtime/gc_alloc.h"
 #include <cmath>
+#include <cctype>
 #include <cstring>
 #include <iostream>
 #include <fstream>
@@ -162,6 +163,200 @@ char* first_unit_to_string(int64_t) {
     return strdup_heap("()");
 }
 
+// --- JS-like string functions ---
+int64_t first_string_char_at(const char* s, int64_t index) {
+    if (!s || index < 0) return -1;
+    size_t len = std::strlen(s);
+    if (static_cast<size_t>(index) >= len) return -1;
+    return static_cast<int64_t>(static_cast<unsigned char>(s[index]));
+}
+
+int64_t first_string_code_point_at(const char* s, int64_t index) {
+    if (!s || index < 0) return -1;
+    size_t len = std::strlen(s);
+    if (static_cast<size_t>(index) >= len) return -1;
+    unsigned char c = static_cast<unsigned char>(s[index]);
+    if (c <= 0x7f) return c;
+    if (c >= 0xc2 && c <= 0xdf && index + 1 < static_cast<int64_t>(len)) {
+        return ((c & 0x1f) << 6) | (static_cast<unsigned char>(s[index + 1]) & 0x3f);
+    }
+    if (c >= 0xe0 && c <= 0xef && index + 2 < static_cast<int64_t>(len)) {
+        return ((c & 0x0f) << 12) | ((static_cast<unsigned char>(s[index + 1]) & 0x3f) << 6) | (static_cast<unsigned char>(s[index + 2]) & 0x3f);
+    }
+    if (c >= 0xf0 && c <= 0xf4 && index + 3 < static_cast<int64_t>(len)) {
+        return ((c & 0x07) << 18) | ((static_cast<unsigned char>(s[index + 1]) & 0x3f) << 12) | ((static_cast<unsigned char>(s[index + 2]) & 0x3f) << 6) | (static_cast<unsigned char>(s[index + 3]) & 0x3f);
+    }
+    return static_cast<int64_t>(c);
+}
+
+int64_t first_string_index_of(const char* s, const char* search, int64_t from) {
+    if (!s || !search) return -1;
+    size_t len = std::strlen(s);
+    size_t slen = std::strlen(search);
+    if (slen == 0) return static_cast<int64_t>(from < 0 ? 0 : (static_cast<size_t>(from) > len ? len : static_cast<size_t>(from)));
+    if (from < 0) from = 0;
+    if (static_cast<size_t>(from) >= len) return -1;
+    const char* p = std::strstr(s + from, search);
+    if (!p) return -1;
+    return static_cast<int64_t>(p - s);
+}
+
+int64_t first_string_last_index_of(const char* s, const char* search, int64_t from) {
+    if (!s || !search) return -1;
+    int64_t len = static_cast<int64_t>(std::strlen(s));
+    size_t slen = std::strlen(search);
+    if (slen == 0) return (from < 0 || from > len) ? len : from;
+    if (from < 0) from = len;
+    if (from > len) from = len;
+    for (int64_t i = from - static_cast<int64_t>(slen); i >= 0; --i) {
+        if (std::strncmp(s + i, search, slen) == 0) return i;
+    }
+    return -1;
+}
+
+int64_t first_string_includes(const char* s, const char* search, int64_t position) {
+    return first_string_index_of(s, search, position) >= 0 ? 1 : 0;
+}
+
+int64_t first_string_starts_with(const char* s, const char* search, int64_t position) {
+    if (!s || !search) return 0;
+    size_t len = std::strlen(s);
+    size_t slen = std::strlen(search);
+    if (position < 0) position = 0;
+    if (static_cast<size_t>(position) + slen > len) return 0;
+    return std::strncmp(s + position, search, slen) == 0 ? 1 : 0;
+}
+
+int64_t first_string_ends_with(const char* s, const char* search, int64_t end_position) {
+    if (!s || !search) return 0;
+    int64_t len = static_cast<int64_t>(std::strlen(s));
+    size_t slen = std::strlen(search);
+    if (end_position < 0 || end_position > len) end_position = len;
+    if (static_cast<size_t>(end_position) < slen) return 0;
+    return std::strncmp(s + end_position - static_cast<int64_t>(slen), search, slen) == 0 ? 1 : 0;
+}
+
+char* first_string_to_lower(const char* s) {
+    if (!s) return strdup_heap("");
+    std::string t(s);
+    for (char& c : t) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    return strdup_heap(t.c_str());
+}
+
+char* first_string_to_upper(const char* s) {
+    if (!s) return strdup_heap("");
+    std::string t(s);
+    for (char& c : t) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    return strdup_heap(t.c_str());
+}
+
+static bool is_ascii_space(unsigned char c) {
+    return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\f' || c == '\v';
+}
+
+char* first_string_trim(const char* s) {
+    if (!s) return strdup_heap("");
+    size_t len = std::strlen(s);
+    size_t start = 0;
+    while (start < len && is_ascii_space(static_cast<unsigned char>(s[start]))) ++start;
+    size_t end = len;
+    while (end > start && is_ascii_space(static_cast<unsigned char>(s[end - 1]))) --end;
+    if (start >= end) return strdup_heap("");
+    size_t n = end - start;
+    char* p = static_cast<char*>(first_alloc(n + 1));
+    if (!p) return nullptr;
+    std::memcpy(p, s + start, n);
+    p[n] = '\0';
+    return p;
+}
+
+char* first_string_trim_start(const char* s) {
+    if (!s) return strdup_heap("");
+    size_t len = std::strlen(s);
+    size_t start = 0;
+    while (start < len && is_ascii_space(static_cast<unsigned char>(s[start]))) ++start;
+    if (start >= len) return strdup_heap("");
+    size_t n = len - start;
+    char* p = static_cast<char*>(first_alloc(n + 1));
+    if (!p) return nullptr;
+    std::memcpy(p, s + start, n + 1);
+    return p;
+}
+
+char* first_string_trim_end(const char* s) {
+    if (!s) return strdup_heap("");
+    size_t len = std::strlen(s);
+    size_t end = len;
+    while (end > 0 && is_ascii_space(static_cast<unsigned char>(s[end - 1]))) --end;
+    if (end == 0) return strdup_heap("");
+    char* p = static_cast<char*>(first_alloc(end + 1));
+    if (!p) return nullptr;
+    std::memcpy(p, s, end);
+    p[end] = '\0';
+    return p;
+}
+
+char* first_string_pad_start(const char* s, int64_t target_length, const char* pad_string) {
+    if (!s) s = "";
+    if (!pad_string || !*pad_string) pad_string = " ";
+    int64_t len = static_cast<int64_t>(std::strlen(s));
+    if (target_length <= len) return strdup_heap(s);
+    size_t pad_len = std::strlen(pad_string);
+    size_t need = static_cast<size_t>(target_length - len);
+    size_t n = static_cast<size_t>(target_length) + 1;
+    char* p = static_cast<char*>(first_alloc(n));
+    if (!p) return nullptr;
+    size_t i = 0;
+    while (i < need) {
+        size_t take = std::min(pad_len, need - i);
+        std::memcpy(p + i, pad_string, take);
+        i += take;
+    }
+    std::memcpy(p + need, s, static_cast<size_t>(len) + 1);
+    return p;
+}
+
+char* first_string_pad_end(const char* s, int64_t target_length, const char* pad_string) {
+    if (!s) s = "";
+    if (!pad_string || !*pad_string) pad_string = " ";
+    int64_t len = static_cast<int64_t>(std::strlen(s));
+    if (target_length <= len) return strdup_heap(s);
+    size_t pad_len = std::strlen(pad_string);
+    size_t need = static_cast<size_t>(target_length - len);
+    size_t n = static_cast<size_t>(target_length) + 1;
+    char* p = static_cast<char*>(first_alloc(n));
+    if (!p) return nullptr;
+    std::memcpy(p, s, static_cast<size_t>(len) + 1);
+    size_t i = 0;
+    while (i < need) {
+        size_t take = std::min(pad_len, need - i);
+        std::memcpy(p + static_cast<size_t>(len) + i, pad_string, take);
+        i += take;
+    }
+    p[target_length] = '\0';
+    return p;
+}
+
+char* first_string_repeat(const char* s, int64_t count) {
+    if (!s) return strdup_heap("");
+    if (count <= 0) return strdup_heap("");
+    size_t len = std::strlen(s);
+    if (len == 0) return strdup_heap("");
+    size_t total = static_cast<size_t>(count) * len;
+    if (total > 1024 * 1024 * 1024) return nullptr;  // avoid overflow
+    char* p = static_cast<char*>(first_alloc(total + 1));
+    if (!p) return nullptr;
+    for (int64_t i = 0; i < count; ++i) std::memcpy(p + i * len, s, len);
+    p[total] = '\0';
+    return p;
+}
+
+char* first_string_normalize(const char* s, const char* form) {
+    if (!s) return strdup_heap("");
+    (void)form;  // NFC/NFD/NFKC/NFKD not implemented; return copy
+    return strdup_heap(s);
+}
+
 // --- String Comparison (exposed to First) ---
 // Note: The low-level C functions are in string.cpp
 // These wrappers use the same signatures for consistency
@@ -206,9 +401,36 @@ char* regexExtract(const char* str, const char* pattern, int64_t group_index) {
 }
 
 // --- Array ---
+// Runtime heap-array convention:
+// - Arrays returned from runtime helpers are backed by a heap block with a small header:
+//     [ int64 magic, int64 len, ...data... ]
+// - The public pointer points to the first element (immediately after the header).
+// This allows `first_array_length(arr, 0)` to recover the length later.
+static constexpr int64_t FIRST_ARRAY_MAGIC = 0x4652535441525259LL; // "FRSTARRY" (arbitrary)
+static inline char* first_array_alloc_with_len(int64_t len, size_t elem_size) {
+    if (len < 0) len = 0;
+    size_t bytes = static_cast<size_t>(len) * elem_size;
+    char* base = static_cast<char*>(first_alloc(sizeof(int64_t) * 2 + bytes));
+    if (!base) return nullptr;
+    reinterpret_cast<int64_t*>(base)[0] = FIRST_ARRAY_MAGIC;
+    reinterpret_cast<int64_t*>(base)[1] = len;
+    return base + sizeof(int64_t) * 2;
+}
+
+static inline int64_t first_array_len_from_ptr(const void* arr) {
+    if (!arr) return 0;
+    const char* data = static_cast<const char*>(arr);
+    const char* base = data - sizeof(int64_t) * 2;
+    const int64_t* hdr = reinterpret_cast<const int64_t*>(base);
+    if (hdr[0] != FIRST_ARRAY_MAGIC) return 0;
+    return hdr[1];
+}
+
 int64_t first_array_length(const void* arr, int64_t known_len) {
-    (void)arr;
-    return known_len;
+    // If caller knows the length (e.g. stack-backed literal) it may pass it here.
+    // Otherwise pass 0 and we'll read it from the heap header.
+    if (known_len != 0) return known_len;
+    return first_array_len_from_ptr(arr);
 }
 
 int64_t first_array_reduce_int_sum(const int64_t* arr, int64_t len) {
@@ -220,7 +442,8 @@ int64_t first_array_reduce_int_sum(const int64_t* arr, int64_t len) {
 
 int64_t* first_array_map_int_double(const int64_t* arr, int64_t len) {
     if (!arr || len <= 0) return nullptr;
-    int64_t* out = static_cast<int64_t*>(first_alloc(static_cast<size_t>(len) * sizeof(int64_t)));
+    char* out_bytes = first_array_alloc_with_len(len, sizeof(int64_t));
+    int64_t* out = reinterpret_cast<int64_t*>(out_bytes);
     if (!out) return nullptr;
     for (int64_t i = 0; i < len; ++i) out[i] = arr[i] * 2;
     return out;
@@ -232,7 +455,8 @@ int64_t* first_array_filter_int_positive(const int64_t* arr, int64_t len, int64_
     for (int64_t i = 0; i < len; ++i) if (arr[i] > 0) tmp.push_back(arr[i]);
     *out_len = static_cast<int64_t>(tmp.size());
     if (tmp.empty()) return nullptr;
-    int64_t* out = static_cast<int64_t*>(first_alloc(tmp.size() * sizeof(int64_t)));
+    char* out_bytes = first_array_alloc_with_len(*out_len, sizeof(int64_t));
+    int64_t* out = reinterpret_cast<int64_t*>(out_bytes);
     if (!out) return nullptr;
     for (size_t i = 0; i < tmp.size(); ++i) out[i] = tmp[i];
     return out;
@@ -243,7 +467,7 @@ void* first_array_insert_at(const void* arr, int64_t len, int64_t pos, const voi
     if (pos < 0 || pos > len) return nullptr;
     const char* src = static_cast<const char*>(arr);
     size_t new_len = static_cast<size_t>(len) + 1;
-    char* out = static_cast<char*>(first_alloc(new_len * elem_size));
+    char* out = first_array_alloc_with_len(static_cast<int64_t>(new_len), elem_size);
     if (!out) return nullptr;
     for (int64_t i = 0; i < pos; ++i)
         std::memcpy(out + i * elem_size, src + i * elem_size, elem_size);
@@ -258,7 +482,7 @@ void* first_array_delete_at(const void* arr, int64_t len, int64_t pos, size_t el
     if (pos < 0 || pos >= len) return nullptr;
     const char* src = static_cast<const char*>(arr);
     size_t new_len = static_cast<size_t>(len) - 1;
-    char* out = static_cast<char*>(first_alloc(new_len * elem_size));
+    char* out = first_array_alloc_with_len(static_cast<int64_t>(new_len), elem_size);
     if (!out) return nullptr;
     for (int64_t i = 0; i < pos; ++i)
         std::memcpy(out + i * elem_size, src + i * elem_size, elem_size);

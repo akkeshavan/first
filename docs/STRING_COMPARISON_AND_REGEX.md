@@ -33,19 +33,19 @@ String comparison operators now work with string operands, performing lexicograp
 
 Explicit functions for string comparison:
 
-**stringEquals(s1: String, s2: String) -> Bool**
+**strEquals(s1: String, s2: String) -> Bool**
 ```first
-stringEquals("hello", "hello")  // true
+strEquals("hello", "hello")  // true
 ```
 
-**stringCompare(s1: String, s2: String) -> Int**
+**strCompare(s1: String, s2: String) -> Int**
 Returns:
 - `-1` if s1 < s2
 - `0` if s1 == s2
 - `1` if s1 > s2
 
 ```first
-stringCompare("apple", "banana")  // -1
+strCompare("apple", "banana")  // -1
 ```
 
 ### 3. Regular Expression Functions

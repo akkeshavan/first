@@ -72,6 +72,7 @@ INT: 'Int';
 FLOAT: 'Float';
 BOOL: 'Bool';
 STRING: 'String';
+CHAR: 'Char';
 UNIT: 'Unit';
 ARRAYBUF: 'ArrayBuf';
 ARRAY: 'Array';
@@ -110,6 +111,9 @@ IDENTIFIER: [a-zA-Z_][a-zA-Z0-9_]*;
 INT_LITERAL: [0-9]+;
 FLOAT_LITERAL: [0-9]+ '.' [0-9]+ ([eE] [+-]? [0-9]+)?;
 STRING_LITERAL: '"' (~["\\\r\n] | '\\' .)* '"';
+// Char literal: 'A', '\n', '\u03BB' (Unicode scalar value)
+fragment HEX: [0-9a-fA-F];
+CHAR_LITERAL: '\'' ( ~['\\\r\n] | '\\' [nrt\\'"] | '\\' 'u' HEX HEX HEX HEX ) '\'';
 
 // Operators (multi-character first, then single character)
 // Comparison
@@ -373,6 +377,7 @@ builtinType
     | FLOAT
     | BOOL
     | STRING
+    | CHAR
     | UNIT
     | ARRAYBUF
     ;
@@ -577,6 +582,7 @@ literal
     : INT_LITERAL
     | FLOAT_LITERAL
     | STRING_LITERAL
+    | CHAR_LITERAL
     | TRUE
     | FALSE
     | NULL

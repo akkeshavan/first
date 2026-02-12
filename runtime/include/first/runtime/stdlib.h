@@ -44,6 +44,23 @@ char* first_int_to_string(int64_t n);   // caller must free
 char* first_float_to_string(double x);  // caller must free
 char* first_bool_to_string(int64_t b);  // 0 -> "false", non-zero -> "true"; caller must free
 char* first_unit_to_string(int64_t);    // ignores arg, returns "()"; caller must free
+// JS-like string functions (caller must free returned char*)
+int64_t first_string_char_at(const char* s, int64_t index);   // byte at index (0-255) or -1
+int64_t first_string_code_point_at(const char* s, int64_t index);  // Unicode code point or -1
+int64_t first_string_index_of(const char* s, const char* search, int64_t from);
+int64_t first_string_last_index_of(const char* s, const char* search, int64_t from);
+int64_t first_string_includes(const char* s, const char* search, int64_t position);  // 1/0
+int64_t first_string_starts_with(const char* s, const char* search, int64_t position);  // 1/0
+int64_t first_string_ends_with(const char* s, const char* search, int64_t end_position);  // 1/0
+char* first_string_to_lower(const char* s);
+char* first_string_to_upper(const char* s);
+char* first_string_trim(const char* s);
+char* first_string_trim_start(const char* s);
+char* first_string_trim_end(const char* s);
+char* first_string_pad_start(const char* s, int64_t target_length, const char* pad_string);
+char* first_string_pad_end(const char* s, int64_t target_length, const char* pad_string);
+char* first_string_repeat(const char* s, int64_t count);
+char* first_string_normalize(const char* s, const char* form);  // "NFC","NFD","NFKC","NFKD" or null -> NFC
 
 // --- Array (length: compiler intrinsic; map/reduce/filter for Int arrays; generic insert/delete) ---
 int64_t first_array_length(const void* arr, int64_t known_len);  // identity: returns known_len for ABI

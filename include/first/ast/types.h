@@ -31,6 +31,7 @@ public:
         Float,
         Bool,
         String,
+        Char,
         Unit,
         Null,
         ArrayBuf

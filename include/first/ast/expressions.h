@@ -30,6 +30,7 @@ public:
         Float,
         Bool,
         String,
+        Char,
         Null
     };
 

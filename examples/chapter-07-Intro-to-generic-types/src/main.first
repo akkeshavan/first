@@ -55,7 +55,7 @@ function elem<T:Eq>(x: T, xs: List<T>) -> Bool {
     };
 }
 
-// head :: [a] -> a  (first element; default used when list is empty)
+// head :: [a] -> a | null  (first element; null when list is empty)
 function head<T>(xs: List<T>) -> T | null {
     return match xs {
         Cons(h, t) => h,
@@ -79,7 +79,8 @@ interaction main() -> Unit {
     let emptyStr = if (isEmpty(xs)) { "true" } else { "false" };
     println("List [1,2,3]: isEmpty = " + emptyStr + ", length = " + intToString(length(xs)));
     let has2 = if (elem(2, xs)) { "true" } else { "false" };
-    println("head(xs) = " + intToString(head(xs)) + ", elem(2, xs) = " + has2);
+    let headVal = match head(xs) { null => "empty", h => intToString(h) };
+    println("head(xs) = " + headVal + ", elem(2, xs) = " + has2);
     let rest = tail(xs);
     println("tail(xs) length = " + intToString(length(rest)));
 }

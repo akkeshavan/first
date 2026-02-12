@@ -143,13 +143,16 @@ private:
     };
     std::unordered_map<llvm::Value*, ArrayMetadata> arrayMetadata_;
     
-    // Record metadata: maps record pointer to (structType, fieldNames, alloca)
+    // Record metadata: maps record pointer to (structType, fieldNames, base pointer)
     struct RecordMetadata {
         llvm::StructType* structType;
         std::vector<std::string> fieldNames; // Field names in order
-        llvm::AllocaInst* alloca; // Original alloca for stack records
+        llvm::Value* alloca; // Pointer to record storage (stack alloca or heap from first_alloc)
     };
     std::unordered_map<llvm::Value*, RecordMetadata> recordMetadata_;
+    
+    // Current function's variable declarations (name -> decl), for resolving record type from type annotation
+    std::unordered_map<std::string, ast::VariableDecl*> currentFunctionVarDecls_;
     
     // Current return value (for expressions)
     llvm::Value* currentValue_;
@@ -245,6 +248,8 @@ private:
     void registerADTFromType(ast::Type* type);
     void collectTypesFromStmt(ast::Stmt* stmt);
     std::pair<ast::ADTType*, size_t> getConstructorIndex(const std::string& name) const;
+    /** Allocate a None option value and return as the given pointer type (for if-branch type unification). */
+    llvm::Value* createOptionNoneAsType(llvm::Type* resultType);
 
     ast::Program* currentProgram_;
     // When generating a monomorphized function body, maps generic param name -> concrete type for convertType

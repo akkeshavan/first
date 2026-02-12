@@ -41,6 +41,7 @@ All example code lives in the repository’s **examples** directory. You can run
 16. **[Type reference](chapter-16-type-reference.md)** – All types supported by First: primitives, arrays, records, function types, type aliases, generic types, **ADTs** (with many examples), union types, interfaces, and **type-level programming** (constrained generics, higher-kinded **F&lt;_&gt;**). Refinement and dependent types are not covered in this chapter.
 
 17. **[Concurrency and async model](chapter-17-concurrency-and-async.md)** – **async**/ **await** (promises), **spawn**/ **join** (tasks), and **select** (channel receive/send). **Spawn/join** and **async/await** run work in a separate thread; join/await block for the result. Runnable example in **examples/chapter-17-concurrency-async**.
+18. **[A JSON parser](chapter-18-A-JSON-parser.md)** – Build a small JSON parser using **ADTs**, **pattern matching**, **Option**, recursion, and immutable arrays. Runnable example in **examples/chapter-18-A-JSON-parser**.
 
 ---
 
@@ -67,6 +68,7 @@ The **examples** folder has matching projects for each chapter:
 | 15 | Monadic operators in interactions | **examples/chapter-15-monadic-operators** |
 | 16 | Type reference | **examples/chapter-16-type-reference** |
 | 17 | Concurrency and async model | **examples/chapter-17-concurrency-async** |
+| 18 | A JSON parser | **examples/chapter-18-A-JSON-parser** |
 
 From the repo root, run an example with: `cd examples/chapter-N-... && fir run` (or use the **build-and-run-all.sh** script in examples).
 

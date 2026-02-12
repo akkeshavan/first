@@ -45,6 +45,9 @@
     case FirstLexer::STRING_LITERAL:
         kind = TokenKind::StringLiteral;
         break;
+    case FirstLexer::CHAR_LITERAL:
+        kind = TokenKind::CharLiteral;
+        break;
 
      case FirstLexer::FUNCTION: kind = TokenKind::KwFunction; break;
      case FirstLexer::INTERACTION: kind = TokenKind::KwInteraction; break;
@@ -79,6 +82,7 @@
     case FirstLexer::FLOAT: kind = TokenKind::KwFloat; break;
     case FirstLexer::BOOL: kind = TokenKind::KwBool; break;
     case FirstLexer::STRING: kind = TokenKind::KwString; break;
+    case FirstLexer::CHAR: kind = TokenKind::KwChar; break;
     case FirstLexer::UNIT: kind = TokenKind::KwUnit; break;
     case FirstLexer::ARRAYBUF: kind = TokenKind::KwArrayBuf; break;
      case FirstLexer::TRUE: kind = TokenKind::KwTrue; break;
@@ -970,11 +974,14 @@ void FirstParser::parseTypeDecl(ast::Program& program, const std::vector<std::st
 }
 
 std::unique_ptr<ast::Type> FirstParser::parseTypeRhs(const std::string& typeName) {
-    // Sum type with parens: [|] Identifier ( Type, ... ) | Identifier ( Type, ... ) | ...
+    // Sum type: [|] Identifier [ ( Type, ... ) ] | Identifier [ ( Type, ... ) ] | ...
+    // Zero-arg constructor: JNull | ... ; with args: JBool(Bool) | ...
+    TokenKind next = tokens_.lookahead(1).kind;
     bool leadingPipe = match(TokenKind::OpPipe);
-    if (leadingPipe || (current().kind == TokenKind::Identifier && tokens_.lookahead(1).kind == TokenKind::LParen)) {
+    if (leadingPipe || (current().kind == TokenKind::Identifier && (next == TokenKind::LParen || next == TokenKind::OpPipe))) {
         SourceLocation adtLoc = current().loc;
         std::vector<std::unique_ptr<ast::Constructor>> constructors;
+        bool sumOfRecordsForm = false;  // true when parsing "Circle | Rectangle" (each variant carries type of same name)
         do {
             if (leadingPipe) leadingPipe = false;
             SourceLocation cLoc = current().loc;
@@ -983,6 +990,8 @@ std::unique_ptr<ast::Type> FirstParser::parseTypeRhs(const std::string& typeName
                 break;
             }
             std::string cName = current().lexeme;
+            // "Circle | Rectangle" form: name followed by | (no parens) and next constructor also has no parens
+            bool nameFollowedByPipe = (tokens_.lookahead(1).kind == TokenKind::OpPipe);
             advance();
             std::vector<std::unique_ptr<ast::Type>> argTypes;
             if (match(TokenKind::LParen)) {
@@ -1001,6 +1010,14 @@ std::unique_ptr<ast::Type> FirstParser::parseTypeRhs(const std::string& typeName
                 }
                 if (!expect(TokenKind::RParen, "expected ')' after constructor argument types")) {
                     break;
+                }
+            } else if (nameFollowedByPipe || sumOfRecordsForm) {
+                // Sum-of-records only when next constructor also has no parens (Id | Id | ... not JNull | JBool(Bool))
+                bool nextHasNoParens = (tokens_.lookahead(1).kind == TokenKind::Identifier &&
+                                        tokens_.lookahead(2).kind != TokenKind::LParen);
+                if (nextHasNoParens || sumOfRecordsForm) {
+                    argTypes.push_back(std::make_unique<ast::GenericType>(cLoc, cName));
+                    sumOfRecordsForm = true;
                 }
             }
             constructors.push_back(std::make_unique<ast::Constructor>(cLoc, cName, std::move(argTypes)));
@@ -1286,6 +1303,9 @@ std::unique_ptr<ast::Type> FirstParser::parseTypeRhs(const std::string& typeName
      case TokenKind::KwString:
          advance();
          return std::make_unique<ast::PrimitiveType>(loc, ast::PrimitiveType::Kind::String);
+     case TokenKind::KwChar:
+         advance();
+         return std::make_unique<ast::PrimitiveType>(loc, ast::PrimitiveType::Kind::Char);
     case TokenKind::KwUnit:
         advance();
         return std::make_unique<ast::PrimitiveType>(loc, ast::PrimitiveType::Kind::Unit);
@@ -2247,6 +2267,7 @@ std::unique_ptr<ast::Expr> FirstParser::parseDoBlockExpr() {
      case TokenKind::IntLiteral:
      case TokenKind::FloatLiteral:
      case TokenKind::StringLiteral:
+     case TokenKind::CharLiteral:
      case TokenKind::KwTrue:
      case TokenKind::KwFalse:
      case TokenKind::KwNull:
@@ -2383,6 +2404,56 @@ std::unique_ptr<ast::Expr> FirstParser::parseDoBlockExpr() {
          advance();
          return std::make_unique<ast::LiteralExpr>(
              loc, ast::LiteralExpr::LiteralType::String, v);
+     }
+     case TokenKind::CharLiteral: {
+         std::string v = current().lexeme;
+         advance();
+         // Decode 'x', '\n', '\u03BB' to Unicode code point (stored as decimal string)
+         uint32_t codePoint = 0;
+         if (v.size() >= 2 && v.front() == '\'' && v.back() == '\'') {
+             v = v.substr(1, v.size() - 2);
+             if (v.empty()) {
+                 reportSyntaxError("empty char literal");
+                 return nullptr;
+             }
+             if (v[0] == '\\' && v.size() >= 2) {
+                 if (v.size() == 2) {
+                     switch (v[1]) {
+                         case 'n': codePoint = 10; break;
+                         case 't': codePoint = 9; break;
+                         case 'r': codePoint = 13; break;
+                         case '\\': codePoint = '\\'; break;
+                         case '\'': codePoint = '\''; break;
+                         case '"': codePoint = '"'; break;
+                         default:
+                             reportSyntaxError("invalid char escape");
+                             return nullptr;
+                     }
+                 } else if (v.size() >= 6 && v[1] == 'u' &&
+                            v.find_first_not_of("0123456789aAbBcCdDeEfF", 2) == std::string::npos) {
+                     codePoint = static_cast<uint32_t>(std::stoul(v.substr(2, 4), nullptr, 16));
+                 } else {
+                     reportSyntaxError("invalid char escape");
+                     return nullptr;
+                 }
+             } else if (v.size() == 1) {
+                 codePoint = static_cast<unsigned char>(v[0]);
+             } else {
+                 reportSyntaxError("char literal must be one character or escape");
+                 return nullptr;
+             }
+             // Reject surrogates (invalid as standalone scalar)
+             if (codePoint >= 0xD800 && codePoint <= 0xDFFF) {
+                 reportSyntaxError("char literal: surrogate code point not allowed");
+                 return nullptr;
+             }
+             if (codePoint > 0x10FFFF) {
+                 reportSyntaxError("char literal: code point beyond U+10FFFF");
+                 return nullptr;
+             }
+         }
+         return std::make_unique<ast::LiteralExpr>(
+             loc, ast::LiteralExpr::LiteralType::Char, std::to_string(codePoint));
      }
      case TokenKind::KwTrue:
          advance();
@@ -2558,6 +2629,7 @@ std::unique_ptr<ast::Pattern> FirstParser::parsePattern() {
     if (current().kind == TokenKind::IntLiteral ||
         current().kind == TokenKind::FloatLiteral ||
         current().kind == TokenKind::StringLiteral ||
+        current().kind == TokenKind::CharLiteral ||
         current().kind == TokenKind::KwTrue ||
         current().kind == TokenKind::KwFalse ||
         current().kind == TokenKind::KwNull) {

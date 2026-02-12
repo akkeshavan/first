@@ -12,9 +12,10 @@
  enum class TokenKind {
      EndOfFile,
      Identifier,
-     IntLiteral,
-     FloatLiteral,
-     StringLiteral,
+    IntLiteral,
+    FloatLiteral,
+    StringLiteral,
+    CharLiteral,
 
      // Keywords
      KwFunction,
@@ -51,6 +52,7 @@
      KwFloat,
      KwBool,
      KwString,
+     KwChar,
      KwUnit,
      KwArrayBuf,
      KwTrue,

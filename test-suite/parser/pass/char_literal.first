@@ -1,0 +1,8 @@
+// Char type and literals: 'A', '\n', '\u03BB'
+import * "Prelude";
+
+function f() -> Char {
+    let c: Char = 'A';
+    let lambda: Char = '\u03BB';
+    return c;
+}

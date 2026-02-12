@@ -133,14 +133,59 @@ Dates are represented as an **opaque Int handle**. You should treat the `Int` as
 
 ## String utilities and conversions
 
-- **stringLength(s: String) -> Int**
-- **stringConcat(s1: String, s2: String) -> String**
-- **stringSlice(s: String, start: Int, end: Int) -> String**
+- **strLength(s: String) -> Int**
+- **strConcat(s1: String, s2: String) -> String**
+- **strSlice(s: String, start: Int, end: Int) -> String**
+
+Character / code (index is 0‑based; returns **-1** if out of range):
+
+- **strCharAt(s: String, index: Int) -> Int**  
+  Returns the byte at `index` (0–255), or -1 if out of bounds.
+
+- **strCodePointAt(s: String, index: Int) -> Int**  
+  Returns the UTF‑8 code point starting at `index`, or -1 if out of bounds.
+
+Search (use `0` for “from start” or “position” where not needed):
+
+- **strIndexOf(s: String, search: String, from: Int) -> Int**  
+  Index of first occurrence of `search` in `s` at or after `from`; **-1** if not found.
+
+- **strLastIndexOf(s: String, search: String, from: Int) -> Int**  
+  Index of last occurrence of `search` in `s` at or before `from`; **-1** if not found.
+
+Boolean checks (use `0` for “from start” / “full string”):
+
+- **strIncludes(s: String, search: String, position: Int) -> Bool**
+- **strStartsWith(s: String, search: String, position: Int) -> Bool**
+- **strEndsWith(s: String, search: String, endPosition: Int) -> Bool**  
+  For `strEndsWith`, `endPosition` is the length to consider (e.g. use `strLength(s)` for full string).
+
+Case and whitespace:
+
+- **strToLower(s: String) -> String**
+- **strToUpper(s: String) -> String**
+- **strTrim(s: String) -> String**  
+  Trims ASCII whitespace from both ends.
+- **strTrimStart(s: String) -> String**
+- **strTrimEnd(s: String) -> String**
+
+Padding and repeat:
+
+- **strPadStart(s: String, targetLength: Int, padString: String) -> String**  
+  Pads from the start so the result length is at least `targetLength`; `padString` is repeated as needed (defaults to space if empty).
+- **strPadEnd(s: String, targetLength: Int, padString: String) -> String**
+- **strRepeat(s: String, count: Int) -> String**  
+  Repeats `s` `count` times; returns empty string if `count` ≤ 0.
+
+Unicode:
+
+- **strNormalize(s: String, form: String) -> String**  
+  Normalization form (`"NFC"`, `"NFD"`, `"NFKC"`, `"NFKD"`). Currently returns a copy of `s` (full Unicode normalization may be added later).
 
 Parsing:
 
-- **stringToInt(s: String) -> Int**
-- **stringToFloat(s: String) -> Float**
+- **strToInt(s: String) -> Int**
+- **strToFloat(s: String) -> Float**
 
 Formatting / conversions:
 
@@ -160,8 +205,8 @@ Interface‑based:
 
 Basic comparison:
 
-- **stringEquals(s1: String, s2: String) -> Bool**
-- **stringCompare(s1: String, s2: String) -> Int**  
+- **strEquals(s1: String, s2: String) -> Bool**
+- **strCompare(s1: String, s2: String) -> Int**  
   Returns `< 0`, `0`, or `> 0` depending on lexicographic ordering.
 
 Regex functions (see `docs/STRING_COMPARISON_AND_REGEX.md` for details):

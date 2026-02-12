@@ -142,6 +142,7 @@ private:
     std::unique_ptr<ast::Type> createFloatType();
     std::unique_ptr<ast::Type> createBoolType();
     std::unique_ptr<ast::Type> createStringType();
+    std::unique_ptr<ast::Type> createCharType();
     std::unique_ptr<ast::Type> createUnitType();
     std::unique_ptr<ast::Type> createNullType();
     std::unique_ptr<ast::Type> createArrayBufType();

@@ -1,0 +1,392 @@
+// =============================================================================
+// Chapter 18: A JSON parser in First — ADTs, pattern matching, recursion
+// =============================================================================
+// Parses a string into a Json value (Option<Json>). Uses strTrim, strStartsWith,
+// strSlice, strCharAt, etc. No mutable state; we pass "rest" && use Option.
+// =============================================================================
+
+import * "Prelude";
+
+// -----------------------------------------------------------------------------
+// 1. Json ADT: null, bool, int, float, string, array, object
+// -----------------------------------------------------------------------------
+type Json =
+    JNull
+  | JBool(Bool)
+  | JInt(Int)
+  | JFloat(Float)
+  | JString(String)
+  | JArray(Array<Json>)
+  | JObject(Array<{ key: String, value: Json }>);
+
+type ParseResult = { value: Json, rest: String };
+
+// Record-based result types (avoids ADT pattern-match bug in compiler)
+type ParseResultOrFail = { ok: Bool, value: Json, rest: String };
+type ArrayResultOrFail = { ok: Bool, arr: Array<Json>, rest: String };
+type CloseQuoteResult = { found: Bool, index: Int };
+
+// Empty array of Json: build from a single-element array and deleteAt
+function emptyJsonArray() -> Array<Json> {
+    let one: Array<Json> = [JNull()];
+    return match deleteAt(one, 0) {
+        Some(a) => a,
+        None => one
+    };
+}
+
+function okParse(value: Json, rest: String) -> ParseResultOrFail {
+    return { ok: true, value: value, rest: rest };
+}
+function failParse() -> ParseResultOrFail {
+    return { ok: false, value: JNull(), rest: "" };
+}
+function okArray(arr: Array<Json>, rest: String) -> ArrayResultOrFail {
+    return { ok: true, arr: arr, rest: rest };
+}
+function failArray() -> ArrayResultOrFail {
+    return { ok: false, arr: emptyJsonArray(), rest: "" };
+}
+function closeFound(i: Int) -> CloseQuoteResult {
+    return { found: true, index: i };
+}
+function closeNotFound() -> CloseQuoteResult {
+    return { found: false, index: -1 };
+}
+
+// Empty array of key-value pairs (same idea)
+function emptyPairArray() -> Array<{ key: String, value: Json }> {
+    let dummy: Json = JNull();
+    let one: Array<{ key: String, value: Json }> = [{ key: "", value: dummy }];
+    return match deleteAt(one, 0) {
+        Some(a) => a,
+        None => one
+    };
+}
+
+// -----------------------------------------------------------------------------
+// 2. Atom parsers: null, true, false
+// -----------------------------------------------------------------------------
+function parseNull(s: String) -> ParseResultOrFail {
+    return if (strStartsWith(s, "null", 0)) {
+        let rest = strSlice(s, 4, strLength(s));
+        okParse(JNull(), rest)
+    } else {
+        failParse()
+    };
+}
+
+function parseBool(s: String) -> ParseResultOrFail {
+    return if (strStartsWith(s, "true", 0)) {
+        let rest = strSlice(s, 4, strLength(s));
+        okParse(JBool(true), rest)
+    } else if (strStartsWith(s, "false", 0)) {
+        let rest = strSlice(s, 5, strLength(s));
+        okParse(JBool(false), rest)
+    } else {
+        failParse()
+    };
+}
+
+// -----------------------------------------------------------------------------
+// 3. Number: advance index past digits, optional ., optional exponent
+// -----------------------------------------------------------------------------
+function isDigit(c: Int) -> Bool {
+    return c >= 48 && c <= 57;
+}
+
+function skipDigits(s: String, i: Int) -> Int {
+    return if (i >= strLength(s)) {
+        i
+    } else if (isDigit(strCharAt(s, i))) {
+        skipDigits(s, i + 1)
+    } else {
+        i
+    };
+}
+
+function numberEnd(s: String, i: Int) -> Int {
+    let len = strLength(s);
+    let i2 = if (i < len && strCharAt(s, i) == 45) { i + 1 } else { i };
+    let i3 = skipDigits(s, i2);
+    return if (i3 == i2) {
+        i
+    } else {
+        let i4 = i3;
+        let i5 = if (i4 < len && strCharAt(s, i4) == 46) { skipDigits(s, i4 + 1) } else { i4 };
+        let i6 = if (i5 < len && (strCharAt(s, i5) == 101 || strCharAt(s, i5) == 69)) {
+            let i5a = i5 + 1;
+            let i5b = if (i5a < len && (strCharAt(s, i5a) == 43 || strCharAt(s, i5a) == 45)) { i5a + 1 } else { i5a };
+            skipDigits(s, i5b)
+        } else {
+            i5
+        };
+        i6
+    };
+}
+
+function parseNumber(s: String) -> ParseResultOrFail {
+    let len = strLength(s);
+    let start = if (len > 0 && strCharAt(s, 0) == 45) { 1 } else { 0 };
+    let end = numberEnd(s, start);
+    return if (end <= start) {
+        failParse()
+    } else {
+        let numStr = strSlice(s, 0, end);
+        let rest = strSlice(s, end, len);
+        let hasDot = strIndexOf(numStr, ".", 0) >= 0;
+        let val: Json = if (hasDot) {
+            JFloat(strToFloat(numStr))
+        } else {
+            JInt(strToInt(numStr))
+        };
+        okParse(val, rest)
+    };
+}
+
+// -----------------------------------------------------------------------------
+// 4. String: find closing quote (skip \"), slice content
+// -----------------------------------------------------------------------------
+function findClosingQuote(s: String, i: Int) -> CloseQuoteResult {
+    let len = strLength(s);
+    return if (i >= len) {
+        closeNotFound()
+    } else if (strCharAt(s, i) == 34) {
+        closeFound(i)
+    } else if (strCharAt(s, i) == 92) {
+        findClosingQuote(s, i + 2)
+    } else {
+        findClosingQuote(s, i + 1)
+    };
+}
+
+function parseStringAfterQuote(s: String, len: Int) -> ParseResultOrFail {
+    let closeRes: CloseQuoteResult = findClosingQuote(s, 1);
+    return if (closeRes.found) {
+        let content = strSlice(s, 1, closeRes.index);
+        let rest = strSlice(s, closeRes.index + 1, len);
+        okParse(JString(content), rest)
+    } else {
+        failParse()
+    };
+}
+
+function parseString(s: String) -> ParseResultOrFail {
+    let len = strLength(s);
+    return if (len > 0 && strCharAt(s, 0) == 34) {
+        parseStringAfterQuote(s, len)
+    } else {
+        failParse()
+    };
+}
+
+// -----------------------------------------------------------------------------
+// 5. Array: parse [ then elements separated by , then ]
+// -----------------------------------------------------------------------------
+function parseArrayElementsAfterComma(v: Json, restArr: Array<Json>, restStr: String) -> ArrayResultOrFail {
+    let combined = match insertAt(restArr, v, 0) {
+        Some(a) => a,
+        None => restArr
+    };
+    return okArray(combined, restStr);
+}
+
+function parseArrayElementsAfterCommaRec(v: Json, after: String) -> ArrayResultOrFail {
+    let res: ArrayResultOrFail = parseArrayElements(after);
+    return if (res.ok) {
+        parseArrayElementsAfterComma(v, res.arr, res.rest)
+    } else {
+        failArray()
+    };
+}
+
+function parseArrayElementsAfterFirst(v: Json, rest1: String, len1: Int) -> ArrayResultOrFail {
+    return if (len1 > 0 && strCharAt(rest1, 0) == 44) {
+        let after = strTrim(strSlice(rest1, 1, len1));
+        parseArrayElementsAfterCommaRec(v, after)
+    } else if (len1 > 0 && strCharAt(rest1, 0) == 93) {
+        // Avoid returning a stack-backed array literal; build a heap-backed singleton via insertAt.
+        let base = emptyJsonArray();
+        let single = match insertAt(base, v, 0) {
+            Some(a) => a,
+            None => base
+        };
+        okArray(single, rest1)
+    } else {
+        failArray()
+    };
+}
+
+function parseArrayElements(s: String) -> ArrayResultOrFail {
+    let t = strTrim(s);
+    let len = strLength(t);
+    return if (len > 0 && strCharAt(t, 0) == 93) {
+        okArray(emptyJsonArray(), t)
+    } else {
+        let valRes: ParseResultOrFail = parseValue(t);
+        if (valRes.ok) {
+            let v = valRes.value;
+            let rest1 = strTrim(valRes.rest);
+            let len1 = strLength(rest1);
+            parseArrayElementsAfterFirst(v, rest1, len1)
+        } else {
+            failArray()
+        }
+    };
+}
+
+function parseArrayAfterElements(rec: { arr: Array<Json>, rest: String }) -> ParseResultOrFail {
+    let rest = rec.rest;
+    let restLen = strLength(rest);
+    return if (restLen > 0 && strCharAt(rest, 0) == 93) {
+        okParse(JArray(rec.arr), strSlice(rest, 1, restLen))
+    } else {
+        failParse()
+    };
+}
+
+function parseArrayFromElements(after: String) -> ParseResultOrFail {
+    let elemRes: ArrayResultOrFail = parseArrayElements(after);
+    return if (elemRes.ok) {
+        parseArrayAfterElements({ arr: elemRes.arr, rest: elemRes.rest })
+    } else {
+        failParse()
+    };
+}
+
+function parseArray(s: String) -> ParseResultOrFail {
+    let len = strLength(s);
+    return if (len > 0 && strCharAt(s, 0) == 91) {
+        let after = strTrim(strSlice(s, 1, len));
+        parseArrayFromElements(after)
+    } else {
+        failParse()
+    };
+}
+
+// -----------------------------------------------------------------------------
+// 6. Object parsing (temporarily disabled due to compiler match bug)
+// -----------------------------------------------------------------------------
+function parseObjectPairs(s: String) -> Option<{ pairs: Array<{ key: String, value: Json }>, rest: String }> {
+    // TODO: implement full object parsing once compiler match bug is fixed.
+    return none();
+}
+
+function parseObject(s: String) -> ParseResultOrFail {
+    // TODO: implement full object parsing once compiler match bug is fixed.
+    return failParse();
+}
+
+// -----------------------------------------------------------------------------
+// 7. parseValue: dispatch by first character / literal
+// -----------------------------------------------------------------------------
+function parseValue(s: String) -> ParseResultOrFail {
+    let t = strTrim(s);
+    let len = strLength(t);
+    return if (len == 0) {
+        failParse()
+    } else if (strStartsWith(t, "null", 0)) {
+        parseNull(t)
+    } else if (strStartsWith(t, "true", 0)) {
+        parseBool(t)
+    } else if (strStartsWith(t, "false", 0)) {
+        parseBool(t)
+    } else if (strCharAt(t, 0) == 34) {
+        parseString(t)
+    } else if (strCharAt(t, 0) == 91) {
+        parseArray(t)
+    } else if (strCharAt(t, 0) == 123) {
+        parseObject(t)
+    } else if (strCharAt(t, 0) == 45 || isDigit(strCharAt(t, 0))) {
+        parseNumber(t)
+    } else {
+        failParse()
+    };
+}
+
+// -----------------------------------------------------------------------------
+// 8. Top-level parse: trim, parse one value, require no trailing input
+// -----------------------------------------------------------------------------
+function parse(s: String) -> Option<Json> {
+    let t = strTrim(s);
+    let valRes: ParseResultOrFail = parseValue(t);
+    return if (valRes.ok) {
+        let rest = strTrim(valRes.rest);
+        if (strLength(rest) == 0) {
+            some(valRes.value)
+        } else {
+            none()
+        }
+    } else {
+        none()
+    };
+}
+
+// -----------------------------------------------------------------------------
+// 9. Pretty-print Json (pattern match on every variant)
+// -----------------------------------------------------------------------------
+// Simplified array pretty-print (avoids arr[0] when compiler lacks array type info)
+function arrayOfJsonToString(arr: Array<Json>) -> String {
+    let n = arrayLength(arr);
+    return if (n == 0) {
+        ""
+    } else {
+        "elements:" + intToString(n)
+    };
+}
+
+function objectPairsToString(pairs: Array<{ key: String, value: Json }>) -> String {
+    let n = arrayLength(pairs);
+    return if (n == 0) {
+        ""
+    } else {
+        "{pairs:" + intToString(n) + "}"
+    };
+}
+
+function jsonToString(j: Json) -> String {
+    return match j {
+        JNull => "null",
+        JBool(b) => if (b) { "true" } else { "false" },
+        JInt(n) => intToString(n),
+        JFloat(x) => floatToString(x),
+        JString(s) => "\"" + s + "\"",
+        JArray(arr) => "[" + arrayOfJsonToString(arr) + "]",
+        JObject(ps) => "{" + objectPairsToString(ps) + "}"
+    };
+}
+
+interaction main() -> Unit {
+    println("=== Chapter 18: JSON parser (ADTs, pattern matching, recursion) ===");
+
+    match parse("null") {
+        Some(j) => println("parse(\"null\") = " + jsonToString(j)),
+        None => println("parse(\"null\") failed")
+    };
+
+    match parse("true") {
+        Some(j) => println("parse(\"true\") = " + jsonToString(j)),
+        None => println("parse(\"true\") failed")
+    };
+
+    match parse("42") {
+        Some(j) => println("parse(\"42\") = " + jsonToString(j)),
+        None => println("parse(\"42\") failed")
+    };
+
+    match parse("\"hello\"") {
+        Some(j) => println("parse(\"\\\"hello\\\"\") = " + jsonToString(j)),
+        None => println("parse(\"\\\"hello\\\"\") failed")
+    };
+
+    match parse("[1, 2, null]") {
+        Some(j) => println("parse(\"[1, 2, null]\") = " + jsonToString(j)),
+        None => println("parse(\"[1, 2, null]\") failed")
+    };
+
+    // Object parsing is currently disabled due to a compiler match bug in complex patterns.
+    // match parse("{\"a\": 1, \"b\": true}") {
+    //     Some(j) => println("parse(\"{\\\"a\\\": 1, \\\"b\\\": true}\") = " + jsonToString(j)),
+    //     None => println("parse object failed")
+    // };
+}
