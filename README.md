@@ -2,9 +2,9 @@
 
 First is a **functional-first programming language** that emphasizes pure functional programming while providing **controlled access to imperative features**. It features a strict distinction between pure functions and side-effecting interactions, strong typing with TypeScript-like expressiveness, and Haskell-style type classes.
 
-**First is currently only available on macOS** and can be installed via [Homebrew](https://brew.sh): `brew tap akkeshavan/first && brew install --HEAD first-compiler`. 
+**macOS:** Install via [Homebrew](https://brew.sh): `brew tap akkeshavan/first && brew install --HEAD first-compiler`.
 
-You may  clone and build the project on Linux, but has not been tested yet. There is no installable available for Linux yet
+**Linux:** Clone the repository and build from source (see below). There is no pre-built Linux package yet.
 
 ## Key Features
 
@@ -27,22 +27,22 @@ You may  clone and build the project on Linux, but has not been tested yet. Ther
 
 ## Clone and build (from source)
 
-To build the First compiler and runtime from source (macOS):
+### Clone the repository
 
-1. **Clone the repository**
+```bash
+git clone https://github.com/akkeshavan/first.git
+cd first
+```
 
-   ```bash
-   git clone https://github.com/akkeshavan/first.git
-   cd first
-   ```
+### macOS
 
-2. **Install dependencies** (Homebrew)
+1. **Install dependencies** (Homebrew)
 
    - LLVM: `brew install llvm`
    - ANTLR4 runtime and tool: `brew install antlr4-cpp-runtime antlr`
    - CMake: `brew install cmake` (if not already installed)
 
-3. **Configure and build**
+2. **Configure and build**
 
    ```bash
    mkdir build && cd build
@@ -50,7 +50,53 @@ To build the First compiler and runtime from source (macOS):
    cmake --build .
    ```
 
-   The compiler binary is `build/bin/firstc`. The **fir** project manager is in `tools/fir`; run it from the repo (e.g. `./tools/fir build`) or add `tools` to your PATH.
+### Linux (Ubuntu / Debian)
+
+1. **Install dependencies**
+
+   ```bash
+   sudo apt-get update
+   sudo apt-get install -y wget build-essential cmake python3 python3-pip software-properties-common
+   sudo add-apt-repository universe
+   sudo apt-get update
+   sudo apt-get install -y libantlr4-runtime-dev
+   wget -qO - https://apt.llvm.org/llvm.sh | sudo bash -s 15
+   pip3 install antlr4-tools
+   ```
+
+   *`libantlr4-runtime-dev` is in the `universe` repository. LLVM 15 is installed from the official [LLVM APT repository](https://apt.llvm.org/).*
+
+2. **Configure and build**
+
+   ```bash
+   mkdir build && cd build
+   cmake .. -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/usr/local \
+       -DLLVM_DIR=/usr/lib/llvm-15/lib/cmake/llvm \
+       -DFIRST_USE_GC=OFF -DBUILD_TESTS=ON -DBUILD_EXAMPLES=OFF
+   cmake --build .
+   ```
+
+3. **Install** (optional)
+
+   ```bash
+   sudo cmake --install . --component first
+   ```
+
+   This installs `firstc` to `/usr/local/bin` and the runtime to `/usr/local/lib`. Add `/usr/local/bin` to your PATH if it is not already there.
+
+   Alternatively, run without installing: use `./build/bin/firstc` and set `FIRST_LIB_PATH` to point at the stdlib (e.g. `build/lib/first` or the repo `lib/` directory).
+
+   **Test the Linux build in Docker** (requires Docker):
+
+   ```bash
+   ./scripts/test-linux-docker.sh
+   ```
+
+   This builds an Ubuntu 22.04 image, runs the build and install, then compiles and runs the hello example.
+
+---
+
+The compiler binary is `build/bin/firstc`. The **fir** project manager is in `tools/fir`; run it from the repo (e.g. `./tools/fir build`) or add `tools` to your PATH.
 
 ## Run all tests
 

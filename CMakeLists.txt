@@ -31,7 +31,9 @@ if(NOT LLVM_DIR)
   endif()
 endif()
 find_package(LLVM REQUIRED CONFIG)
-find_package(antlr4-runtime REQUIRED)
+
+# ANTLR4 runtime: use manual find_path/find_library (Ubuntu libantlr4-runtime-dev
+# does not provide a CMake config; Homebrew and pkg-config paths work below)
 
 # LLVM configuration
 llvm_map_components_to_libnames(llvm_libs
@@ -110,6 +112,8 @@ find_library(ANTLR4_LIBRARY
         /opt/homebrew/lib
         /usr/local/lib
         /usr/lib
+        /usr/lib/x86_64-linux-gnu
+        /usr/lib/aarch64-linux-gnu
 )
 
 if(ANTLR4_INCLUDE_DIR AND ANTLR4_LIBRARY)

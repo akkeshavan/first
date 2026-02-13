@@ -1,0 +1,23 @@
+# Test Linux build and install per README.md
+# Usage: docker build -f docker/Dockerfile.linux-test -t first-linux-test .
+#        docker run --rm -v $(pwd):/first first-linux-test
+
+FROM ubuntu:22.04
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Install dependencies per README.md Linux section
+# LLVM 15: use official llvm.sh script (works on amd64 and arm64)
+RUN apt-get update \
+    && apt-get install -y wget xz-utils build-essential cmake python3 python3-pip software-properties-common \
+    && add-apt-repository universe \
+    && apt-get update \
+    && apt-get install -y libantlr4-runtime-dev \
+    && wget -qO - https://apt.llvm.org/llvm.sh | bash -s 15 \
+    && pip3 install antlr4-tools \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# Ensure antlr4 is on PATH
+ENV PATH="/root/.local/bin:${PATH}"
+
+WORKDIR /first
