@@ -87,7 +87,7 @@
     case FirstLexer::ARRAYBUF: kind = TokenKind::KwArrayBuf; break;
      case FirstLexer::TRUE: kind = TokenKind::KwTrue; break;
      case FirstLexer::FALSE: kind = TokenKind::KwFalse; break;
-    case FirstLexer::NULL_: kind = TokenKind::KwNull; break;
+    case FirstLexer::NULL_KW: kind = TokenKind::KwNull; break;
 
     // Treat built-in collection type keywords as identifiers for the
     // purposes of the hand-written parser's simpler type grammar. This

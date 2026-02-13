@@ -78,13 +78,18 @@ set(GENERATED_FILES
     ${ANTLR4_GENERATED_DIR}/FirstListener.cpp
 )
 
-# Use ANTLR 4.10 to match Ubuntu libantlr4-runtime-dev; antlr4-tools defaults to 4.13
-# which generates code incompatible with the 4.10 C++ runtime (SerializedATNView, etc.)
+# ANTLR version: macOS/Homebrew antlr uses its bundled version (no -v); Linux antlr4-tools needs -v 4.9.3
+# to match Ubuntu libantlr4-runtime-dev (Ubuntu 4.13 generates SerializedATNView incompatible with 4.9 runtime)
+if(APPLE)
+  set(ANTLR4_VER "")
+else()
+  set(ANTLR4_VER "-v 4.9.3")
+endif()
 add_custom_command(
     OUTPUT ${GENERATED_FILES}
-    COMMAND ${ANTLR4_TOOL} -v 4.10.1 -Dlanguage=Cpp -visitor -listener -o ${ANTLR4_GENERATED_DIR} -package first ${GRAMMAR_FILE}
+    COMMAND ${ANTLR4_TOOL} ${ANTLR4_VER} -Dlanguage=Cpp -visitor -listener -o ${ANTLR4_GENERATED_DIR} -package first ${GRAMMAR_FILE}
     DEPENDS ${GRAMMAR_FILE}
-    COMMENT "Generating ANTLR4 parser from First.g4 (using ANTLR 4.10.1)"
+    COMMENT "Generating ANTLR4 parser from First.g4"
 )
 
 # Find ANTLR4 runtime include directory

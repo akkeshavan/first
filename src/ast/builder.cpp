@@ -315,7 +315,7 @@ std::unique_ptr<LiteralExpr> ASTBuilder::buildLiteral(FirstParser::LiteralContex
             if (codePoint > 0x10FFFF) codePoint = 0;
         }
         return std::make_unique<LiteralExpr>(loc, LiteralExpr::LiteralType::Char, std::to_string(codePoint));
-    } else if (ctx->getToken(FirstParser::NULL_, 0)) {
+    } else if (ctx->getToken(FirstParser::NULL_KW, 0)) {
         return std::make_unique<LiteralExpr>(loc, LiteralExpr::LiteralType::Null, "null");
     } else if (ctx->unitLiteral()) {
         return std::make_unique<LiteralExpr>(loc, LiteralExpr::LiteralType::Null, "()");

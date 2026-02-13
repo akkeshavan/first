@@ -80,7 +80,7 @@ ARRAY: 'Array';
 // Boolean literals
 TRUE: 'true';
 FALSE: 'false';
-NULL: 'null';
+NULL_KW: 'null';
 
 // Collection type keywords
 HASHMAP: 'HashMap';
@@ -585,7 +585,7 @@ literal
     | CHAR_LITERAL
     | TRUE
     | FALSE
-    | NULL
+    | NULL_KW
     | unitLiteral
     ;
 
