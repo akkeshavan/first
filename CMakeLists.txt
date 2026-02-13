@@ -78,10 +78,12 @@ set(GENERATED_FILES
     ${ANTLR4_GENERATED_DIR}/FirstListener.cpp
 )
 
-# Do not pass -v: antlr (Homebrew/linuxbrew) does not support it. Use the tool's default ANTLR version.
+# antlr4-tools (pip) respects ANTLR4_TOOLS_ANTLR_VERSION; antlr (Homebrew) ignores it.
+# Use 4.9.3 to match Ubuntu libantlr4-runtime-dev; Homebrew runtime is newer and backward compatible.
 add_custom_command(
     OUTPUT ${GENERATED_FILES}
-    COMMAND ${ANTLR4_TOOL} -Dlanguage=Cpp -visitor -listener -o ${ANTLR4_GENERATED_DIR} -package first ${GRAMMAR_FILE}
+    COMMAND ${CMAKE_COMMAND} -E env ANTLR4_TOOLS_ANTLR_VERSION=4.9.3
+        ${ANTLR4_TOOL} -Dlanguage=Cpp -visitor -listener -o ${ANTLR4_GENERATED_DIR} -package first ${GRAMMAR_FILE}
     DEPENDS ${GRAMMAR_FILE}
     COMMENT "Generating ANTLR4 parser from First.g4"
 )
