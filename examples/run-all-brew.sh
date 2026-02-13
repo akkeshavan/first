@@ -28,6 +28,8 @@ fi
 
 export FIRST_LIB_PATH="$BREW_PREFIX/lib/first"
 export LIBRARY_PATH="$BREW_PREFIX/lib${LIBRARY_PATH:+:$LIBRARY_PATH}"
+# Suppress macOS "nano zone abandoned" malloc warning (harmless but noisy)
+export MallocNanoZone=0
 
 echo "Using firstc: $(command -v firstc)"
 if command -v fir &>/dev/null; then
