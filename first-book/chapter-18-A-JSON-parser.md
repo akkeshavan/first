@@ -123,6 +123,8 @@ So string parsing is another recursive walk over the input, using **strCharAt** 
 
 ## 7. Parsing arrays and objects (recursive structure)
 
+The implementation uses record-based result types (e.g. **ObjectPairsResultOrFail**) to collect key–value pairs, mirroring the array parser structure.
+
 **parseArray(s)** (when **s** starts with **'['**):
 
 1. Consume **'['** and trim.

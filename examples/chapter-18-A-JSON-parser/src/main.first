@@ -24,6 +24,7 @@ type ParseResult = { value: Json, rest: String };
 // Record-based result types (avoids ADT pattern-match bug in compiler)
 type ParseResultOrFail = { ok: Bool, value: Json, rest: String };
 type ArrayResultOrFail = { ok: Bool, arr: Array<Json>, rest: String };
+type ObjectPairsResultOrFail = { ok: Bool, pairs: Array<{ key: String, value: Json }>, rest: String };
 type CloseQuoteResult = { found: Bool, index: Int };
 
 // Empty array of Json: build from a single-element array and deleteAt
@@ -46,6 +47,12 @@ function okArray(arr: Array<Json>, rest: String) -> ArrayResultOrFail {
 }
 function failArray() -> ArrayResultOrFail {
     return { ok: false, arr: emptyJsonArray(), rest: "" };
+}
+function okObjectPairs(pairs: Array<{ key: String, value: Json }>, rest: String) -> ObjectPairsResultOrFail {
+    return { ok: true, pairs: pairs, rest: rest };
+}
+function failObjectPairs() -> ObjectPairsResultOrFail {
+    return { ok: false, pairs: emptyPairArray(), rest: "" };
 }
 function closeFound(i: Int) -> CloseQuoteResult {
     return { found: true, index: i };
@@ -265,16 +272,123 @@ function parseArray(s: String) -> ParseResultOrFail {
 }
 
 // -----------------------------------------------------------------------------
-// 6. Object parsing (temporarily disabled due to compiler match bug)
+// 6. Object parsing: { "key": value, ... }
 // -----------------------------------------------------------------------------
-function parseObjectPairs(s: String) -> Option<{ pairs: Array<{ key: String, value: Json }>, rest: String }> {
-    // TODO: implement full object parsing once compiler match bug is fixed.
-    return none();
+function jsonKeyFromValue(j: Json) -> Option<String> {
+    return match j {
+        JString(s) => some(s),
+        JNull => none(),
+        JBool(b) => none(),
+        JInt(n) => none(),
+        JFloat(x) => none(),
+        JArray(a) => none(),
+        JObject(p) => none()
+    };
+}
+
+function parseObjectPairsAfterComma(pair: { key: String, value: Json }, restPairs: Array<{ key: String, value: Json }>, restStr: String) -> ObjectPairsResultOrFail {
+    let combined = match insertAt(restPairs, pair, 0) {
+        Some(a) => a,
+        None => restPairs
+    };
+    return okObjectPairs(combined, restStr);
+}
+
+function parseObjectPairsAfterCommaRec(pair: { key: String, value: Json }, after: String) -> ObjectPairsResultOrFail {
+    let res: ObjectPairsResultOrFail = parseObjectPairsElements(after);
+    return if (res.ok) {
+        parseObjectPairsAfterComma(pair, res.pairs, res.rest)
+    } else {
+        failObjectPairs()
+    };
+}
+
+function parseObjectPairsAfterFirst(pair: { key: String, value: Json }, rest1: String, len1: Int) -> ObjectPairsResultOrFail {
+    return if (len1 > 0 && strCharAt(rest1, 0) == 44) {
+        let after = strTrim(strSlice(rest1, 1, len1));
+        parseObjectPairsAfterCommaRec(pair, after)
+    } else if (len1 > 0 && strCharAt(rest1, 0) == 125) {
+        let base = emptyPairArray();
+        let single = match insertAt(base, pair, 0) {
+            Some(a) => a,
+            None => base
+        };
+        okObjectPairs(single, rest1)
+    } else {
+        failObjectPairs()
+    };
+}
+
+function parseObjectPairsElementsWithKey(k: String, afterKey: String) -> ObjectPairsResultOrFail {
+    let afterKeyLen = strLength(afterKey);
+    return if (afterKeyLen > 0 && strCharAt(afterKey, 0) == 58) {
+        let afterColon = strTrim(strSlice(afterKey, 1, afterKeyLen));
+        let valRes: ParseResultOrFail = parseValue(afterColon);
+        if (valRes.ok) {
+            let pair: { key: String, value: Json } = { key: k, value: valRes.value };
+            let rest1 = strTrim(valRes.rest);
+            let len1 = strLength(rest1);
+            parseObjectPairsAfterFirst(pair, rest1, len1)
+        } else {
+            failObjectPairs()
+        }
+    } else {
+        failObjectPairs()
+    };
+}
+
+function parseObjectPairsElementsFromKey(keyRes: ParseResultOrFail) -> ObjectPairsResultOrFail {
+    return match jsonKeyFromValue(keyRes.value) {
+        Some(k) => {
+            let afterKey = strTrim(keyRes.rest);
+            parseObjectPairsElementsWithKey(k, afterKey)
+        },
+        None => failObjectPairs()
+    };
+}
+
+function parseObjectPairsElements(s: String) -> ObjectPairsResultOrFail {
+    let t = strTrim(s);
+    let len = strLength(t);
+    return if (len > 0 && strCharAt(t, 0) == 125) {
+        okObjectPairs(emptyPairArray(), t)
+    } else {
+        let keyRes: ParseResultOrFail = parseString(t);
+        if (keyRes.ok) {
+            parseObjectPairsElementsFromKey(keyRes)
+        } else {
+            failObjectPairs()
+        }
+    };
+}
+
+function parseObjectAfterPairs(rec: { pairs: Array<{ key: String, value: Json }>, rest: String }) -> ParseResultOrFail {
+    let rest = rec.rest;
+    let restLen = strLength(rest);
+    return if (restLen > 0 && strCharAt(rest, 0) == 125) {
+        okParse(JObject(rec.pairs), strSlice(rest, 1, restLen))
+    } else {
+        failParse()
+    };
+}
+
+function parseObjectFromPairs(after: String) -> ParseResultOrFail {
+    let pairRes: ObjectPairsResultOrFail = parseObjectPairsElements(after);
+    return if (pairRes.ok) {
+        parseObjectAfterPairs({ pairs: pairRes.pairs, rest: pairRes.rest })
+    } else {
+        failParse()
+    };
 }
 
 function parseObject(s: String) -> ParseResultOrFail {
-    // TODO: implement full object parsing once compiler match bug is fixed.
-    return failParse();
+    let len = strLength(s);
+    return if (len > 0 && strCharAt(s, 0) == 123) {
+        let after = strTrim(strSlice(s, 1, len));
+        parseObjectFromPairs(after)
+    } else {
+        failParse()
+    };
 }
 
 // -----------------------------------------------------------------------------
@@ -325,23 +439,14 @@ function parse(s: String) -> Option<Json> {
 // -----------------------------------------------------------------------------
 // 9. Pretty-print Json (pattern match on every variant)
 // -----------------------------------------------------------------------------
-// Simplified array pretty-print (avoids arr[0] when compiler lacks array type info)
 function arrayOfJsonToString(arr: Array<Json>) -> String {
     let n = arrayLength(arr);
-    return if (n == 0) {
-        ""
-    } else {
-        "elements:" + intToString(n)
-    };
+    return if (n == 0) { "" } else { "elements:" + intToString(n) };
 }
 
 function objectPairsToString(pairs: Array<{ key: String, value: Json }>) -> String {
     let n = arrayLength(pairs);
-    return if (n == 0) {
-        ""
-    } else {
-        "{pairs:" + intToString(n) + "}"
-    };
+    return if (n == 0) { "" } else { "pairs:" + intToString(n) };
 }
 
 function jsonToString(j: Json) -> String {
@@ -384,9 +489,8 @@ interaction main() -> Unit {
         None => println("parse(\"[1, 2, null]\") failed")
     };
 
-    // Object parsing is currently disabled due to a compiler match bug in complex patterns.
-    // match parse("{\"a\": 1, \"b\": true}") {
-    //     Some(j) => println("parse(\"{\\\"a\\\": 1, \\\"b\\\": true}\") = " + jsonToString(j)),
-    //     None => println("parse object failed")
-    // };
+    match parse("{\"a\": 1, \"b\": true}") {
+        Some(j) => println("parse(\"{\\\"a\\\": 1, \\\"b\\\": true}\") = " + jsonToString(j)),
+        None => println("parse(\"{\\\"a\\\": 1, \\\"b\\\": true}\") failed")
+    };
 }
