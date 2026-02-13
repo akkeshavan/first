@@ -10,6 +10,7 @@ cmake-build-*/
 bin/
 generated/
 dist/
+
 test-fir-app/
 
 # IDE files

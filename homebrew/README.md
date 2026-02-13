@@ -4,7 +4,7 @@
 
 - **firstc** → `HOMEBREW_PREFIX/bin/firstc`
 - **Stdlib** (Prelude.first, etc.) → `HOMEBREW_PREFIX/lib/first/`
-- **Runtime** (libfirst_runtime.a) → `HOMEBREW_PREFIX/lib/`
+- **Runtime** (libfirst_runtime.a, built with Boehm GC) → `HOMEBREW_PREFIX/lib/`
 - **fir** (if present) → `HOMEBREW_PREFIX/bin/fir`
 
 After install, `firstc` finds Prelude and the runtime via the “lib next to binary” paths, so it works from any directory.
@@ -62,3 +62,16 @@ When you have a release tag (e.g. `v0.1.0`):
 ```bash
 brew uninstall first-compiler
 ```
+
+## Docker testing (Linux)
+
+To test the Linux installation in Docker without affecting your host:
+
+```bash
+# From repo root
+docker build -f Dockerfile.linux-test -t first-linux-test .
+docker run -it first-linux-test
+# Inside: firstc --version, fir
+```
+
+See [docs/INSTALL_LINUX.md](../docs/INSTALL_LINUX.md) for path setup and running examples.

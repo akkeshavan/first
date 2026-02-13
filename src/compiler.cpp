@@ -539,11 +539,14 @@ bool Compiler::linkToExecutable(const std::string& objectPath,
         libFlag = "-L" + libDir + " " + libFlag;
     }
     // When runtime is built with FIRST_USE_GC=ON it references GC_init/GC_malloc; link libgc.
-    // On macOS arm64, prefer Homebrew's libgc so we don't pick up x86_64 /usr/local/lib by default.
-    std::string gcLib = " -lgc";
+    // When FIRST_USE_GC=OFF (e.g. Homebrew formula), skip -lgc so bdw-gc is not required.
+    std::string gcLib;
+#ifdef FIRST_RUNTIME_USES_GC
+    gcLib = " -lgc";
 #ifdef __APPLE__
 #if defined(__arm64__) || defined(__aarch64__)
     gcLib = " -L/opt/homebrew/lib -lgc";
+#endif
 #endif
 #endif
     // If libfirst_runtime was built with AddressSanitizer, link -fsanitize=address so ___asan_* symbols resolve.
@@ -551,9 +554,16 @@ bool Compiler::linkToExecutable(const std::string& objectPath,
     std::string cmd = "clang++ " + objectPath + " " + libFlag + gcLib + sanitizerFlags + " -o " + outputPath + " 2>&1";
     int ret = std::system(cmd.c_str());
     if (ret != 0) {
+        std::string suggest = "clang++ " + objectPath;
+        if (!libDir.empty()) suggest += " -L" + libDir;
+        suggest += " -lfirst_runtime";
+#ifdef FIRST_RUNTIME_USES_GC
+        suggest += " -lgc";
+#endif
+        suggest += " -o " + outputPath;
         errorReporter_->error(
             SourceLocation(1, 1, outputPath),
-            "Linking failed (exit code " + std::to_string(ret) + "). Try: clang++ " + objectPath + " -L" + libDir + " -lfirst_runtime -lgc -o " + outputPath
+            "Linking failed (exit code " + std::to_string(ret) + "). Try: " + suggest
         );
         return false;
     }

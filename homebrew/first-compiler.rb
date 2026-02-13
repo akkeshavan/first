@@ -20,6 +20,7 @@ class FirstCompiler < Formula
   depends_on "llvm"
   depends_on "antlr4-cpp-runtime"
   depends_on "antlr" => :build
+  depends_on "bdw-gc"
 
   def install
     # ANTLR4 tool must be on PATH for CMake to generate lexer
@@ -31,7 +32,7 @@ class FirstCompiler < Formula
                     "-DCMAKE_INSTALL_PREFIX=#{prefix}",
                     "-DBUILD_TESTS=OFF",
                     "-DBUILD_EXAMPLES=OFF",
-                    "-DFIRST_USE_GC=OFF"
+                    "-DFIRST_USE_GC=ON"
     system "cmake", "--build", "build"
     # Installs: bin/firstc, lib/first/*.first (stdlib), lib/libfirst_runtime.a
     system "cmake", "--install", "build", "--component", "first"
