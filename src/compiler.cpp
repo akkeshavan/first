@@ -539,7 +539,7 @@ bool Compiler::linkToExecutable(const std::string& objectPath,
         libFlag = "-L" + libDir + " " + libFlag;
     }
     // When runtime is built with FIRST_USE_GC=ON it references GC_init/GC_malloc; link libgc.
-    // When FIRST_USE_GC=OFF (e.g. Homebrew formula), skip -lgc so bdw-gc is not required.
+    // When FIRST_RUNTIME_USES_GC is not defined (e.g. FIRST_USE_GC=OFF), skip -lgc.
     std::string gcLib;
 #ifdef FIRST_RUNTIME_USES_GC
     gcLib = " -lgc";

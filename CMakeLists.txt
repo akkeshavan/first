@@ -161,6 +161,10 @@ target_include_directories(firstc PRIVATE
 target_compile_definitions(firstc PRIVATE
     ${LLVM_DEFINITIONS}
 )
+# When runtime uses Boehm GC (FIRST_USE_GC=ON), compiler must add -lgc when linking user programs
+if(FIRST_USE_GC)
+    target_compile_definitions(firstc PRIVATE FIRST_RUNTIME_USES_GC)
+endif()
 target_link_libraries(firstc
     first_parser
     ${ANTLR4_LIBRARY}
