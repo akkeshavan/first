@@ -78,12 +78,12 @@ set(GENERATED_FILES
     ${ANTLR4_GENERATED_DIR}/FirstListener.cpp
 )
 
-# ANTLR version: macOS/Homebrew antlr uses its bundled version (no -v); Linux antlr4-tools needs -v 4.9.3
-# to match Ubuntu libantlr4-runtime-dev (Ubuntu 4.13 generates SerializedATNView incompatible with 4.9 runtime)
-if(APPLE)
-  set(ANTLR4_VER "")
+# Only antlr4 (pip/antlr4-tools) supports -v; antlr (Homebrew/linuxbrew) does not
+get_filename_component(ANTLR4_TOOL_NAME "${ANTLR4_TOOL}" NAME)
+if(NOT APPLE AND ANTLR4_TOOL_NAME STREQUAL "antlr4")
+  set(ANTLR4_VER "-v 4.9.3")  # match Ubuntu libantlr4-runtime-dev
 else()
-  set(ANTLR4_VER "-v 4.9.3")
+  set(ANTLR4_VER "")
 endif()
 add_custom_command(
     OUTPUT ${GENERATED_FILES}
